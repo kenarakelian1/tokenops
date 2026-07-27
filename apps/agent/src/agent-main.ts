@@ -1,0 +1,253 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { UsageEvent } from "@tokenops/shared";
+import {
+  defaultConfigPath,
+  defaultTokenopsDir,
+  loadConfig,
+  type TokenOpsConfig,
+} from "./config.js";
+import { ensureIdentity } from "./identity.js";
+import { Outbox, defaultOutboxPath } from "./outbox.js";
+import { prepareEventForShip } from "./privacy-apply.js";
+import { flushOutbox, sendHeartbeat } from "./flush.js";
+import { startProxy } from "./proxy/server.js";
+
+/** Default flush / heartbeat interval. */
+export const FLUSH_INTERVAL_MS = 5_000;
+
+export type RunAgentOptions = {
+  /** Override config path (default ~/.tokenops/config.toml). */
+  configPath?: string;
+  /** Override data dir for identity + outbox. */
+  tokenopsDir?: string;
+  /** Override flush interval (ms). */
+  flushIntervalMs?: number;
+  /** Inject fetch for tests. */
+  fetchImpl?: typeof fetch;
+  /**
+   * When true, do not register process signal handlers (tests).
+   * Caller must call `stop()`.
+   */
+  detach?: boolean;
+};
+
+export type AgentHandle = {
+  outbox: Outbox;
+  config: TokenOpsConfig;
+  machineId: string;
+  machineName: string;
+  stop: () => Promise<void>;
+  /** Run one flush + heartbeat cycle (for tests). */
+  tick: () => Promise<void>;
+};
+
+/**
+ * Start the local agent: OpenAI proxy (optional), outbox flush + heartbeats.
+ * Upstream API key is read from `OPENAI_API_KEY` only — never from cloud config.
+ */
+export async function runAgent(
+  options: RunAgentOptions = {},
+): Promise<AgentHandle> {
+  const tokenopsDir = options.tokenopsDir ?? defaultTokenopsDir();
+  const configPath =
+    options.configPath ??
+    (existsSync(join(tokenopsDir, "config.toml"))
+      ? join(tokenopsDir, "config.toml")
+      : defaultConfigPath());
+
+  const config = loadConfig(configPath);
+
+  const identity = ensureIdentity({
+    dir: tokenopsDir,
+    machineName: config.machine.name,
+  });
+
+  const outboxPath = join(tokenopsDir, "outbox.db");
+  const outbox = new Outbox(outboxPath);
+
+  const onEvent = (event: UsageEvent): void => {
+    try {
+      const shipped = prepareEventForShip(event, config);
+      outbox.enqueue(shipped);
+    } catch (err) {
+      console.error(
+        "[tokenops] failed to enqueue event:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+
+  let proxyServer: Awaited<ReturnType<typeof startProxy>> | null = null;
+  let claudeClose: (() => void) | null = null;
+
+  if (config.sources.openaiProxy) {
+    const apiKey = process.env.OPENAI_API_KEY ?? "";
+    if (!apiKey) {
+      console.warn(
+        "[tokenops] OPENAI_API_KEY not set; proxy will start but upstream calls will fail auth",
+      );
+    }
+    proxyServer = await startProxy({
+      listen: config.proxy.listen,
+      upstream: config.proxy.upstream,
+      apiKey,
+      onEvent,
+      machineId: identity.machineId,
+      machineName: identity.machineName,
+    });
+    console.log(`[tokenops] proxy listening on ${config.proxy.listen}`);
+  }
+
+  if (config.sources.claudeCode) {
+    claudeClose = await maybeStartClaudeAdapter({
+      onEvent,
+      machineId: identity.machineId,
+      machineName: identity.machineName,
+      tokenopsDir,
+    });
+  }
+
+  const fetchImpl = options.fetchImpl;
+  let stopped = false;
+
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    const flushResult = await flushOutbox({
+      outbox,
+      cloudUrl: config.cloud.url,
+      ingestToken: config.cloud.ingestToken,
+      fetchImpl,
+    });
+    if (flushResult.error) {
+      console.error(`[tokenops] flush error: ${flushResult.error}`);
+    } else if (flushResult.sent > 0) {
+      console.log(`[tokenops] flushed ${flushResult.sent} event(s)`);
+    }
+
+    const hb = await sendHeartbeat({
+      cloudUrl: config.cloud.url,
+      ingestToken: config.cloud.ingestToken,
+      machineId: identity.machineId,
+      machineName: identity.machineName,
+      queueDepth: outbox.pendingCount(),
+      fetchImpl,
+    });
+    if (!hb.ok && hb.error) {
+      console.error(`[tokenops] heartbeat error: ${hb.error}`);
+    }
+  };
+
+  // Immediate first cycle so status / dashboard update without waiting 5s.
+  await tick();
+
+  const intervalMs = options.flushIntervalMs ?? FLUSH_INTERVAL_MS;
+  const timer = setInterval(() => {
+    void tick();
+  }, intervalMs);
+  // Allow process to exit when only the timer is left (tests / stop).
+  timer.unref?.();
+
+  const stop = async (): Promise<void> => {
+    stopped = true;
+    clearInterval(timer);
+    claudeClose?.();
+    claudeClose = null;
+    if (proxyServer) {
+      await new Promise<void>((resolve, reject) => {
+        proxyServer!.close((err) => (err ? reject(err) : resolve()));
+      });
+      proxyServer = null;
+    }
+    outbox.close();
+  };
+
+  if (!options.detach) {
+    const onSignal = () => {
+      console.log("\n[tokenops] shutting down…");
+      void stop().then(() => process.exit(0));
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+  }
+
+  return {
+    outbox,
+    config,
+    machineId: identity.machineId,
+    machineName: identity.machineName,
+    stop,
+    tick,
+  };
+}
+
+/**
+ * Optionally load Claude Code adapter if Task 11 module is present.
+ * No-op when the file does not exist.
+ */
+async function maybeStartClaudeAdapter(args: {
+  onEvent: (e: UsageEvent) => void;
+  machineId: string;
+  machineName: string;
+  tokenopsDir: string;
+}): Promise<(() => void) | null> {
+  const adapterJs = fileURLToPath(
+    new URL("./adapters/claude-code.js", import.meta.url),
+  );
+  const adapterTs = join(
+    fileURLToPath(new URL(".", import.meta.url)),
+    "adapters",
+    "claude-code.ts",
+  );
+  if (!existsSync(adapterJs) && !existsSync(adapterTs)) {
+    console.log(
+      "[tokenops] claude_code source enabled but adapter not installed yet; skipping",
+    );
+    return null;
+  }
+
+  try {
+    const mod = (await import(
+      /* webpackIgnore: true */ new URL(
+        "./adapters/claude-code.js",
+        import.meta.url,
+      ).href
+    )) as {
+      watchClaudeCodeLog?: (
+        path: string,
+        onEvent: (e: UsageEvent) => void,
+        opts?: { machineId: string; machineName: string },
+      ) => { close: () => void };
+    };
+
+    if (typeof mod.watchClaudeCodeLog !== "function") {
+      console.log(
+        "[tokenops] claude-code adapter has no watchClaudeCodeLog; skipping",
+      );
+      return null;
+    }
+
+    // Default log path until Task 11 adds a config field.
+    const logPath = join(args.tokenopsDir, "claude-code-usage.jsonl");
+    if (!existsSync(logPath)) {
+      console.log(
+        `[tokenops] claude-code adapter ready; waiting for log at ${logPath}`,
+      );
+    }
+    const handle = mod.watchClaudeCodeLog(logPath, args.onEvent, {
+      machineId: args.machineId,
+      machineName: args.machineName,
+    });
+    console.log(`[tokenops] claude-code adapter watching ${logPath}`);
+    return () => handle.close();
+  } catch (err) {
+    console.warn(
+      "[tokenops] failed to start claude-code adapter:",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
+export { defaultConfigPath, defaultOutboxPath, defaultTokenopsDir };
