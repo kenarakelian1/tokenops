@@ -7,10 +7,15 @@ WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
+# All workspace package.json files for lockfile integrity
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
+COPY apps/agent/package.json apps/agent/
 
-RUN pnpm install --frozen-lockfile --filter @tokenops/web...
+# Full install (root + web typescript toolchain; web also declares typescript itself)
+RUN pnpm install --frozen-lockfile
 
 COPY apps/web apps/web
 

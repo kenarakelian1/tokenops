@@ -36,11 +36,11 @@ services:
       PORT: "3000"
       # Self-host defaults: no machine cap, unlimited raw event retention
       HOSTED_LIMITS: ${HOSTED_LIMITS:-false}
+      # Optional — only pass when set (empty strings break Zod .optional() without emptyToUndefined):
       # RAW_EVENT_RETENTION_DAYS: "30"
-      # CORS_ORIGIN only if web is on a different origin (prefer nginx same-origin)
       # CORS_ORIGIN: http://localhost:5173
-      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-}
-      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+      # BOOTSTRAP_EMAIL: admin@example.com
+      # BOOTSTRAP_PASSWORD: your-secure-password
     ports:
       - "3000:3000"
     healthcheck:

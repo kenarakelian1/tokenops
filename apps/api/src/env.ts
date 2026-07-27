@@ -3,6 +3,20 @@ import { z } from "zod";
 
 loadDotenv();
 
+/**
+ * Docker Compose / shell often pass optional vars as "" when unset.
+ * Zod `.optional()` only accepts `undefined`, not empty string — normalize first.
+ */
+export function emptyToUndefined(
+  env: NodeJS.ProcessEnv,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    out[key] = value === "" ? undefined : value;
+  }
+  return out;
+}
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   SESSION_SECRET: z.string().min(1, "SESSION_SECRET is required"),
@@ -29,5 +43,5 @@ export type Env = z.infer<typeof envSchema>;
 export function loadEnv(
   processEnv: NodeJS.ProcessEnv = process.env,
 ): Env {
-  return envSchema.parse(processEnv);
+  return envSchema.parse(emptyToUndefined(processEnv));
 }

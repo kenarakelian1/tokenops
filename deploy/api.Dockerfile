@@ -7,11 +7,16 @@ WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
+# Workspace manifests (all packages so lockfile + filters resolve cleanly)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+COPY apps/agent/package.json apps/agent/
 
-RUN pnpm install --frozen-lockfile --filter @tokenops/api...
+# Full install so root devDependencies (typescript, @types/node) are available for tsc.
+# Filter-only install would omit the workspace root toolchain.
+RUN pnpm install --frozen-lockfile
 
 COPY packages/shared packages/shared
 COPY apps/api apps/api
@@ -19,7 +24,7 @@ COPY apps/api apps/api
 RUN pnpm --filter @tokenops/shared build \
   && pnpm --filter @tokenops/api build
 
-# Production image
+# Production image — runtime deps only
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -29,8 +34,10 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+COPY apps/agent/package.json apps/agent/
 
-RUN pnpm install --frozen-lockfile --filter @tokenops/api... --prod
+RUN pnpm install --frozen-lockfile --prod --filter @tokenops/api...
 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/apps/api/dist apps/api/dist

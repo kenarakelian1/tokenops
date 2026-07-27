@@ -73,6 +73,7 @@ See `deploy/env.example`. Compose defaults:
 
 - `DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops`
 - `SESSION_SECRET` from env or a dev placeholder (change for real use)
+- Optional vars (`BOOTSTRAP_*`, `CORS_ORIGIN`, `RAW_EVENT_RETENTION_DAYS`) are **omitted** when unset (empty strings would fail strict Zod validation without the API’s empty→undefined normalization)
 
 ## Railway
 
