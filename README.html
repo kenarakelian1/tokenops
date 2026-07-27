@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TokenOps — Phase 1 README</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    .lead { font-size: 1.08rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .note {
+      background: var(--card);
+      border-left: 3px solid var(--accent);
+      padding: 0.65rem 0.9rem;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.5rem 0 0.5rem 1rem;
+      border-left: 3px solid var(--border);
+      color: var(--muted);
+    }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>TokenOps</h1>
+  <p class="meta"><strong>Phase 1</strong> · Multi-machine token ledger · MIT · Self-hostable</p>
+
+  <p class="lead"><strong>Open-source AI usage observability.</strong> A local agent captures LLM calls on each machine; a cloud API stores aggregates and optional short-TTL content; a web dashboard shows spend, explore, and efficiency recommendations.</p>
+
+  <p>TokenOps answers: <em>where did my tokens go, across apps and computers — and what waste can I cut?</em></p>
+
+  <p>Phase 1 includes:</p>
+  <ul>
+    <li><strong>Unified ledger</strong> — tokens and <strong>estimated</strong> USD by time, machine, app, model, and source</li>
+    <li><strong>Two capture paths</strong> — OpenAI-compatible local proxy + Claude Code JSONL adapter</li>
+    <li><strong>Three rule-based recommendations</strong> — frontier-for-trivial, full-document I/O, context bloat</li>
+    <li><strong>Privacy controls</strong> — metadata always; raw content optional (<code>off</code> / <code>local</code> / <code>cloud_ttl</code>)</li>
+    <li><strong>Self-hostable</strong> — MIT license, Docker Compose, Railway-ready</li>
+  </ul>
+
+  <div class="note">Money in the UI is always labeled <strong>estimated</strong>. Provider API keys never leave your machine.</div>
+
+  <h2>Architecture</h2>
+  <div class="arch">┌─────────────────────────────┐
+│  Claude Code / OpenAI SDK   │
+└─────────────┬───────────────┘
+              │  localhost proxy :8787  or  JSONL tail
+              ▼
+┌─────────────────────────────┐
+│  Local agent (per machine)  │
+│  proxy · adapters · privacy │
+│  SQLite outbox · heartbeat  │
+└─────────────┬───────────────┘
+              │  PAT  POST /v1/events, /v1/heartbeats
+              ▼
+┌─────────────────────────────┐
+│  TokenOps API (Hono)        │
+│  Postgres · aggregates      │
+│  rules · content TTL job    │
+└─────────────┬───────────────┘
+              │  session cookie
+              ▼
+┌─────────────────────────────┐
+│  Web dashboard (Vite/React) │
+│  Overview · Explore · Recs  │
+│  Machines · Settings        │
+└─────────────────────────────┘</div>
+
+  <table>
+    <thead><tr><th>Piece</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>@tokenops/agent</code></td><td>Capture, privacy gate, durable outbox, ship to cloud</td></tr>
+      <tr><td><code>@tokenops/api</code></td><td>Auth (session + PAT), ingest, aggregates, recommendations</td></tr>
+      <tr><td><code>@tokenops/web</code></td><td>Dashboard UI</td></tr>
+      <tr><td><code>@tokenops/shared</code></td><td>Event schema, features, pricing, rules, privacy</td></tr>
+    </tbody>
+  </table>
+
+  <p>Compose runs <strong>db</strong> + <strong>api</strong> + <strong>web</strong> (nginx serves the SPA and proxies <code>/v1</code> and <code>/health</code> for same-origin cookies).</p>
+
+  <h2>Quick start (Docker Compose)</h2>
+  <pre><code># From repo root
+export SESSION_SECRET="$(openssl rand -hex 32)"   # required in production
+docker compose -f deploy/docker-compose.yml up --build</code></pre>
+
+  <table>
+    <thead><tr><th>URL</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>http://localhost:8080</td><td>Dashboard (nginx → static web + API proxy)</td></tr>
+      <tr><td>http://localhost:3000</td><td>API direct (<code>GET /health</code> → <code>{ "ok": true }</code>)</td></tr>
+      <tr><td><code>localhost:5432</code></td><td>Postgres (<code>tokenops</code> / <code>tokenops</code> / <code>tokenops</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <p>Register the first (and only) user:</p>
+  <pre><code>curl -X POST http://localhost:8080/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}'</code></pre>
+
+  <p>After the first user, registration closes. Log in via the dashboard, then create an agent PAT:</p>
+  <pre><code># After login, session cookie is set. Create a personal access token:
+curl -X POST http://localhost:8080/v1/auth/pats \
+  -H 'content-type: application/json' \
+  -b cookies.txt \
+  -d '{"name":"laptop-agent"}'
+# → { "token": "…", "id": "…" }  — copy the token once; it is not shown again</code></pre>
+
+  <h2>Local agent: <code>tokenops init</code> + <code>agent run</code></h2>
+  <p>The agent runs on each machine that generates LLM traffic.</p>
+  <pre><code>pnpm install
+pnpm --filter @tokenops/agent build
+
+# Optional: link CLI globally, or use pnpm exec / node path
+pnpm --filter @tokenops/agent start -- init
+# Writes ~/.tokenops/config.toml and machine identity
+
+# Edit config: cloud URL, ingest token, machine name, privacy, sources
+#   cloud.url           = "http://127.0.0.1:3000"   # or your hosted API
+#   cloud.ingest_token  = "&lt;PAT from above&gt;"
+
+export OPENAI_API_KEY=sk-...   # used only for proxy upstream — never sent to TokenOps
+pnpm --filter @tokenops/agent start -- agent run</code></pre>
+
+  <table>
+    <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>tokenops init [--force]</code></td><td>Default <code>~/.tokenops/config.toml</code> + machine identity</td></tr>
+      <tr><td><code>tokenops agent run</code></td><td>Start proxy, Claude Code watcher, outbox flush, heartbeats</td></tr>
+      <tr><td><code>tokenops status</code></td><td>Queue depth, last error, config paths</td></tr>
+    </tbody>
+  </table>
+
+  <p>Default config sketch (<code>~/.tokenops/config.toml</code>):</p>
+  <pre><code>[cloud]
+url = "http://127.0.0.1:3000"
+ingest_token = ""
+
+[privacy]
+content_mode = "local"   # off | local | cloud_ttl
+content_ttl_days = 7
+
+[proxy]
+listen = "127.0.0.1:8787"
+upstream = "https://api.openai.com"
+# API key via OPENAI_API_KEY env — never synced to cloud
+
+[sources]
+openai_proxy = true
+claude_code = true
+
+[machine]
+name = "desktop"</code></pre>
+
+  <h2>Point OpenAI SDK at the local proxy</h2>
+  <p>With the agent running, point any OpenAI-compatible client at the proxy. The agent measures usage, extracts features, enqueues events, and forwards the request upstream with your local key.</p>
+  <pre><code>import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://127.0.0.1:8787/v1",
+  apiKey: process.env.OPENAI_API_KEY, // still required by many SDKs; proxy uses env upstream key
+});
+
+const res = await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from TokenOps" }],
+});</code></pre>
+  <ul>
+    <li>Default listen address: <code>127.0.0.1:8787</code></li>
+    <li>Phase 1 captures <strong><code>POST /v1/chat/completions</code></strong> (other <code>/v1/*</code> paths are proxied without usage capture)</li>
+    <li>Events use <code>app=openai-proxy</code></li>
+    <li>If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns</li>
+  </ul>
+
+  <h2>Claude Code JSONL path</h2>
+  <p>When <code>sources.claude_code = true</code>, the agent watches a usage JSONL file and maps each line into the shared event schema (<code>app=claude-code</code>).</p>
+  <p><strong>Default path:</strong> <code>~/.tokenops/claude-code-usage.jsonl</code></p>
+  <p>Each line is one JSON object. Required fields: <code>model</code>, <code>inputTokens</code> (or <code>input_tokens</code>), <code>outputTokens</code> (or <code>output_tokens</code>). Optional: <code>timestamp</code>, <code>sessionId</code>, <code>requestPreview</code> / <code>responsePreview</code>.</p>
+  <pre><code>{"timestamp":"2026-07-27T10:00:00.000Z","model":"claude-sonnet-4","inputTokens":1200,"outputTokens":350,"sessionId":"sess-1","requestPreview":"…","responsePreview":"…"}</code></pre>
+
+  <h3>End-to-end fixture path</h3>
+  <p>A checked-in sample log for tests and manual smoke:</p>
+  <pre><code>apps/agent/test/fixtures/claude-code-usage.jsonl</code></pre>
+  <p>To exercise the adapter against a running agent without live Claude Code:</p>
+  <pre><code># Agent must be running (tokenops agent run)
+cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usage.jsonl
+# Or append more lines — the watcher tails the file</code></pre>
+  <p>Then open the dashboard Explore view (or query <code>GET /v1/events</code>) after the next outbox flush (~5s).</p>
+  <blockquote>Phase 1 watches the default path under <code>~/.tokenops/</code>. If your Claude Code install writes elsewhere, symlink or copy into that path (a dedicated <code>claude_code_path</code> config field is a follow-up).</blockquote>
+
+  <h2>Privacy modes</h2>
+  <p>Configured under <code>[privacy]</code> in <code>config.toml</code>. <strong>Metadata + features always ship.</strong> Content (request/response bodies) is gated:</p>
+  <table>
+    <thead><tr><th>Mode</th><th>On device</th><th>Shipped to cloud</th></tr></thead>
+    <tbody>
+      <tr><td><code>off</code></td><td>No content stored</td><td>Features + metadata only</td></tr>
+      <tr><td><code>local</code> (default)</td><td>Content may be kept locally for inspection</td><td>Features + metadata only</td></tr>
+      <tr><td><code>cloud_ttl</code></td><td>Same as local extract</td><td>Content stored in cloud with <strong>7-day TTL</strong>, then deleted; aggregates/features remain</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Provider <strong>API keys never appear in ingest payloads</strong> (proxy tests assert this).</li>
+    <li>Cloud content rows expire via the API expire-content job; <code>has_content</code> is cleared on the usage event.</li>
+  </ul>
+
+  <h2>Free tier and self-host</h2>
+  <table>
+    <thead><tr><th>Mode</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Self-host</strong></td><td>Compose or your own Postgres + containers. <code>HOSTED_LIMITS</code> defaults <strong>false</strong> — unlimited machines; leave <code>RAW_EVENT_RETENTION_DAYS</code> unset for unlimited raw event retention.</td></tr>
+      <tr><td><strong>Hosted free tier</strong></td><td>Deploy with <code>HOSTED_LIMITS=true</code>: max <strong>3 machines</strong> per user (heartbeat/ingest returns <code>403 { "error": "machine_limit" }</code> for a 4th <code>machine_id</code>); default <strong>30-day</strong> raw <code>usage_events</code> retention. Daily aggregates are kept.</td></tr>
+    </tbody>
+  </table>
+  <p>Content TTL (7 days) applies whenever content was ingested under <code>cloud_ttl</code>, self-host or hosted.</p>
+
+  <h2>Dashboard</h2>
+  <ol>
+    <li><strong>Overview</strong> — tokens &amp; est. $ (today / 7d / 30d), top models</li>
+    <li><strong>Explore</strong> — filter by machine, app, model, time</li>
+    <li><strong>Recommendations</strong> — three efficiency rules with estimated waste; dismiss when done</li>
+    <li><strong>Machines</strong> — last seen, sync health</li>
+    <li><strong>Settings</strong> — budget banner threshold, retention notes</li>
+  </ol>
+
+  <h2>Environment variables</h2>
+  <h3>API (<code>apps/api</code>)</h3>
+  <table>
+    <thead><tr><th>Variable</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>DATABASE_URL</code></td><td>yes</td><td>—</td><td>Postgres connection string</td></tr>
+      <tr><td><code>SESSION_SECRET</code></td><td>yes</td><td>—</td><td>Secret for app / session integrity</td></tr>
+      <tr><td><code>PORT</code></td><td>no</td><td><code>3000</code></td><td>HTTP port</td></tr>
+      <tr><td><code>HOST</code></td><td>no</td><td><code>0.0.0.0</code></td><td>Bind address</td></tr>
+      <tr><td><code>HOSTED_LIMITS</code></td><td>no</td><td>unset/false</td><td>When <code>true</code>: max 3 machines; default 30-day raw event retention</td></tr>
+      <tr><td><code>RAW_EVENT_RETENTION_DAYS</code></td><td>no</td><td>unset</td><td>If set, delete <code>usage_events</code> older than N days (aggregates kept)</td></tr>
+      <tr><td><code>CORS_ORIGIN</code></td><td>no</td><td>unset</td><td>Single browser origin for credentialed CORS (prefer same-origin proxy)</td></tr>
+      <tr><td><code>BOOTSTRAP_EMAIL</code></td><td>no</td><td>—</td><td>Optional bootstrap email</td></tr>
+      <tr><td><code>BOOTSTRAP_PASSWORD</code></td><td>no</td><td>—</td><td>Optional bootstrap password</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Content TTL</h3>
+  <ul>
+    <li>Optional request/response bodies in <code>event_content</code> expire after <strong>7 days</strong> (set at ingest).</li>
+    <li>Hourly job (<code>apps/api/src/jobs/expire-content.ts</code>):
+      <ol>
+        <li><code>DELETE</code> expired <code>event_content</code>; set matching <code>usage_events.has_content = false</code></li>
+        <li>If <code>HOSTED_LIMITS=true</code> or <code>RAW_EVENT_RETENTION_DAYS</code> is set, delete old <code>usage_events</code> (default 30 days when hosted). <strong>Daily aggregates are never deleted by this job.</strong></li>
+      </ol>
+    </li>
+  </ul>
+
+  <h3>Web (<code>apps/web</code>)</h3>
+  <table>
+    <thead><tr><th>Variable</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>VITE_API_URL</code></td><td>no</td><td><code>""</code> (same origin)</td><td>API base URL at <strong>build</strong> time. Empty when nginx proxies <code>/v1</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Compose helpers</h3>
+  <p>See <code>deploy/env.example</code>. Compose defaults:</p>
+  <ul>
+    <li><code>DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops</code></li>
+    <li><code>SESSION_SECRET</code> from env or a dev placeholder (change for real use)</li>
+    <li>Optional vars (<code>BOOTSTRAP_*</code>, <code>CORS_ORIGIN</code>, <code>RAW_EVENT_RETENTION_DAYS</code>) are <strong>omitted</strong> when unset</li>
+  </ul>
+
+  <h2>Railway</h2>
+  <ol>
+    <li>New project → add <strong>Postgres</strong> plugin (<code>DATABASE_URL</code> injected).</li>
+    <li>Deploy API from repo root with <code>deploy/railway.toml</code> / <code>deploy/api.Dockerfile</code>.</li>
+    <li>Set <code>SESSION_SECRET</code>. For a hosted free tier set <code>HOSTED_LIMITS=true</code>.</li>
+    <li>Deploy web as a second service (<code>deploy/web.Dockerfile</code>) behind one public host that can reach <code>api:3000</code> on the private network, <strong>or</strong> host static assets and set <code>CORS_ORIGIN</code> + build <code>VITE_API_URL</code> to the API public URL (cookie <code>SameSite=Lax</code> cross-site needs careful setup — same-origin proxy is preferred).</li>
+  </ol>
+  <p>Health check path: <code>/health</code>.</p>
+
+  <h2>Development</h2>
+  <pre><code>pnpm install
+pnpm test                 # full monorepo Vitest suite
+pnpm build                # build all packages
+pnpm --filter @tokenops/api build
+pnpm --filter @tokenops/web build
+pnpm --filter @tokenops/agent build</code></pre>
+
+  <table>
+    <thead><tr><th>Package</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>packages/shared</code></td><td>Schema, pricing, features, rules — no I/O</td></tr>
+      <tr><td><code>apps/api</code></td><td>Needs <code>DATABASE_URL</code> + <code>SESSION_SECRET</code> for <code>pnpm --filter @tokenops/api dev</code></td></tr>
+      <tr><td><code>apps/agent</code></td><td>Unit tests mock upstream; no live provider keys in CI</td></tr>
+      <tr><td><code>apps/web</code></td><td><code>pnpm --filter @tokenops/web dev</code> for Vite (UI against Compose/Railway API preferred)</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Policy:</strong> automated tests run locally (Vitest + fixtures). Product verification (smoke, demos) uses Compose or Railway URLs — not ad-hoc localhost servers for “it works.”</p>
+
+  <p>Layout:</p>
+  <pre><code>tokenops/
+  packages/shared/     # Zod schemas, features, pricing, rules
+  apps/agent/          # CLI, proxy, Claude Code adapter, outbox
+  apps/api/            # Hono API + Drizzle + Postgres
+  apps/web/            # Vite + React dashboard
+  deploy/              # Compose, Dockerfiles, nginx, Railway
+  docs/superpowers/    # Design spec + implementation plan</code></pre>
+
+  <h2>License</h2>
+  <p>MIT — see <a href="./LICENSE">LICENSE</a>.</p>
+</main>
+</body>
+</html>
