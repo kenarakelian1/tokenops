@@ -107,6 +107,22 @@ export class Outbox {
     return row.n;
   }
 
+  /**
+   * Most recent non-null last_error among pending rows (for `tokenops status`).
+   * Returns null when no failures recorded.
+   */
+  latestError(): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT last_error FROM outbox
+         WHERE last_error IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get() as { last_error: string } | undefined;
+    return row?.last_error ?? null;
+  }
+
   close(): void {
     this.db.close();
   }
