@@ -110,8 +110,9 @@ export type MachineDto = {
 
 // --- Endpoint helpers ---
 
+/** Login sets the session cookie; body is id/email only — call getMe() for full profile. */
 export function login(email: string, password: string) {
-  return api<UserMe>("/v1/auth/login", {
+  return api<{ id: string; email: string }>("/v1/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });

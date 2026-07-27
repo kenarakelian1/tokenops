@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ApiError, login, type UserMe } from "../api/client";
+import { ApiError, getMe, login, type UserMe } from "../api/client";
 
 type Props = {
   onLoggedIn: (user: UserMe) => void;
@@ -16,7 +16,9 @@ export function Login({ onLoggedIn }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const user = await login(email.trim(), password);
+      // Login returns { id, email } only; hydrate budget/settings via /me.
+      await login(email.trim(), password);
+      const user = await getMe();
       onLoggedIn(user);
     } catch (err) {
       if (err instanceof ApiError) {
