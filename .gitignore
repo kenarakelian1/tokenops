@@ -1,0 +1,9 @@
+﻿node_modules
+dist
+.env
+.env.*
+*.db
+.tokenops
+coverage
+.worktrees
+.superpowers
