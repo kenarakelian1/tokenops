@@ -24,7 +24,11 @@ ENV VITE_API_URL=
 RUN pnpm --filter @tokenops/web build
 
 FROM nginx:1.27-alpine AS runner
-COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+# gettext provides envsubst
+RUN apk add --no-cache gettext
+COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
+# Compose-friendly default; override on Railway to *.railway.internal
+ENV API_UPSTREAM=tokenops-api:3000
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]

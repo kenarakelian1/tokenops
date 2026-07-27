@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { Context } from "hono";
 import type { AuthRepo } from "./repo.js";
 
 /** Cookie name for dashboard session. */
@@ -6,6 +7,14 @@ export const SESSION_COOKIE = "tokenops_session";
 
 /** Default session TTL: 30 days. */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Set Secure on cookies when behind HTTPS (proxy or COOKIE_SECURE=true). */
+export function cookieSecure(c: Context): boolean {
+  if (process.env.COOKIE_SECURE === "true") return true;
+  if (process.env.COOKIE_SECURE === "false") return false;
+  const proto = c.req.header("x-forwarded-proto") ?? "";
+  return proto.split(",")[0]?.trim().toLowerCase() === "https";
+}
 
 export type SessionRecord = {
   id: string;

@@ -6,6 +6,7 @@ import { createPat } from "../auth/pat.js";
 import { requireSession } from "../auth/middleware.js";
 import type { AuthRepo } from "../auth/repo.js";
 import {
+  cookieSecure,
   createSession,
   deleteSession,
   SESSION_COOKIE,
@@ -54,6 +55,7 @@ authRoutes.post("/register", async (c) => {
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
+    secure: cookieSecure(c),
     expires: session.expiresAt,
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
@@ -88,6 +90,7 @@ authRoutes.post("/login", async (c) => {
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
+    secure: cookieSecure(c),
     expires: session.expiresAt,
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
