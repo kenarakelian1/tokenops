@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Contributing to TokenOps</title>
+  <style>
+    :root { --bg: #f7f5f0; --fg: #1a1a1a; --muted: #5c5c5c; --border: #d9d4c8; --accent: #0f6b5c; --code: #eee9df; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #141412; --fg: #eceae4; --muted: #a8a59c; --border: #2e2d28; --accent: #5dceb8; --code: #22211c; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: Georgia, serif; line-height: 1.55; }
+    main { max-width: 44rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+    h1, h2 { font-family: system-ui, sans-serif; }
+    code, pre { font-family: ui-monospace, monospace; font-size: 0.88rem; background: var(--code); }
+    code { padding: 0.1rem 0.35rem; border-radius: 3px; }
+    pre { padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; border: 1px solid var(--border); }
+    pre code { background: none; padding: 0; }
+    table { width: 100%; border-collapse: collapse; font-family: system-ui, sans-serif; font-size: 0.92rem; }
+    th, td { border: 1px solid var(--border); padding: 0.4rem 0.55rem; text-align: left; }
+    a { color: var(--accent); }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Contributing to TokenOps</h1>
+  <p class="muted">Open-source multi-machine token ledger with efficiency recommendations.</p>
+  <h2>Development</h2>
+  <pre><code>pnpm install
+pnpm test
+pnpm --filter @tokenops/shared build</code></pre>
+  <table>
+    <thead><tr><th>Path</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>packages/shared</code></td><td>Schema, features, rules, pricing</td></tr>
+      <tr><td><code>apps/api</code></td><td>Hono API + Postgres</td></tr>
+      <tr><td><code>apps/agent</code></td><td>Local proxy, adapters, outbox</td></tr>
+      <tr><td><code>apps/web</code></td><td>Dashboard</td></tr>
+      <tr><td><code>deploy/</code></td><td>Compose + Railway</td></tr>
+    </tbody>
+  </table>
+  <h2>Guidelines</h2>
+  <ul>
+    <li>Small, focused PRs</li>
+    <li>Vitest for features and bug regressions</li>
+    <li>Provider API keys never leave the local agent</li>
+    <li>Money labeled <strong>estimated</strong> in the UI</li>
+  </ul>
+  <p>MIT — see <code>LICENSE</code>.</p>
+</main>
+</body>
+</html>

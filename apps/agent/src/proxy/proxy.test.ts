@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { UsageEvent } from "@tokenops/shared";
 import { startProxy } from "./server.js";
 import {
+  buildUsageEvent,
   estimateTokensFromText,
   parseSseUsage,
   providerFromUpstream,
+  sessionIdFromRequest,
 } from "./handler.js";
 
 const servers: http.Server[] = [];
@@ -41,6 +43,54 @@ describe("providerFromUpstream", () => {
 
   it("falls back for other hosts", () => {
     expect(providerFromUpstream("http://127.0.0.1:9999")).toBe("127.0.0.1");
+  });
+});
+
+describe("sessionIdFromRequest", () => {
+  it("reads session_id and metadata", () => {
+    expect(
+      sessionIdFromRequest({
+        model: "x",
+        session_id: "s1",
+        messages: [],
+      }),
+    ).toBe("s1");
+    expect(
+      sessionIdFromRequest({
+        model: "x",
+        metadata: { sessionId: "s2" },
+        messages: [],
+      }),
+    ).toBe("s2");
+    expect(
+      sessionIdFromRequest({
+        model: "x",
+        user: "u1",
+        messages: [],
+      }),
+    ).toBe("u1");
+  });
+});
+
+describe("buildUsageEvent session", () => {
+  it("attaches sessionId when present on request", () => {
+    const event = buildUsageEvent({
+      machineId: "m",
+      machineName: "t",
+      upstream: "https://api.openai.com",
+      requestBody: {
+        model: "gpt-4o-mini",
+        session_id: "sess-abc",
+        messages: [{ role: "user", content: "hi" }],
+      },
+      responseBody: {
+        id: "chatcmpl_1",
+        choices: [{ message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      },
+      latencyMs: 10,
+    });
+    expect(event.sessionId).toBe("sess-abc");
   });
 });
 
