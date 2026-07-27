@@ -106,6 +106,7 @@ export async function runAgent(
       machineId: identity.machineId,
       machineName: identity.machineName,
       tokenopsDir,
+      claudeCodePath: config.sources.claudeCodePath,
     });
   }
 
@@ -191,6 +192,8 @@ async function maybeStartClaudeAdapter(args: {
   machineId: string;
   machineName: string;
   tokenopsDir: string;
+  /** From config `sources.claude_code_path`; empty uses default under tokenops dir. */
+  claudeCodePath?: string;
 }): Promise<(() => void) | null> {
   const adapterJs = fileURLToPath(
     new URL("./adapters/claude-code.js", import.meta.url),
@@ -228,8 +231,11 @@ async function maybeStartClaudeAdapter(args: {
       return null;
     }
 
-    // Default log path until Task 11 adds a config field.
-    const logPath = join(args.tokenopsDir, "claude-code-usage.jsonl");
+    const configured = args.claudeCodePath?.trim();
+    const logPath =
+      configured && configured.length > 0
+        ? configured
+        : join(args.tokenopsDir, "claude-code-usage.jsonl");
     if (!existsSync(logPath)) {
       console.log(
         `[tokenops] claude-code adapter ready; waiting for log at ${logPath}`,

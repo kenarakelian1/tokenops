@@ -58,6 +58,7 @@ upstream = "https://api.openai.com/v1"
 [sources]
 openai_proxy = true
 claude_code = false
+claude_code_path = "C:/logs/claude-usage.jsonl"
 
 [machine]
 name = "desktop-main"
@@ -72,6 +73,7 @@ name = "desktop-main"
     expect(cfg.privacy.contentTtlDays).toBe(14);
     expect(cfg.proxy.listen).toBe("0.0.0.0:9000");
     expect(cfg.sources.claudeCode).toBe(false);
+    expect(cfg.sources.claudeCodePath).toBe("C:/logs/claude-usage.jsonl");
     expect(cfg.machine.name).toBe("desktop-main");
   });
 

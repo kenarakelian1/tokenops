@@ -100,6 +100,31 @@ export function fingerprintRequest(
     .slice(0, 32);
 }
 
+/**
+ * Optional session correlation from common client fields.
+ * Supports session_id / sessionId, metadata.session_id, and OpenAI `user`.
+ */
+export function sessionIdFromRequest(
+  body: ChatCompletionRequest,
+): string | undefined {
+  if (typeof body.session_id === "string" && body.session_id) {
+    return body.session_id;
+  }
+  if (typeof body.sessionId === "string" && body.sessionId) {
+    return body.sessionId;
+  }
+  const meta = body.metadata;
+  if (meta && typeof meta === "object") {
+    const m = meta as Record<string, unknown>;
+    if (typeof m.session_id === "string" && m.session_id) return m.session_id;
+    if (typeof m.sessionId === "string" && m.sessionId) return m.sessionId;
+  }
+  if (typeof body.user === "string" && body.user) {
+    return body.user;
+  }
+  return undefined;
+}
+
 export type BuildUsageEventInput = {
   machineId: string;
   machineName: string;
@@ -177,6 +202,7 @@ export function buildUsageEvent(input: BuildUsageEventInput): UsageEvent {
   });
 
   const costUsd = estimateCostUsd(model, inputTokens, outputTokens);
+  const sessionId = sessionIdFromRequest(input.requestBody);
 
   // Content retained on event for local privacy gate; ship path strips as needed.
   const content = {
@@ -204,6 +230,9 @@ export function buildUsageEvent(input: BuildUsageEventInput): UsageEvent {
     hasContent: true,
     content,
   };
+  if (sessionId) {
+    event.sessionId = sessionId;
+  }
 
   return event;
 }

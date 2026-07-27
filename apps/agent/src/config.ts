@@ -21,6 +21,8 @@ export type TokenOpsConfig = {
   sources: {
     openaiProxy: boolean;
     claudeCode: boolean;
+    /** Path to Claude Code usage JSONL (file or directory). Empty = default under tokenops dir. */
+    claudeCodePath: string;
   };
   machine: {
     name: string;
@@ -57,6 +59,7 @@ export function defaultConfig(): TokenOpsConfig {
     sources: {
       openaiProxy: true,
       claudeCode: true,
+      claudeCodePath: "",
     },
     machine: {
       name: "desktop",
@@ -67,7 +70,11 @@ export function defaultConfig(): TokenOpsConfig {
 type TomlCloud = { url?: string; ingest_token?: string };
 type TomlPrivacy = { content_mode?: string; content_ttl_days?: number };
 type TomlProxy = { listen?: string; upstream?: string };
-type TomlSources = { openai_proxy?: boolean; claude_code?: boolean };
+type TomlSources = {
+  openai_proxy?: boolean;
+  claude_code?: boolean;
+  claude_code_path?: string;
+};
 type TomlMachine = { name?: string };
 
 type TomlRoot = {
@@ -111,6 +118,10 @@ function fromToml(raw: TomlRoot): TokenOpsConfig {
     sources: {
       openaiProxy: raw.sources?.openai_proxy ?? base.sources.openaiProxy,
       claudeCode: raw.sources?.claude_code ?? base.sources.claudeCode,
+      claudeCodePath:
+        typeof raw.sources?.claude_code_path === "string"
+          ? raw.sources.claude_code_path
+          : base.sources.claudeCodePath,
     },
     machine: {
       name: raw.machine?.name ?? base.machine.name,
@@ -135,6 +146,7 @@ function toToml(config: TokenOpsConfig): string {
     sources: {
       openai_proxy: config.sources.openaiProxy,
       claude_code: config.sources.claudeCode,
+      claude_code_path: config.sources.claudeCodePath,
     },
     machine: {
       name: config.machine.name,

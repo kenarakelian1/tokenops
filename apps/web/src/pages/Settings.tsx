@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import {
+  createPat,
   getMe,
   putSettings,
   type UserMe,
@@ -19,6 +20,11 @@ export function Settings({ user, onUserUpdated }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [patName, setPatName] = useState("agent");
+  const [patBusy, setPatBusy] = useState(false);
+  const [patError, setPatError] = useState<string | null>(null);
+  const [createdToken, setCreatedToken] = useState<string | null>(null);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -51,6 +57,22 @@ export function Settings({ user, onUserUpdated }: Props) {
     }
   }
 
+  async function onCreatePat(e: FormEvent) {
+    e.preventDefault();
+    setPatBusy(true);
+    setPatError(null);
+    setCreatedToken(null);
+    try {
+      const name = patName.trim() || "agent";
+      const res = await createPat(name);
+      setCreatedToken(res.token);
+    } catch (err) {
+      setPatError(err instanceof Error ? err.message : "Failed to create token");
+    } finally {
+      setPatBusy(false);
+    }
+  }
+
   return (
     <div>
       <h1>Settings</h1>
@@ -78,6 +100,37 @@ export function Settings({ user, onUserUpdated }: Props) {
         {message ? <div className="muted">{message}</div> : null}
         <button className="btn" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save"}
+        </button>
+      </form>
+
+      <h2>Agent access token</h2>
+      <p className="muted" style={{ maxWidth: 40 + "rem" }}>
+        Create a personal access token for the local agent (
+        <code>cloud.ingest_token</code>). The raw token is shown once — copy it
+        into <code>~/.tokenops/config.toml</code>.
+      </p>
+      <form className="form" onSubmit={(e) => void onCreatePat(e)}>
+        <label>
+          Token name
+          <input
+            type="text"
+            value={patName}
+            onChange={(e) => setPatName(e.target.value)}
+            placeholder="agent"
+            maxLength={128}
+          />
+        </label>
+        {patError ? <div className="error">{patError}</div> : null}
+        {createdToken ? (
+          <div className="card" style={{ maxWidth: 480 }}>
+            <div className="label">New token (copy now)</div>
+            <code style={{ wordBreak: "break-all", fontSize: "0.85rem" }}>
+              {createdToken}
+            </code>
+          </div>
+        ) : null}
+        <button className="btn" type="submit" disabled={patBusy}>
+          {patBusy ? "Creating…" : "Create token"}
         </button>
       </form>
 

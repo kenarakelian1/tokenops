@@ -180,6 +180,14 @@ export function putSettings(body: { budgetUsdMonthly: number | null }) {
   });
 }
 
+/** Create agent ingest PAT. Token is shown once. */
+export function createPat(name: string) {
+  return api<{ token: string; id: string }>("/v1/auth/pats", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
 /** Format estimated USD for display. Always labeled estimated in UI. */
 export function formatUsd(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";

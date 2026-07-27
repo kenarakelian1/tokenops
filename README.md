@@ -132,10 +132,14 @@ upstream = "https://api.openai.com"
 [sources]
 openai_proxy = true
 claude_code = true
+# optional: override Claude Code JSONL path (file or directory)
+# claude_code_path = "/path/to/claude-code-usage.jsonl"
 
 [machine]
 name = "desktop"
 ```
+
+Create an ingest PAT from the dashboard **Settings** page (or `POST /v1/auth/pats` while logged in).
 
 ## Point OpenAI SDK at the local proxy
 
@@ -152,19 +156,24 @@ const client = new OpenAI({
 const res = await client.chat.completions.create({
   model: "gpt-4o-mini",
   messages: [{ role: "user", content: "Hello from TokenOps" }],
+  // Optional: correlates multi-turn context for the context_bloat rule
+  // @ts-expect-error session_id is TokenOps-friendly metadata
+  session_id: "my-coding-session",
 });
 ```
 
 - Default listen address: `127.0.0.1:8787`
 - Phase 1 captures **`POST /v1/chat/completions`** (other `/v1/*` paths are proxied without usage capture)
 - Events use `app=openai-proxy`
+- Optional `session_id` / `sessionId` / `metadata.session_id` / OpenAI `user` → event `sessionId`
 - If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns
 
 ## Claude Code JSONL path
 
 When `sources.claude_code = true`, the agent watches a usage JSONL file and maps each line into the shared event schema (`app=claude-code`).
 
-**Default path:** `~/.tokenops/claude-code-usage.jsonl`
+**Default path:** `~/.tokenops/claude-code-usage.jsonl`  
+**Override:** set `sources.claude_code_path` in config (absolute path to a file or directory).
 
 Each line is one JSON object. Required fields: `model`, `inputTokens` (or `input_tokens`), `outputTokens` (or `output_tokens`). Optional: `timestamp`, `sessionId`, `requestPreview` / `responsePreview`.
 
@@ -191,8 +200,6 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 ```
 
 Then open the dashboard Explore view (or query `GET /v1/events`) after the next outbox flush (~5s).
-
-> Phase 1 watches the default path under `~/.tokenops/`. If your Claude Code install writes elsewhere, symlink or copy into that path (a dedicated `claude_code_path` config field is a follow-up).
 
 ## Privacy modes
 
@@ -226,7 +233,7 @@ After Compose is up and you have logged in:
 2. **Explore** — filter by machine, app, model, time
 3. **Recommendations** — three efficiency rules with estimated waste; dismiss when done
 4. **Machines** — last seen, sync health
-5. **Settings** — budget banner threshold, retention notes
+5. **Settings** — budget banner threshold, **create agent PAT**, retention notes
 
 ## Environment variables
 
@@ -267,10 +274,22 @@ See `deploy/env.example`. Compose defaults:
 
 ## Railway
 
+Hosted free-tier (this repo’s project):
+
+| Service | URL |
+|---------|-----|
+| **Dashboard** | https://tokenops-web-production.up.railway.app |
+| **API** | https://tokenops-api-production.up.railway.app |
+| **Health** | https://tokenops-api-production.up.railway.app/health |
+
+Prefer the **web** URL for login (nginx proxies `/v1` to `tokenops-api` on the private network — cookies stay same-origin).
+
+Self-deploy:
+
 1. New project → add **Postgres** plugin (`DATABASE_URL` injected).
-2. Deploy API from repo root with `deploy/railway.toml` / `deploy/api.Dockerfile`.
-3. Set `SESSION_SECRET`. For a hosted free tier set `HOSTED_LIMITS=true`.
-4. Deploy web as a second service (`deploy/web.Dockerfile`) behind one public host that can reach `api:3000` on the private network, **or** host static assets and set `CORS_ORIGIN` + build `VITE_API_URL` to the API public URL (cookie `SameSite=Lax` cross-site needs careful setup — same-origin proxy is preferred).
+2. Deploy API from repo root with `railway.toml` / `deploy/api.Dockerfile`.
+3. Set `SESSION_SECRET`. For hosted free tier set `HOSTED_LIMITS=true`.
+4. Deploy web as a second service (`deploy/web.Dockerfile`) so nginx can reach `tokenops-api:3000` on the private network.
 
 Health check path: `/health`.
 
