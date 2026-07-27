@@ -3,12 +3,19 @@ import { createApp } from "./app.js";
 import { createDb } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { loadEnv } from "./env.js";
+import { startExpireContentJob } from "./jobs/expire-content.js";
 
 async function main(): Promise<void> {
   const env = loadEnv();
   await runMigrations(env.DATABASE_URL);
   const { db } = createDb(env.DATABASE_URL);
-  const app = createApp({ db });
+  const app = createApp({
+    db,
+    hostedLimits: env.HOSTED_LIMITS,
+    corsOrigin: env.CORS_ORIGIN,
+  });
+
+  startExpireContentJob(db);
 
   serve(
     {

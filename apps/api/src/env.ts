@@ -10,6 +10,18 @@ const envSchema = z.object({
   BOOTSTRAP_PASSWORD: z.string().min(1).optional(),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default("0.0.0.0"),
+  /** When "true", enforce free-tier machine limit and 30d raw event retention. */
+  HOSTED_LIMITS: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  /** Override raw usage_events retention (days). Unset = unlimited (self-host) or 30 when HOSTED_LIMITS. */
+  RAW_EVENT_RETENTION_DAYS: z.coerce.number().int().nonnegative().optional(),
+  /**
+   * Browser origin allowed for credentialed CORS (e.g. https://app.example.com).
+   * Prefer same-origin reverse proxy (empty) so cookies work without CORS.
+   */
+  CORS_ORIGIN: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
