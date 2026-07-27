@@ -19,3 +19,14 @@ export {
 } from "./schema/event.js";
 export { extractFeatures, type ExtractFeaturesInput } from "./features.js";
 export { applyPrivacy, type ContentMode } from "./privacy.js";
+export {
+  runRules,
+  FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS,
+  FULL_DOC_MIN_PROMPT_CHARS,
+  FULL_DOC_MIN_DUMP_SCORE,
+  BLOAT_MIN_EVENTS,
+  BLOAT_INPUT_GROWTH_RATIO,
+  BLOAT_MAX_NEW_CONTENT_RATIO,
+  type RuleHit,
+  type RuleId,
+} from "./rules/index.js";
