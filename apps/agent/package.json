@@ -6,5 +6,9 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@tokenops/shared": "workspace:^",
+    "smol-toml": "^1.7.1"
   }
 }
