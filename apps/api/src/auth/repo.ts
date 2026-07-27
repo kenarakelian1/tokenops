@@ -14,6 +14,10 @@ export type AuthRepo = {
   insertUser(email: string, passwordHash: string): Promise<AuthUser>;
   getUserByEmail(email: string): Promise<AuthUser | null>;
   getUserById(id: string): Promise<AuthUser | null>;
+  updateBudgetUsdMonthly(
+    userId: string,
+    budgetUsdMonthly: string | null,
+  ): Promise<void>;
   insertSession(id: string, userId: string, expiresAt: Date): Promise<void>;
   getSession(
     id: string,
@@ -80,6 +84,13 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         passwordHash: row.passwordHash,
         budgetUsdMonthly: row.budgetUsdMonthly,
       };
+    },
+
+    async updateBudgetUsdMonthly(userId, budgetUsdMonthly) {
+      await db
+        .update(users)
+        .set({ budgetUsdMonthly })
+        .where(eq(users.id, userId));
     },
 
     async insertSession(id, userId, expiresAt) {
@@ -163,6 +174,13 @@ export function createMemoryAuthRepo(): AuthRepo {
 
     async getUserById(id) {
       return userMap.get(id) ?? null;
+    },
+
+    async updateBudgetUsdMonthly(userId, budgetUsdMonthly) {
+      const user = userMap.get(userId);
+      if (user) {
+        user.budgetUsdMonthly = budgetUsdMonthly;
+      }
     },
 
     async insertSession(id, userId, expiresAt) {
