@@ -32,6 +32,19 @@ function clamp01(n: number): number {
 }
 
 /**
+ * Fraction of current prompt that appears new vs a prior turn's prompt size.
+ * Low values (near 0) mean mostly repeated / accumulated context.
+ */
+export function deriveNewContentRatio(
+  promptChars: number,
+  sessionPriorPromptChars: number,
+): number {
+  return clamp01(
+    1 - sessionPriorPromptChars / Math.max(promptChars, 1),
+  );
+}
+
+/**
  * Path-like line density: fraction of non-empty lines that look like file paths
  * (drive letters, Unix roots, or common relative path patterns with a slash).
  * Bonus contribution capped at 0.3 for fileDumpScore.
@@ -89,8 +102,9 @@ export function extractFeatures(input: ExtractFeaturesInput): UsageFeatures {
   };
 
   if (input.sessionPriorPromptChars !== undefined) {
-    features.newContentRatio = clamp01(
-      1 - input.sessionPriorPromptChars / Math.max(promptChars, 1),
+    features.newContentRatio = deriveNewContentRatio(
+      promptChars,
+      input.sessionPriorPromptChars,
     );
   }
 

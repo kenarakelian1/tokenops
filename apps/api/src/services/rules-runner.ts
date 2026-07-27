@@ -1,9 +1,39 @@
-import { runRules, type RuleHit, type UsageEvent } from "@tokenops/shared";
+import {
+  deriveNewContentRatio,
+  runRules,
+  type RuleHit,
+  type UsageEvent,
+} from "@tokenops/shared";
 import type { EventsRepo } from "./events-repo.js";
+
+/**
+ * Ensure newContentRatio is present for session-aware rules.
+ * Live capture paths (proxy / Claude adapter) often omit sessionPriorPromptChars,
+ * so derive from the most recent prior event's promptChars when missing.
+ * Expects sessionContext in chronological (oldest-first) order.
+ */
+export function enrichEventForRules(
+  event: UsageEvent,
+  sessionContext: UsageEvent[],
+): UsageEvent {
+  if (event.features.newContentRatio !== undefined) return event;
+  if (sessionContext.length === 0) return event;
+
+  const prior = sessionContext[sessionContext.length - 1]!;
+  const newContentRatio = deriveNewContentRatio(
+    event.features.promptChars,
+    prior.features.promptChars,
+  );
+  return {
+    ...event,
+    features: { ...event.features, newContentRatio },
+  };
+}
 
 /**
  * Run shared efficiency rules for an event and upsert open recommendations.
  * Dedupe key: event.eventId (unique with user_id + rule_id).
+ * sessionContext must be chronological (oldest first).
  */
 export async function applyRulesForEvent(
   repo: EventsRepo,
@@ -11,7 +41,8 @@ export async function applyRulesForEvent(
   event: UsageEvent,
   sessionContext: UsageEvent[],
 ): Promise<RuleHit[]> {
-  const hits = runRules(event, sessionContext);
+  const enriched = enrichEventForRules(event, sessionContext);
+  const hits = runRules(enriched, sessionContext);
   for (const hit of hits) {
     await repo.upsertRecommendation({
       userId,

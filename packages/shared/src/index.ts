@@ -17,7 +17,11 @@ export {
   type UsageFeatures,
   type IngestBatch,
 } from "./schema/event.js";
-export { extractFeatures, type ExtractFeaturesInput } from "./features.js";
+export {
+  extractFeatures,
+  deriveNewContentRatio,
+  type ExtractFeaturesInput,
+} from "./features.js";
 export { applyPrivacy, type ContentMode } from "./privacy.js";
 export {
   runRules,

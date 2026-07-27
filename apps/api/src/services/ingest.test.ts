@@ -126,6 +126,59 @@ describe("ingest", () => {
     expect(machines[0].name).toBe("A");
   });
 
+  it("fires context_bloat from session history without injected newContentRatio", async () => {
+    // Live capture never sets newContentRatio; API must derive it from prior
+    // promptChars and pass chronological session context to the rule.
+    const repo = createMemoryEventsRepo();
+    const userId = "user-1";
+    const sessionId = "sess-bloat";
+
+    const baseFeatures = {
+      responseChars: 50,
+      messageCount: 4,
+      codeFenceCount: 0,
+      largePasteScore: 0,
+      fileDumpScore: 0,
+      modelTier: "small" as const,
+      // deliberately omit newContentRatio
+    };
+
+    await ingest(repo, userId, {
+      events: [
+        sampleEvent("b1", {
+          sessionId,
+          timestamp: "2026-07-01T12:00:00.000Z",
+          inputTokens: 1000,
+          outputTokens: 50,
+          costUsd: 0.002,
+          features: { ...baseFeatures, promptChars: 10_000 },
+        }),
+        sampleEvent("b2", {
+          sessionId,
+          timestamp: "2026-07-01T12:01:00.000Z",
+          inputTokens: 1200,
+          outputTokens: 50,
+          costUsd: 0.002,
+          features: { ...baseFeatures, promptChars: 11_000 },
+        }),
+        sampleEvent("b3", {
+          sessionId,
+          timestamp: "2026-07-01T12:02:00.000Z",
+          inputTokens: 2000,
+          outputTokens: 50,
+          costUsd: 0.004,
+          features: { ...baseFeatures, promptChars: 12_000 },
+        }),
+      ],
+    });
+
+    const recs = await repo.listRecommendations(userId);
+    expect(recs.some((r) => r.ruleId === "context_bloat")).toBe(true);
+    const bloat = recs.find((r) => r.ruleId === "context_bloat")!;
+    // Waste vs early-session baseline (b1), not the newest prior (b2).
+    expect(bloat.estimatedWastedTokens).toBe(1000);
+  });
+
   it("rejects new machine when HOSTED_LIMITS and already at 3", async () => {
     const repo = createMemoryEventsRepo();
     const userId = "user-1";

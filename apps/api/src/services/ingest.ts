@@ -104,10 +104,12 @@ async function loadSessionContext(
     SESSION_CONTEXT_LIMIT + 1,
     new Date(event.timestamp),
   );
-  // Exclude the just-inserted current event; keep prior session history.
+  // listSessionEvents is newest-first; reverse to chronological ASC so
+  // context_bloat can use [0] as the early-session baseline.
   return rows
     .filter((e) => e.eventId !== event.eventId)
-    .slice(0, SESSION_CONTEXT_LIMIT);
+    .slice(0, SESSION_CONTEXT_LIMIT)
+    .reverse();
 }
 
 export async function assertMachineAllowed(
