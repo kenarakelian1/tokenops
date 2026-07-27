@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TokenOps Design Spec — 2026-07-27</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>TokenOps Design Spec</h1>
+  <p class="meta"><strong>Date:</strong> 2026-07-27 · <strong>Status:</strong> Draft for user review · <strong>Repo:</strong> tokenops (greenfield monorepo)</p>
+
+  <h2>1. Problem</h2>
+  <p>Token spend is fragmented across providers, coding agents, and machines. Vendor dashboards show invoices, not <em>why</em> tokens are wasted (frontier model for trivial tasks, full-document I/O, context bloat). There is no single ledger that spans apps and computers with actionable efficiency advice.</p>
+
+  <h2>2. Goals</h2>
+  <h3>Product goals</h3>
+  <ul>
+    <li><strong>Unified ledger:</strong> tokens and estimated cost by time, machine, app, model, and source.</li>
+    <li><strong>Cross-machine:</strong> one account merges usage from every computer running the agent.</li>
+    <li><strong>Inspection:</strong> request-level features (and optional content) power efficiency recommendations.</li>
+    <li><strong>Open source + free tier:</strong> full stack OSS and self-hostable; hosted free tier is convenience, not a closed core.</li>
+  </ul>
+  <h3>Phase 1 success</h3>
+  <ol>
+    <li>Credible multi-machine ledger (tokens + estimated $).</li>
+    <li>Two capture paths: OpenAI-compatible local proxy + Claude Code adapter.</li>
+    <li>Three high-confidence rule-based recommendations with estimated savings.</li>
+    <li>Configurable privacy on the local agent (metadata always; content optional with TTL).</li>
+  </ol>
+  <h3>Non-goals (Phase 1)</h3>
+  <ul>
+    <li>Cursor, Gemini, browser-chat, or other adapters.</li>
+    <li>Multi-tenant orgs, SSO, invites, roles.</li>
+    <li>Automatic model routing (observe + advise only).</li>
+    <li>LLM-as-judge recommendations (hook-ready later).</li>
+    <li>Perfect provider billing parity.</li>
+    <li>Mobile apps or advanced BI.</li>
+  </ul>
+
+  <h2>3. Users and distribution</h2>
+  <table>
+    <thead><tr><th>Aspect</th><th>Decision</th></tr></thead>
+    <tbody>
+      <tr><td>v1 users</td><td>Single user per account; many machines and apps</td></tr>
+      <tr><td>License</td><td>MIT (default) or Apache-2.0 if patent grant preferred</td></tr>
+      <tr><td>Local app</td><td>Open source agent per machine</td></tr>
+      <tr><td>Cloud</td><td>Same codebase self-hosted (Docker Compose) or hosted free tier</td></tr>
+      <tr><td>Later</td><td>Free tier limits on hosted; self-host unlimited by software</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. Architecture</h2>
+  <h3>Shape: sidecar agent + thin API + web dashboard</h3>
+  <div class="arch">┌─────────────────────────────┐     ┌──────────────────────────────┐
+│  Machine (local agent)      │     │  Cloud / self-host           │
+│  • OpenAI-compatible proxy  │────▶│  API (ingest, query, recs)   │
+│  • Claude Code adapter      │     │  Postgres (ledger + aggs)    │
+│  • Privacy / retention cfg  │     │  Rule engine (efficiency)    │
+│  • Offline queue            │     │  Web dashboard               │
+│  • Machine identity         │     │  Auth (single-user v1)       │
+└─────────────────────────────┘     └──────────────────────────────┘</div>
+
+  <h3>Component responsibilities</h3>
+  <table>
+    <thead><tr><th>Piece</th><th>Does</th><th>Does not (v1)</th></tr></thead>
+    <tbody>
+      <tr><td>Local agent</td><td>Capture, privacy gate, tag machine/app, queue &amp; ship</td><td>Host multi-machine dashboard</td></tr>
+      <tr><td>Proxy</td><td>OpenAI-compatible chat/completions; measure tokens; optional body retention</td><td>Every proprietary protocol</td></tr>
+      <tr><td>Claude Code adapter</td><td>Normalize usage into shared event schema</td><td>Full IDE marketplace</td></tr>
+      <tr><td>Cloud API</td><td>Auth, ingest, aggregate, rules, dashboard data</td><td>Multi-tenant billing</td></tr>
+      <tr><td>Dashboard</td><td>Spend/tokens, breakdowns, recs, machines</td><td>Fancy BI</td></tr>
+      <tr><td>Rule engine</td><td>Three efficiency rules on features</td><td>LLM-as-judge everywhere</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Trust and privacy</h3>
+  <ul>
+    <li><strong>Upstream provider API keys stay on the machine only.</strong> Never sent to cloud.</li>
+    <li>Cloud always receives <strong>metadata + derived features</strong>.</li>
+    <li>Content modes: <code>off</code> | <code>local</code> | <code>cloud_ttl</code> (short retention then drop).</li>
+    <li>Config: <code>~/.tokenops/config.toml</code>.</li>
+  </ul>
+
+  <h2>5. Event model</h2>
+  <p>Every observed call becomes a <strong>usage event</strong>. Optional <strong>payload</strong> is separate and TTL-scoped.</p>
+  <h3>Usage event (always)</h3>
+  <p><code>event_id</code>, <code>timestamp</code>, <code>machine_id</code>, <code>machine_name</code>, <code>app</code>, <code>provider</code>, <code>model</code>, <code>input_tokens</code>, <code>output_tokens</code>, <code>cost_usd</code> (nullable estimate), <code>latency_ms</code>, <code>session_id</code>, <code>features</code>, <code>has_content</code>.</p>
+  <h3>Features (always)</h3>
+  <ul>
+    <li>Prompt/response character lengths, message count</li>
+    <li>Large paste / code-fence / file-dump signals</li>
+    <li>Model tier (frontier / mid / small)</li>
+    <li>Session context-growth signal when <code>session_id</code> present</li>
+  </ul>
+  <h3>Idempotency &amp; cost</h3>
+  <p><code>event_id</code> is a stable hash for upsert-safe ingest. Cost uses a shared price table with overrides; UI labels money as <strong>estimated</strong>.</p>
+
+  <h2>6. Local agent</h2>
+  <ul>
+    <li><strong>Proxy</strong> on <code>127.0.0.1:8787</code> — <code>/v1/chat/completions</code> required; embeddings optional.</li>
+    <li><strong>Claude Code adapter</strong> — same event schema; hooks preferred, logs as fallback (implementation spike).</li>
+    <li><strong>Outbox</strong> — SQLite with exponential backoff.</li>
+    <li><strong>CLI</strong> — <code>tokenops status</code>, <code>tokenops agent run</code>, config init.</li>
+  </ul>
+  <p>Provider keys never synced. Cloud down → queue grows; extract errors never break proxied requests.</p>
+
+  <h2>7. Cloud API and dashboard</h2>
+  <h3>API</h3>
+  <ul>
+    <li><code>POST /v1/events</code> — batch ingest (agent PAT)</li>
+    <li><code>GET /v1/aggregates</code>, <code>GET /v1/events</code></li>
+    <li><code>GET/POST /v1/recommendations</code></li>
+    <li><code>POST /v1/heartbeats</code>, <code>GET /health</code></li>
+  </ul>
+  <h3>Auth</h3>
+  <p>Single-user; dashboard session (email/password or magic link); agent personal access token. No paid IdP required for self-host.</p>
+  <h3>Dashboard screens</h3>
+  <ol>
+    <li>Overview — tokens &amp; est. $, top models, soft budget banner</li>
+    <li>Explore — filters and event table</li>
+    <li>Recommendations — tips, savings, dismiss</li>
+    <li>Machines &amp; sources — last seen, sync health</li>
+    <li>Settings — price overrides, budget threshold</li>
+  </ol>
+  <h3>Hosted free tier (suggested)</h3>
+  <table>
+    <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>Users / account</td><td>1</td></tr>
+      <tr><td>Machines</td><td>3</td></tr>
+      <tr><td>Raw events</td><td>30 days</td></tr>
+      <tr><td>Cloud content</td><td>Off by default; max 7-day TTL</td></tr>
+      <tr><td>Recommendations</td><td>Rules yes; LLM-judge not in free tier</td></tr>
+    </tbody>
+  </table>
+  <p>Self-host: no artificial product limits.</p>
+
+  <h2>8. Rule engine (Phase 1)</h2>
+  <ol>
+    <li><strong>Frontier for trivial</strong> — high-tier model + tiny simple task → suggest smaller model.</li>
+    <li><strong>Full-document I/O</strong> — huge prompts/responses with dump signals → diffs/excerpts/chunks.</li>
+    <li><strong>Context bloat</strong> — rising session input with low new content → trim/summarize.</li>
+  </ol>
+  <p>Shared implementation in <code>packages/shared</code>; dashboard recommendations are cloud-authoritative.</p>
+
+  <h2>9. Tech stack</h2>
+  <table>
+    <thead><tr><th>Layer</th><th>Choice</th></tr></thead>
+    <tbody>
+      <tr><td>Monorepo</td><td>pnpm workspaces</td></tr>
+      <tr><td>Agent / API</td><td>TypeScript (Node); Hono or Fastify</td></tr>
+      <tr><td>DB</td><td>Postgres (+ SQLite outbox on agent)</td></tr>
+      <tr><td>Web</td><td>Vite + React</td></tr>
+      <tr><td>Shared</td><td>Zod schemas, features, rules, price table</td></tr>
+      <tr><td>Deploy</td><td>Docker Compose + Railway</td></tr>
+      <tr><td>Tests</td><td>Vitest; optional Playwright smoke</td></tr>
+    </tbody>
+  </table>
+  <pre><code>tokenops/
+  apps/agent/
+  apps/api/
+  apps/web/
+  packages/shared/
+  deploy/
+  docs/
+  tasks/</code></pre>
+
+  <h2>10–12. Data flow, security, testing</h2>
+  <p><strong>Flow:</strong> client → proxy/adapter → features + privacy → outbox → API → aggregates + rules → dashboard.</p>
+  <p><strong>Security:</strong> provider secrets never leave the machine; TLS to cloud; content minimized with TTL GC; rotatable ingest tokens.</p>
+  <p><strong>Testing:</strong> unit rules/features/cost/privacy; integration ingest/idempotency; proxy with mock upstream; ship verification against Railway/Compose, not localhost as the product gate.</p>
+
+  <h2>13. Post–Phase 1 roadmap</h2>
+  <ol>
+    <li>More adapters (Cursor, providers, browser exports).</li>
+    <li>Optional LLM-as-judge.</li>
+    <li>Budget alerts (email/webhook).</li>
+    <li>Multi-user / team.</li>
+    <li>Opt-in auto-routing later.</li>
+  </ol>
+
+  <h2>14. Implementation notes (not product ambiguity)</h2>
+  <ul>
+    <li>Claude Code capture mechanism: spike in first implementation PR.</li>
+    <li>Hono vs Fastify: pick in implementation plan.</li>
+    <li>MIT vs Apache-2.0: set at license file creation.</li>
+    <li>Password vs magic-link: simplest self-host-friendly option in plan.</li>
+  </ul>
+
+  <h2>15. Phase 1 ship checklist</h2>
+  <ul class="check">
+    <li>Proxy: real OpenAI-compatible client; event in cloud</li>
+    <li>Claude Code path: real or fixture-backed events</li>
+    <li>Second machine_id merges on one dashboard</li>
+    <li>All three rules fire on synthetic fixtures</li>
+    <li>Privacy modes tested (off / local / cloud_ttl)</li>
+    <li>docker compose + Railway path working</li>
+    <li>README covers agent, proxy, Claude Code, dashboard</li>
+  </ul>
+
+  <h2>Approval history</h2>
+  <ul>
+    <li>Architecture (sidecar + cloud): approved</li>
+    <li>Components &amp; Phase 1 scope: approved</li>
+    <li>Data flow, errors, testing: approved</li>
+    <li>Stack, free tier, OSS packaging: approved</li>
+    <li>Full written spec: pending user review</li>
+  </ul>
+</main>
+</body>
+</html>
