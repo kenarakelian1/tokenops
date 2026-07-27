@@ -61,6 +61,9 @@ services:
     depends_on:
       tokenops-api:
         condition: service_healthy
+    environment:
+      API_PROXY_PASS: http://tokenops-api:3000
+      API_PROXY_HOST: tokenops-api
     ports:
       - "8080:80"
 
