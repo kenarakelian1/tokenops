@@ -141,9 +141,56 @@ name = "desktop"
 
 Create an ingest PAT from the dashboard **Settings** page (or `POST /v1/auth/pats` while logged in).
 
-## Point OpenAI SDK at the local proxy
+## Point OpenAI / Grok (xAI) SDK at the local proxy
 
 With the agent running, point any OpenAI-compatible client at the proxy. The agent measures usage, extracts features, enqueues events, and forwards the request upstream with your local key.
+
+### OpenAI
+
+```toml
+# ~/.tokenops/config.toml
+[proxy]
+listen = "127.0.0.1:8787"
+upstream = "https://api.openai.com"
+```
+
+```bat
+set OPENAI_API_KEY=sk-...
+tokenops agent run
+```
+
+Events use `app=openai-proxy`, `provider=openai`.
+
+### Grok / xAI
+
+```toml
+[proxy]
+listen = "127.0.0.1:8787"
+upstream = "https://api.x.ai/v1"
+```
+
+```bat
+set XAI_API_KEY=xai-...
+tokenops agent run
+```
+
+Events use **`app=grok-proxy`**, **`provider=xai`**. Estimated prices for common `grok-*` models are in the shared price table.
+
+```ts
+import OpenAI from "openai";
+
+const grok = new OpenAI({
+  baseURL: "http://127.0.0.1:8787/v1",
+  apiKey: "not-used-upstream", // real key is XAI_API_KEY on the agent
+});
+
+await grok.chat.completions.create({
+  model: "grok-4",
+  messages: [{ role: "user", content: "hello" }],
+});
+```
+
+### Shared client pattern (either provider)
 
 ```ts
 import OpenAI from "openai";
@@ -163,8 +210,8 @@ const res = await client.chat.completions.create({
 ```
 
 - Default listen address: `127.0.0.1:8787`
-- Phase 1 captures **`POST /v1/chat/completions`** (other `/v1/*` paths are proxied without usage capture)
-- Events use `app=openai-proxy`
+- Captures **`POST /v1/chat/completions`** (other `/v1/*` paths are proxied without usage capture)
+- Events: `app=openai-proxy` or `app=grok-proxy` depending on upstream
 - Optional `session_id` / `sessionId` / `metadata.session_id` / OpenAI `user` → event `sessionId`
 - If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns
 

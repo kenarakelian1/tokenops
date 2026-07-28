@@ -4,10 +4,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { UsageEvent } from "@tokenops/shared";
 import { startProxy } from "./server.js";
 import {
+  appFromUpstream,
   buildUsageEvent,
   estimateTokensFromText,
+  isXaiUpstream,
+  normalizeUpstreamBase,
   parseSseUsage,
   providerFromUpstream,
+  resolveUpstreamApiKey,
   sessionIdFromRequest,
 } from "./handler.js";
 
@@ -41,8 +45,52 @@ describe("providerFromUpstream", () => {
     expect(providerFromUpstream("https://api.openai.com/v1")).toBe("openai");
   });
 
+  it("detects xAI / Grok host", () => {
+    expect(isXaiUpstream("https://api.x.ai/v1")).toBe(true);
+    expect(providerFromUpstream("https://api.x.ai/v1")).toBe("xai");
+    expect(appFromUpstream("https://api.x.ai/v1")).toBe("grok-proxy");
+    expect(appFromUpstream("https://api.openai.com")).toBe("openai-proxy");
+  });
+
+  it("normalizes xAI base to include /v1", () => {
+    expect(normalizeUpstreamBase("https://api.x.ai")).toBe("https://api.x.ai/v1");
+    expect(normalizeUpstreamBase("https://api.x.ai/v1")).toBe("https://api.x.ai/v1");
+  });
+
+  it("resolves XAI_API_KEY for xAI upstream", () => {
+    const r = resolveUpstreamApiKey("https://api.x.ai/v1", {
+      XAI_API_KEY: "xai-secret",
+      OPENAI_API_KEY: "sk-other",
+    } as NodeJS.ProcessEnv);
+    expect(r.source).toBe("XAI_API_KEY");
+    expect(r.apiKey).toBe("xai-secret");
+  });
+
   it("falls back for other hosts", () => {
     expect(providerFromUpstream("http://127.0.0.1:9999")).toBe("127.0.0.1");
+  });
+});
+
+describe("buildUsageEvent grok", () => {
+  it("labels app as grok-proxy for xAI upstream", () => {
+    const event = buildUsageEvent({
+      machineId: "m",
+      machineName: "t",
+      upstream: "https://api.x.ai/v1",
+      requestBody: {
+        model: "grok-4",
+        messages: [{ role: "user", content: "hi" }],
+      },
+      responseBody: {
+        id: "chatcmpl_g",
+        choices: [{ message: { role: "assistant", content: "yo" } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2 },
+      },
+      latencyMs: 5,
+    });
+    expect(event.app).toBe("grok-proxy");
+    expect(event.provider).toBe("xai");
+    expect(event.model).toBe("grok-4");
   });
 });
 

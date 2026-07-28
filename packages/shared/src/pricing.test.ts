@@ -18,4 +18,10 @@ describe("estimateCostUsd", () => {
     });
     expect(cost).toBe(1);
   });
+
+  it("prices grok models", () => {
+    const cost = estimateCostUsd("grok-4", 1_000_000, 0);
+    expect(cost).toBeTypeOf("number");
+    expect(cost!).toBeGreaterThan(0);
+  });
 });

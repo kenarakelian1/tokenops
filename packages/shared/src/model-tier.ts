@@ -7,10 +7,12 @@ const FRONTIER = [
   /o3(?!\-mini)/i,
   /gpt-4(?!o-mini)/i,
   /claude-3-opus/i,
+  /grok-4/i,
+  /grok-3(?!\-mini)/i,
 ];
 
 /** Small / cheap model name patterns. */
-const SMALL = [/mini/i, /haiku/i, /nano/i, /8b/i];
+const SMALL = [/mini/i, /haiku/i, /nano/i, /8b/i, /grok-3-mini/i];
 
 /**
  * Heuristic model tier from model string.

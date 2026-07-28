@@ -22,8 +22,14 @@ Usage:
   tokenops help               Show this help
 
 Environment:
-  OPENAI_API_KEY              Upstream key for the OpenAI-compatible proxy
-                              (never sent to TokenOps cloud)
+  OPENAI_API_KEY              Upstream key for OpenAI-compatible proxy
+  XAI_API_KEY                 Preferred when proxy.upstream is api.x.ai (Grok)
+                              Keys never leave the machine / never go to TokenOps cloud
+
+Grok / xAI example config.toml:
+  [proxy]
+  listen = "127.0.0.1:8787"
+  upstream = "https://api.x.ai/v1"
 `);
 }
 
