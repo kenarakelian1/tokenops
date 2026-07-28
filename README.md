@@ -168,9 +168,52 @@ const res = await client.chat.completions.create({
 - Optional `session_id` / `sessionId` / `metadata.session_id` / OpenAI `user` → event `sessionId`
 - If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns
 
-## Claude Code JSONL path
+## Claude Code (JSONL + OpenTelemetry)
 
-When `sources.claude_code = true`, the agent watches a usage JSONL file and maps each line into the shared event schema (`app=claude-code`).
+### Preferred: OpenTelemetry metrics (official Claude Code telemetry)
+
+With the agent running (`tokenops agent run`), default OTLP HTTP listen is **`127.0.0.1:4318`**.
+
+In the shell where you launch Claude Code (use **HTTP JSON**, not gRPC — TokenOps does not speak OTLP/gRPC yet):
+
+```bash
+# Windows PowerShell
+$env:CLAUDE_CODE_ENABLE_TELEMETRY = "1"
+$env:OTEL_METRICS_EXPORTER = "otlp"
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/json"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318"
+claude
+```
+
+```bash
+# bash / macOS / WSL
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+claude
+```
+
+Config (`~/.tokenops/config.toml`):
+
+```toml
+[sources]
+claude_code = true
+claude_code_otel_listen = "127.0.0.1:4318"   # empty string disables OTEL receiver
+```
+
+Metrics mapped into the ledger (`app=claude-code`):
+
+| Metric | Use |
+|--------|-----|
+| `claude_code.token.usage` | Input/output/cache tokens → usage events (counter deltas) |
+| `claude_code.cost.usage` | Session cost when present (else price-table estimate) |
+
+> Your snippet with `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and port **4317** is the default OTEL collector setup. Point Claude at **TokenOps** with **`http/json` + 4318** instead, or run an OTEL Collector that forwards metrics to TokenOps HTTP.
+
+### Fallback: JSONL path
+
+When `sources.claude_code = true`, the agent also watches a usage JSONL file and maps each line into the shared event schema (`app=claude-code`).
 
 **Default path:** `~/.tokenops/claude-code-usage.jsonl`  
 **Override:** set `sources.claude_code_path` in config (absolute path to a file or directory).

@@ -81,6 +81,7 @@ export async function runAgent(
 
   let proxyServer: Awaited<ReturnType<typeof startProxy>> | null = null;
   let claudeClose: (() => void) | null = null;
+  let otelServer: import("node:http").Server | null = null;
 
   if (config.sources.openaiProxy) {
     const apiKey = process.env.OPENAI_API_KEY ?? "";
@@ -108,6 +109,29 @@ export async function runAgent(
       tokenopsDir,
       claudeCodePath: config.sources.claudeCodePath,
     });
+  }
+
+  const otelListen = config.sources.claudeCodeOtelListen?.trim();
+  if (otelListen) {
+    try {
+      const { startClaudeOtelServer } = await import(
+        "./adapters/claude-otel.js"
+      );
+      otelServer = await startClaudeOtelServer({
+        listen: otelListen,
+        machineId: identity.machineId,
+        machineName: identity.machineName,
+        onEvent,
+      });
+      console.log(
+        `[tokenops] Claude Code OTEL metrics listening on ${otelListen} (use OTEL_EXPORTER_OTLP_PROTOCOL=http/json)`,
+      );
+    } catch (err) {
+      console.warn(
+        "[tokenops] failed to start Claude OTEL receiver:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   const fetchImpl = options.fetchImpl;
@@ -155,6 +179,12 @@ export async function runAgent(
     clearInterval(timer);
     claudeClose?.();
     claudeClose = null;
+    if (otelServer) {
+      await new Promise<void>((resolve, reject) => {
+        otelServer!.close((err) => (err ? reject(err) : resolve()));
+      });
+      otelServer = null;
+    }
     if (proxyServer) {
       await new Promise<void>((resolve, reject) => {
         proxyServer!.close((err) => (err ? reject(err) : resolve()));
