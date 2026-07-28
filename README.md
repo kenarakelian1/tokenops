@@ -385,30 +385,29 @@ Health check path: `/health`.
 
 ## Desktop agent installer (Windows)
 
-Build a double-click installer (avoids PowerShell execution-policy / `pnpm.ps1` blocks via `install.cmd`):
+### Download from GitHub Releases (easiest)
+
+1. Open **[Releases](https://github.com/kenarakelian1/tokenops/releases)**  
+2. Download **`tokenops-agent-win.zip`** from the latest release  
+3. Install [Node.js 22+](https://nodejs.org/) if needed  
+4. Unzip → double-click **`install.cmd`** and answer the wizard  
+5. Start Menu → **TokenOps Agent** (or `tokenops agent run`)
+
+### Build from source
 
 ```bat
 pnpm.cmd install
 pnpm.cmd package:agent
 ```
 
-Output: `dist\tokenops-agent-win\`
+Output: `dist\tokenops-agent-win\` (then run `install.cmd` inside that folder).
 
-On the target PC:
-
-1. Install [Node.js 22+](https://nodejs.org/) if needed  
-2. Double-click **`install.cmd`** and answer the wizard:
-   - Which AI tools you use (Claude Code, Cursor, Grok/xAI, OpenAI, …)
-   - TokenOps API URL + ingest PAT  
-   - Optional API keys (saved as **user** environment variables)  
-   - Whether the agent should start when Windows signs you in  
-3. Start Menu → **TokenOps Agent** (or `tokenops agent run` in a **new** terminal)
-
-The installer sets global user env for Claude OTEL and OpenAI base URL when those tools are selected.
+Wizard options: AI tools (Claude Code, Cursor, Grok/xAI, OpenAI), PAT, optional API keys (user env), start agent at Windows sign-in.
 
 Uninstall: `uninstall.cmd`. Details: `installer\windows\README.txt`.  
-Quiet mode: `install.cmd -Quiet` or `install.cmd -Quiet -NoStartup`.
+Quiet: `install.cmd -Quiet` or `install.cmd -Quiet -NoStartup`.
 
+Publish a new zip: tag `v*` (e.g. `git tag v0.1.1 && git push --tags`) or run the **Release desktop agent** workflow.
 ## Development
 
 ```bash
