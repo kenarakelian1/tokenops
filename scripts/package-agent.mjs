@@ -148,8 +148,13 @@ if (!iscc) {
 if (iscc) {
   console.log("Building TokenOps-Agent-Setup.exe with Inno Setup…");
   const iss = join(root, "installer", "windows", "TokenOpsAgent.iss");
-  run(`"${iscc}" "${iss}"`);
-  console.log(`Setup EXE: ${join(root, "dist", "TokenOps-Agent-Setup.exe")}`);
+  try {
+    run(`"${iscc}" "${iss}"`);
+    console.log(`Setup EXE: ${join(root, "dist", "TokenOps-Agent-Setup.exe")}`);
+  } catch (err) {
+    console.error("Inno Setup compile failed:", err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  }
 } else {
   console.log(
     "Inno Setup (ISCC) not found — skipped Setup.exe. Install from https://jrsoftware.org/isinfo.php or rely on CI.",

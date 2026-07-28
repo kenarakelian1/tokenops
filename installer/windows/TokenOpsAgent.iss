@@ -100,7 +100,6 @@ function InitializeSetup: Boolean;
 var
   R: Integer;
 begin
-  Randomize;
   Result := True;
   if not NodeExists then
   begin
@@ -326,8 +325,8 @@ begin
   { machine identity }
   if not FileExists(IdentityPath) then
   begin
-    GuidStr := GetDateTimeString('yyyymmddhhnnss', '', '') + '-' +
-      IntToStr(Random(99999999)) + '-' + IntToStr(Random(99999999));
+    GuidStr := GetDateTimeString('yyyymmddhhnnsszzz', '', '') + '-' +
+      GetDateTimeString('hhnnss', '', '');
     SetArrayLength(Lines, 4);
     Lines[0] := '{';
     Lines[1] := '  "machineId": "' + GuidStr + '",';
