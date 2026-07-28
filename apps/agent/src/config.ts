@@ -23,6 +23,11 @@ export type TokenOpsConfig = {
     claudeCode: boolean;
     /** Path to Claude Code usage JSONL (file or directory). Empty = default under tokenops dir. */
     claudeCodePath: string;
+    /**
+     * OTLP HTTP metrics listen address for Claude Code telemetry.
+     * Empty disables. Example: `127.0.0.1:4318`
+     */
+    claudeCodeOtelListen: string;
   };
   machine: {
     name: string;
@@ -60,6 +65,7 @@ export function defaultConfig(): TokenOpsConfig {
       openaiProxy: true,
       claudeCode: true,
       claudeCodePath: "",
+      claudeCodeOtelListen: "127.0.0.1:4318",
     },
     machine: {
       name: "desktop",
@@ -74,6 +80,7 @@ type TomlSources = {
   openai_proxy?: boolean;
   claude_code?: boolean;
   claude_code_path?: string;
+  claude_code_otel_listen?: string;
 };
 type TomlMachine = { name?: string };
 
@@ -122,6 +129,10 @@ function fromToml(raw: TomlRoot): TokenOpsConfig {
         typeof raw.sources?.claude_code_path === "string"
           ? raw.sources.claude_code_path
           : base.sources.claudeCodePath,
+      claudeCodeOtelListen:
+        typeof raw.sources?.claude_code_otel_listen === "string"
+          ? raw.sources.claude_code_otel_listen
+          : base.sources.claudeCodeOtelListen,
     },
     machine: {
       name: raw.machine?.name ?? base.machine.name,
@@ -147,6 +158,7 @@ function toToml(config: TokenOpsConfig): string {
       openai_proxy: config.sources.openaiProxy,
       claude_code: config.sources.claudeCode,
       claude_code_path: config.sources.claudeCodePath,
+      claude_code_otel_listen: config.sources.claudeCodeOtelListen,
     },
     machine: {
       name: config.machine.name,
