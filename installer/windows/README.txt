@@ -5,7 +5,11 @@ REQUIREMENTS
   - Windows 10/11
   - Node.js 22 or newer (https://nodejs.org/)
 
-INSTALL
+RECOMMENDED: TokenOps-Agent-Setup.exe
+  Download from GitHub Releases, double-click, complete the wizard.
+  Per-user install (no admin). Uninstall from Windows Settings → Apps.
+
+PORTABLE / ZIP (install.cmd)
   1. Double-click install.cmd
   2. Answer the prompts:
        - Which AI tools you use (Claude Code, Cursor, Grok/xAI, OpenAI, …)
