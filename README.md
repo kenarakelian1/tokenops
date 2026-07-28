@@ -336,6 +336,26 @@ Self-deploy:
 
 Health check path: `/health`.
 
+## Desktop agent installer (Windows)
+
+Build a double-click installer (avoids PowerShell execution-policy / `pnpm.ps1` blocks via `install.cmd`):
+
+```bat
+pnpm.cmd install
+pnpm.cmd package:agent
+```
+
+Output: `dist\tokenops-agent-win\`
+
+On the target PC:
+
+1. Install [Node.js 22+](https://nodejs.org/) if needed  
+2. Double-click **`install.cmd`**  
+3. Put your cloud PAT in `%USERPROFILE%\.tokenops\config.toml`  
+4. Start Menu → **TokenOps Agent** (or open a **new** terminal and run `tokenops agent run`)
+
+Uninstall: `uninstall.cmd` in the same folder. Details: `installer\windows\README.txt`.
+
 ## Development
 
 ```bash
