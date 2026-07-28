@@ -122,9 +122,40 @@ for (const f of [
 // Version stamp
 writeFileSync(
   join(out, "VERSION.txt"),
-  `tokenops-agent 0.1.0\nbuilt ${new Date().toISOString()}\nnode target: >=22\n`,
+  `tokenops-agent 0.1.1\nbuilt ${new Date().toISOString()}\nnode target: >=22\n`,
 );
 
+// Optional: compile Inno Setup GUI installer → dist/TokenOps-Agent-Setup.exe
+const isccCandidates = [
+  process.env.ISCC,
+  "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe",
+  "C:\\Program Files\\Inno Setup 6\\ISCC.exe",
+].filter(Boolean);
+
+let iscc = isccCandidates.find((p) => p && existsSync(p));
+if (!iscc) {
+  try {
+    const where = execSync("where.exe ISCC 2>nul", {
+      encoding: "utf8",
+      shell: true,
+    }).trim();
+    if (where) iscc = where.split(/\r?\n/)[0];
+  } catch {
+    /* not on PATH */
+  }
+}
+
+if (iscc) {
+  console.log("Building TokenOps-Agent-Setup.exe with Inno Setup…");
+  const iss = join(root, "installer", "windows", "TokenOpsAgent.iss");
+  run(`"${iscc}" "${iss}"`);
+  console.log(`Setup EXE: ${join(root, "dist", "TokenOps-Agent-Setup.exe")}`);
+} else {
+  console.log(
+    "Inno Setup (ISCC) not found — skipped Setup.exe. Install from https://jrsoftware.org/isinfo.php or rely on CI.",
+  );
+}
+
 console.log(`\nPackaged: ${out}`);
-console.log("Distribute the whole tokenops-agent-win folder, or zip it.");
-console.log("On the target PC: double-click install.cmd");
+console.log("  - Portable: zip the tokenops-agent-win folder, or run install.cmd inside it");
+console.log("  - Setup:    dist/TokenOps-Agent-Setup.exe (if Inno Setup was available)");

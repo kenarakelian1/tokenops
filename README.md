@@ -388,10 +388,14 @@ Health check path: `/health`.
 ### Download from GitHub Releases (easiest)
 
 1. Open **[Releases](https://github.com/kenarakelian1/tokenops/releases)**  
-2. Download **`tokenops-agent-win.zip`** from the latest release  
-3. Install [Node.js 22+](https://nodejs.org/) if needed  
-4. Unzip → double-click **`install.cmd`** and answer the wizard  
+2. Install [Node.js 22+](https://nodejs.org/) if needed  
+3. Download **`TokenOps-Agent-Setup.exe`** (recommended) **or** `tokenops-agent-win.zip`  
+4. Run the Setup wizard (per-user, no admin) — pick AI tools, PAT, startup  
 5. Start Menu → **TokenOps Agent** (or `tokenops agent run`)
+
+Portable: unzip `tokenops-agent-win.zip` → `install.cmd`.
+
+> The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control warns: **More info → Run anyway**, or right‑click → Properties → **Unblock**.
 
 ### Build from source
 
@@ -400,15 +404,17 @@ pnpm.cmd install
 pnpm.cmd package:agent
 ```
 
-Output: `dist\tokenops-agent-win\` (then run `install.cmd` inside that folder).
+Outputs:
 
-Wizard options: AI tools (Claude Code, Cursor, Grok/xAI, OpenAI), PAT, optional API keys (user env), start agent at Windows sign-in.
+- `dist\tokenops-agent-win\` — portable folder + `install.cmd`  
+- `dist\TokenOps-Agent-Setup.exe` — if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed  
 
-Uninstall: `uninstall.cmd`. Details: `installer\windows\README.txt`.  
-Quiet: `install.cmd -Quiet` or `install.cmd -Quiet -NoStartup`.
+Wizard options: AI tools (Claude Code, Cursor, Grok/xAI, OpenAI), PAT, optional API keys, start at Windows sign-in.
 
-Publish a new zip: tag `v*` (e.g. `git tag v0.1.1 && git push --tags`) or run the **Release desktop agent** workflow.
-## Development
+Uninstall: **Apps & features** (Setup) or `uninstall.cmd` (portable).  
+Quiet portable: `install.cmd -Quiet` / `-NoStartup`.
+
+New release: tag `v*` and push, or run workflow **Release desktop agent**.## Development
 
 ```bash
 pnpm install
