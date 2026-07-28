@@ -6,7 +6,10 @@ import {
   type UsageEvent,
 } from "@tokenops/shared";
 
-const APP = "openai-proxy";
+/** Default app label when upstream is not recognized. */
+export const APP_OPENAI_PROXY = "openai-proxy";
+/** App label for xAI / Grok traffic through the local proxy. */
+export const APP_GROK_PROXY = "grok-proxy";
 
 export type ChatCompletionRequest = {
   model?: string;
@@ -31,6 +34,16 @@ export type ChatCompletionResponse = {
   [key: string]: unknown;
 };
 
+/** True when upstream points at xAI (Grok API). */
+export function isXaiUpstream(upstream: string): boolean {
+  try {
+    const host = new URL(upstream).hostname.toLowerCase();
+    return host === "api.x.ai" || host.endsWith(".x.ai");
+  } catch {
+    return /x\.ai/i.test(upstream);
+  }
+}
+
 /** Provider label from upstream base URL host. */
 export function providerFromUpstream(upstream: string): string {
   try {
@@ -38,12 +51,48 @@ export function providerFromUpstream(upstream: string): string {
     if (host === "api.openai.com" || host.endsWith(".openai.com")) {
       return "openai";
     }
+    if (isXaiUpstream(upstream)) return "xai";
     if (host.includes("anthropic")) return "anthropic";
     if (host.includes("azure")) return "azure-openai";
     return host || "unknown";
   } catch {
     return "unknown";
   }
+}
+
+/** Ledger `app` field for a proxy hop. */
+export function appFromUpstream(upstream: string): string {
+  return isXaiUpstream(upstream) ? APP_GROK_PROXY : APP_OPENAI_PROXY;
+}
+
+/**
+ * Resolve upstream API key from env for the configured host.
+ * xAI: XAI_API_KEY, then OPENAI_API_KEY (compat).
+ * Others: OPENAI_API_KEY, then XAI_API_KEY (compat).
+ */
+export function resolveUpstreamApiKey(
+  upstream: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { apiKey: string; source: "XAI_API_KEY" | "OPENAI_API_KEY" | "none" } {
+  const xai = (env.XAI_API_KEY ?? "").trim();
+  const openai = (env.OPENAI_API_KEY ?? "").trim();
+  if (isXaiUpstream(upstream)) {
+    if (xai) return { apiKey: xai, source: "XAI_API_KEY" };
+    if (openai) return { apiKey: openai, source: "OPENAI_API_KEY" };
+    return { apiKey: "", source: "none" };
+  }
+  if (openai) return { apiKey: openai, source: "OPENAI_API_KEY" };
+  if (xai) return { apiKey: xai, source: "XAI_API_KEY" };
+  return { apiKey: "", source: "none" };
+}
+
+/** Normalize common upstream bases (ensure /v1 for xAI when missing). */
+export function normalizeUpstreamBase(upstream: string): string {
+  const base = upstream.replace(/\/$/, "");
+  if (isXaiUpstream(base) && !/\/v1$/i.test(base)) {
+    return `${base}/v1`;
+  }
+  return base;
 }
 
 /** Rough token estimate when usage is missing: chars / 4. */
@@ -193,9 +242,10 @@ export function buildUsageEvent(input: BuildUsageEventInput): UsageEvent {
   const timeBucketSec = Math.floor(Date.parse(timestamp) / 1000);
   const fingerprint = fingerprintRequest(model, messages);
 
+  const app = appFromUpstream(input.upstream);
   const eventId = buildEventId({
     machineId: input.machineId,
-    app: APP,
+    app,
     providerRequestId,
     fingerprint,
     timeBucketSec,
@@ -219,7 +269,7 @@ export function buildUsageEvent(input: BuildUsageEventInput): UsageEvent {
     timestamp,
     machineId: input.machineId,
     machineName: input.machineName,
-    app: APP,
+    app,
     provider: providerFromUpstream(input.upstream),
     model,
     inputTokens,

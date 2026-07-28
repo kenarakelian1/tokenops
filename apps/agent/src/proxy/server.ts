@@ -2,6 +2,7 @@ import http from "node:http";
 import type { UsageEvent } from "@tokenops/shared";
 import {
   buildUsageEvent,
+  normalizeUpstreamBase,
   parseSseUsage,
   type ChatCompletionRequest,
   type ChatCompletionResponse,
@@ -51,7 +52,7 @@ export async function startProxy(
   opts: StartProxyOptions,
 ): Promise<http.Server> {
   const { host, port } = parseListen(opts.listen);
-  const upstreamBase = opts.upstream.replace(/\/$/, "");
+  const upstreamBase = normalizeUpstreamBase(opts.upstream);
 
   const server = http.createServer(async (req, res) => {
     try {

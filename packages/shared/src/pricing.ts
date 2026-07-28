@@ -16,6 +16,12 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
   "claude-sonnet-4": { inputPerMTok: 3, outputPerMTok: 15 },
   "claude-opus-4": { inputPerMTok: 15, outputPerMTok: 75 },
   "claude-haiku": { inputPerMTok: 0.8, outputPerMTok: 4 },
+  // xAI Grok (approximate public list prices — estimates only)
+  "grok-4": { inputPerMTok: 3, outputPerMTok: 15 },
+  "grok-3": { inputPerMTok: 3, outputPerMTok: 15 },
+  "grok-3-mini": { inputPerMTok: 0.3, outputPerMTok: 0.5 },
+  "grok-2": { inputPerMTok: 2, outputPerMTok: 10 },
+  grok: { inputPerMTok: 3, outputPerMTok: 15 },
 };
 
 function resolvePrice(

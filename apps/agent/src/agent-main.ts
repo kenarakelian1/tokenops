@@ -84,11 +84,18 @@ export async function runAgent(
   let otelServer: import("node:http").Server | null = null;
 
   if (config.sources.openaiProxy) {
-    const apiKey = process.env.OPENAI_API_KEY ?? "";
+    const { resolveUpstreamApiKey, isXaiUpstream, appFromUpstream } =
+      await import("./proxy/handler.js");
+    const { apiKey, source } = resolveUpstreamApiKey(config.proxy.upstream);
     if (!apiKey) {
+      const hint = isXaiUpstream(config.proxy.upstream)
+        ? "set XAI_API_KEY (or OPENAI_API_KEY) for xAI/Grok"
+        : "set OPENAI_API_KEY (or XAI_API_KEY) for upstream auth";
       console.warn(
-        "[tokenops] OPENAI_API_KEY not set; proxy will start but upstream calls will fail auth",
+        `[tokenops] no upstream API key; proxy will start but upstream calls will fail auth (${hint})`,
       );
+    } else {
+      console.log(`[tokenops] proxy upstream key from ${source}`);
     }
     proxyServer = await startProxy({
       listen: config.proxy.listen,
@@ -98,7 +105,10 @@ export async function runAgent(
       machineId: identity.machineId,
       machineName: identity.machineName,
     });
-    console.log(`[tokenops] proxy listening on ${config.proxy.listen}`);
+    const appLabel = appFromUpstream(config.proxy.upstream);
+    console.log(
+      `[tokenops] proxy listening on ${config.proxy.listen} → ${config.proxy.upstream} (app=${appLabel})`,
+    );
   }
 
   if (config.sources.claudeCode) {
