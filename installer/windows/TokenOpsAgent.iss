@@ -406,12 +406,11 @@ begin
     Exit;
   end;
   AppDir := ExpandConstant('{app}');
+  { Create a small runner so quoting stays simple }
   Cmd :=
-    '/Create /F /TN "TokenOpsAgent" /SC ONLOGON /RL LIMITED ' +
-    '/TR "\"' + ExpandConstant('{cmd}') + '\" /c \"' + AppDir + '\tokenops.cmd\" agent run" ' +
-    '/RU "' + GetUserNameString + '"';
-  if not Exec('schtasks.exe', Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := False;
+    '/Create /F /TN TokenOpsAgent /SC ONLOGON /RL LIMITED /TR "' +
+    AppDir + '\tokenops.cmd agent run"';
+  Exec('schtasks.exe', Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -426,34 +425,17 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
-  Manifest, EnvCsv: string;
 begin
   if CurUninstallStep = usUninstall then
   begin
     Exec('schtasks.exe', '/Delete /TN "TokenOpsAgent" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if LoadStringFromFile(ExpandConstant('{localappdata}\TokenOps\install-manifest.json'), Manifest) then
-    begin
-      { crude parse of envVars CSV field }
-      if Pos('"envVars":"', Manifest) > 0 then
-      begin
-        EnvCsv := Copy(Manifest, Pos('"envVars":"', Manifest) + 11, Length(Manifest));
-        if Pos('"', EnvCsv) > 0 then
-          EnvCsv := Copy(EnvCsv, 1, Pos('"', EnvCsv) - 1);
-        { only clear TokenOps-owned non-secret vars }
-        if Pos('CLAUDE_CODE_ENABLE_TELEMETRY', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'CLAUDE_CODE_ENABLE_TELEMETRY');
-        if Pos('OTEL_METRICS_EXPORTER', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_METRICS_EXPORTER');
-        if Pos('OTEL_EXPORTER_OTLP_PROTOCOL', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_EXPORTER_OTLP_PROTOCOL');
-        if Pos('OTEL_EXPORTER_OTLP_ENDPOINT', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_EXPORTER_OTLP_ENDPOINT');
-        if Pos('OPENAI_BASE_URL', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OPENAI_BASE_URL');
-        if Pos('OPENAI_API_BASE', EnvCsv) > 0 then
-          RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OPENAI_API_BASE');
-      end;
-    end;
+    { Clear TokenOps-owned env vars (leave API keys alone) }
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'CLAUDE_CODE_ENABLE_TELEMETRY');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_METRICS_EXPORTER');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_EXPORTER_OTLP_PROTOCOL');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OTEL_EXPORTER_OTLP_ENDPOINT');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OPENAI_BASE_URL');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Environment', 'OPENAI_API_BASE');
     DeleteFile(ExpandConstant('{userdesktop}\Claude Code + TokenOps.cmd'));
   end;
 end;
