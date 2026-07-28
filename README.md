@@ -397,11 +397,17 @@ Output: `dist\tokenops-agent-win\`
 On the target PC:
 
 1. Install [Node.js 22+](https://nodejs.org/) if needed  
-2. Double-click **`install.cmd`**  
-3. Put your cloud PAT in `%USERPROFILE%\.tokenops\config.toml`  
-4. Start Menu → **TokenOps Agent** (or open a **new** terminal and run `tokenops agent run`)
+2. Double-click **`install.cmd`** and answer the wizard:
+   - Which AI tools you use (Claude Code, Cursor, Grok/xAI, OpenAI, …)
+   - TokenOps API URL + ingest PAT  
+   - Optional API keys (saved as **user** environment variables)  
+   - Whether the agent should start when Windows signs you in  
+3. Start Menu → **TokenOps Agent** (or `tokenops agent run` in a **new** terminal)
 
-Uninstall: `uninstall.cmd` in the same folder. Details: `installer\windows\README.txt`.
+The installer sets global user env for Claude OTEL and OpenAI base URL when those tools are selected.
+
+Uninstall: `uninstall.cmd`. Details: `installer\windows\README.txt`.  
+Quiet mode: `install.cmd -Quiet` or `install.cmd -Quiet -NoStartup`.
 
 ## Development
 
