@@ -35,3 +35,43 @@ jobs:
           pnpm --filter @tokenops/api build
           pnpm --filter @tokenops/agent build
           pnpm --filter @tokenops/web build
+
+  # The installer only ever breaks at release time otherwise: ISCC is not on the
+  # Linux job, so compile errors in TokenOpsAgent.iss reach users unreviewed.
+  # Runtime errors in its Pascal script (e.g. indexing a page's Edits array past
+  # its Add() count) are caught by the Vitest guard in the `test` job above.
+  installer-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package agent + compile Setup.exe
+        run: pnpm package:agent
+
+      - name: Verify Setup.exe was produced
+        shell: pwsh
+        run: |
+          # package:agent skips ISCC silently when it is not found, so assert the
+          # artifact exists rather than trusting a zero exit code.
+          if (-not (Test-Path dist/TokenOps-Agent-Setup.exe)) {
+            throw "TokenOps-Agent-Setup.exe was not produced - Inno Setup compile was skipped or failed"
+          }
+          Get-Item dist/TokenOps-Agent-Setup.exe | Format-List Name, Length
