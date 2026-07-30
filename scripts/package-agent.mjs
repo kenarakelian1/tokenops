@@ -122,7 +122,7 @@ for (const f of [
 // Version stamp
 writeFileSync(
   join(out, "VERSION.txt"),
-  `tokenops-agent 0.1.1\nbuilt ${new Date().toISOString()}\nnode target: >=22\n`,
+  `tokenops-agent 0.1.2\nbuilt ${new Date().toISOString()}\nnode target: >=22\n`,
 );
 
 // Optional: compile Inno Setup GUI installer → dist/TokenOps-Agent-Setup.exe
