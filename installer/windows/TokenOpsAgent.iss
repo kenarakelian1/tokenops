@@ -7,7 +7,7 @@
 ; Per-user install (no admin / no UAC).
 
 #define MyAppName "TokenOps Agent"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "TokenOps"
 #define MyAppURL "https://github.com/kenarakelian1/tokenops"
 #define MyDashboard "https://tokenops-web-production.up.railway.app"
