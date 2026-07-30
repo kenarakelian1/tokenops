@@ -71,7 +71,7 @@ Type: files; Name: "{userdesktop}\Claude Code + TokenOps.cmd"
 
 [Code]
 var
-  ToolsPage: TInputQueryWizardPage;
+  ToolsPage: TWizardPage;
   CloudPage: TInputQueryWizardPage;
   KeysPage: TInputQueryWizardPage;
   CheckClaude, CheckCursor, CheckGrok, CheckOpenAI, CheckOther: TNewCheckBox;
@@ -121,20 +121,14 @@ var
   Y: Integer;
 begin
   { --- Tools page --- }
-  ToolsPage := CreateInputQueryPage(wpWelcome,
+  { Checkboxes only, no text inputs: must be a custom page. CreateInputQueryPage
+    starts with zero edits, so Edits[0]/PromptLabels[0] would raise
+    "List index out of bounds (0)" before the wizard is ever shown. }
+  ToolsPage := CreateCustomPage(wpWelcome,
     'AI coding tools',
-    'Which tools should TokenOps capture?',
     'Select every tool you use. The installer will configure capture for each.');
 
-  { InputQueryPage always creates one edit; hide it and use checkboxes instead }
-  ToolsPage.Edits[0].Visible := False;
-  ToolsPage.PromptLabels[0].Visible := False;
-  try
-    ToolsPage.SubCaptionLabel.Visible := False;
-  except
-  end;
-
-  Y := ScaleY(60);
+  Y := ScaleY(8);
   CheckClaude := TNewCheckBox.Create(ToolsPage);
   CheckClaude.Parent := ToolsPage.Surface;
   CheckClaude.Left := ScaleX(16);
