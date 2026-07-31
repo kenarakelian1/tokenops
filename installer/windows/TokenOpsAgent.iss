@@ -11,7 +11,9 @@
 #define MyAppPublisher "TokenOps"
 #define MyAppURL "https://github.com/kenarakelian1/tokenops"
 #define MyDashboard "https://tokenops-web-production.up.railway.app"
-#define MyDefaultApi "https://tokenops-api-production.up.railway.app"
+; Agent ships to the dashboard origin: nginx proxies /v1/ to the API, so one URL
+; covers both signing in and POST /v1/events + /v1/heartbeats.
+#define MyDefaultApi MyDashboard
 
 #ifndef PayloadDir
   #define PayloadDir "..\..\dist\tokenops-agent-win\payload\agent"

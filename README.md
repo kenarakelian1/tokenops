@@ -338,8 +338,31 @@ After Compose is up and you have logged in:
 | `HOSTED_LIMITS` | no | unset/false | When `true`: max 3 machines; default 30-day raw event retention |
 | `RAW_EVENT_RETENTION_DAYS` | no | unset | If set, delete `usage_events` older than N days (aggregates kept) |
 | `CORS_ORIGIN` | no | unset | Single browser origin for credentialed CORS (prefer same-origin proxy) |
-| `BOOTSTRAP_EMAIL` | no | — | Optional bootstrap email |
-| `BOOTSTRAP_PASSWORD` | no | — | Optional bootstrap password |
+| `BOOTSTRAP_EMAIL` | no | — | Reserved — parsed by `env.ts` but **not yet used**; it does not create a user |
+| `BOOTSTRAP_PASSWORD` | no | — | Reserved — see above |
+
+### Accounts and lost passwords
+
+TokenOps is single-user and sends no email, so there is deliberately no signup
+form and no self-serve reset:
+
+- **First user** — `POST /v1/auth/register`. It returns `403 registration_closed`
+  once any user exists, so this works exactly once per instance.
+- **Lost password** — recover from the database with the admin script. Existing
+  PATs survive (agents keep shipping); all sessions are dropped.
+
+```bash
+# Railway — run against the Postgres service so DATABASE_PUBLIC_URL is injected
+# (the private DATABASE_URL host is not reachable from a laptop)
+railway run --service Postgres node apps/api/scripts/set-password.mjs you@example.com
+
+# Compose / self-host
+DATABASE_URL=postgres://tokenops:tokenops@localhost:5432/tokenops \
+  node apps/api/scripts/set-password.mjs you@example.com
+```
+
+The password is prompted on stdin, never passed as an argument, so it stays out
+of shell history and process listings.
 
 ### Content TTL
 

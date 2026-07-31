@@ -17,8 +17,10 @@ $ConfigDir = Join-Path $env:USERPROFILE ".tokenops"
 $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\TokenOps"
 $Desktop = [Environment]::GetFolderPath("Desktop")
 $ManifestPath = Join-Path $env:LOCALAPPDATA "TokenOps\install-manifest.json"
-$DefaultCloudUrl = "https://tokenops-api-production.up.railway.app"
 $DashboardUrl = "https://tokenops-web-production.up.railway.app"
+# Agent ships to the dashboard origin: nginx proxies /v1/ to the API, so one URL
+# covers both signing in and POST /v1/events + /v1/heartbeats.
+$DefaultCloudUrl = $DashboardUrl
 $OtelEndpoint = "http://127.0.0.1:4318"
 $ProxyListen = "127.0.0.1:8787"
 
