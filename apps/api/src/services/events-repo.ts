@@ -319,7 +319,7 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
           lastQueueDepth: queueDepth ?? 0,
         })
         .onConflictDoUpdate({
-          target: machines.machineId,
+          target: [machines.userId, machines.machineId],
           set: {
             name,
             lastSeenAt: now,
@@ -391,6 +391,12 @@ export function createMemoryEventsRepo(): EventsRepo {
 
   function recDedupeKey(userId: string, ruleId: string, dedupe: string): string {
     return `${userId}|${ruleId}|${dedupe}`;
+  }
+
+  // Mirrors the (user_id, machine_id) primary key. Keying on machineId alone
+  // would let this fake pass tests that production fails.
+  function machineKey(userId: string, machineId: string): string {
+    return `${userId}|${machineId}`;
   }
 
   return {
@@ -556,7 +562,8 @@ export function createMemoryEventsRepo(): EventsRepo {
     },
 
     async upsertMachine(userId, machineId, name, queueDepth) {
-      const existing = machineMap.get(machineId);
+      const key = machineKey(userId, machineId);
+      const existing = machineMap.get(key);
       const now = new Date();
       if (existing) {
         existing.name = name;
@@ -565,7 +572,7 @@ export function createMemoryEventsRepo(): EventsRepo {
           existing.lastQueueDepth = queueDepth;
         }
       } else {
-        machineMap.set(machineId, {
+        machineMap.set(key, {
           machineId,
           userId,
           name,
@@ -576,7 +583,7 @@ export function createMemoryEventsRepo(): EventsRepo {
     },
 
     async hasMachine(userId, machineId) {
-      const m = machineMap.get(machineId);
+      const m = machineMap.get(machineKey(userId, machineId));
       return m != null && m.userId === userId;
     },
 

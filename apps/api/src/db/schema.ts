@@ -49,15 +49,19 @@ export const pats = pgTable(
   (t) => [uniqueIndex("pats_token_hash_uidx").on(t.tokenHash)],
 );
 
-export const machines = pgTable("machines", {
-  machineId: text("machine_id").primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
-  lastQueueDepth: integer("last_queue_depth").notNull().default(0),
-});
+export const machines = pgTable(
+  "machines",
+  {
+    machineId: text("machine_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+    lastQueueDepth: integer("last_queue_depth").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.machineId] })],
+);
 
 export const usageEvents = pgTable("usage_events", {
   eventId: text("event_id").primaryKey(),
