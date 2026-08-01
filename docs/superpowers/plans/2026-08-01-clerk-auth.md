@@ -25,7 +25,7 @@
 Two corrections found while verifying Clerk's current API. Both are improvements over the approved spec.
 
 1. **The verifier is two methods, not one.** The spec's `verify()` returned `{ clerkUserId, email }`. Clerk's default session token does **not** contain an email claim, so that shape would force a Backend API call on every request. Split into `verifyToken()` (networkless signature check, every request) and `fetchEmail()` (Backend API, only when provisioning a row).
-2. **Only the Inno installer mints weak machine IDs.** The spec said "the Windows installer". `installer/windows/install.ps1` already uses `[guid]::NewGuid()`; only `TokenOpsAgent.iss` uses a timestamp. Task 9 is correspondingly smaller.
+2. **Only the Inno installer mints weak machine IDs.** The spec said "the Windows installer". `installer/windows/install.ps1` already uses `[guid]::NewGuid()`; only `TokenOpsAgent.iss` uses a timestamp. Task 8 is correspondingly smaller.
 
 Package names verified against current docs: the React SDK is **`@clerk/react`** (not `@clerk/clerk-react`), and `<Show when="signed-in">` has replaced `<SignedIn>` / `<SignedOut>`.
 
@@ -279,7 +279,7 @@ export const users = pgTable("users", {
 });
 ```
 
-`passwordHash` loses `.notNull()` but stays for one release so a rollback does not destroy credentials. `sessions` is dropped now — nothing reads it after Task 6.
+`passwordHash` loses `.notNull()` but stays for one release so a rollback does not destroy credentials. `sessions` is dropped now — nothing reads it after Task 5.
 
 - [ ] **Step 4: Implement the repo methods**
 
@@ -665,18 +665,24 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: `requireUser` middleware, app wiring, env
+### Task 5: `requireUser` middleware, and removal of the password stack
+
+The middleware swap and the password-stack deletion are **one task with one commit**. Split apart, the commit between them leaves the API uncompilable and the suite red, violating Global Constraints and poisoning `git bisect`. This is the largest task in the plan; that is deliberate.
 
 **Files:**
 - Modify: `apps/api/src/auth/middleware.ts`
 - Modify: `apps/api/src/app.ts`
 - Modify: `apps/api/src/env.ts`
 - Modify: `apps/api/src/env.test.ts`
+- Modify: `apps/api/src/routes/auth.ts`
+- Modify: `apps/api/src/auth/auth.test.ts`
+- Modify: every route file importing `requireSession` (`aggregates.ts`, `events.ts`, `machines.ts`, `recommendations.ts`, `settings.ts`)
 - Test: `apps/api/src/auth/middleware.test.ts` (create)
+- Delete: `apps/api/src/auth/password.ts`, `apps/api/src/auth/session.ts`, `apps/api/src/auth/set-password-script.test.ts`, `apps/api/scripts/set-password.mjs`
 
 **Interfaces:**
 - Consumes: `resolveUserId` (Task 4), `ClerkVerifier` (Task 3)
-- Produces: `export const requireUser: MiddlewareHandler<AuthEnv>`; `AppDeps` gains `clerkVerifier?: ClerkVerifier`; `AppVariables` gains `clerkVerifier: ClerkVerifier`.
+- Produces: `export const requireUser: MiddlewareHandler<AuthEnv>`; `AppDeps` gains `clerkVerifier?: ClerkVerifier`; `AppVariables` gains `clerkVerifier: ClerkVerifier`; `/v1/auth` exposes only `GET /me` and `POST /pats`, both behind `requireUser`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -838,59 +844,23 @@ it("rejects a missing CLERK_SECRET_KEY", () => {
 
 Add `CLERK_SECRET_KEY: "sk_test_x"` to the shared `base` fixture so existing cases still pass.
 
-- [ ] **Step 6: Run the suite**
-
-Run: `pnpm test`
-
-Expected: the middleware and env tests PASS. `auth.test.ts` and route tests still FAIL — they reference `requireSession`, register, and login. Task 6 fixes them. Do not patch them here.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add apps/api/src/auth/middleware.ts apps/api/src/auth/middleware.test.ts apps/api/src/app.ts apps/api/src/env.ts apps/api/src/env.test.ts
-git commit -m "feat(api): requireUser middleware backed by Clerk
-
-PATs share the Authorization header, so tok_-prefixed values are rejected
-before reaching Clerk: an agent credential must never authenticate a
-dashboard route.
-
-CLERK_SECRET_KEY is now required at boot. Drops BOOTSTRAP_EMAIL and
-BOOTSTRAP_PASSWORD, which env.ts parsed but no code ever read.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
-```
-
----
-
-### Task 6: Remove the password stack
-
-**Files:**
-- Modify: `apps/api/src/routes/auth.ts`
-- Modify: `apps/api/src/auth/auth.test.ts`
-- Modify: every route file importing `requireSession` (`aggregates.ts`, `events.ts`, `machines.ts`, `recommendations.ts`, `settings.ts`)
-- Delete: `apps/api/src/auth/password.ts`, `apps/api/src/auth/session.ts`, `apps/api/src/auth/set-password-script.test.ts`, `apps/api/scripts/set-password.mjs`
-
-**Interfaces:**
-- Consumes: `requireUser` (Task 5)
-- Produces: `/v1/auth` exposes only `GET /me` and `POST /pats`, both behind `requireUser`.
-
-- [ ] **Step 1: Swap the middleware at every call site**
+- [ ] **Step 6: Swap the middleware at every call site**
 
 In each of `aggregates.ts`, `events.ts`, `machines.ts`, `recommendations.ts`, `settings.ts`, and `auth.ts`, replace the `requireSession` import and usage with `requireUser`. Leave every `requirePat` usage untouched — `POST /v1/events` and `POST /v1/heartbeats` stay PAT-only so agents are unaffected.
 
 Confirm none remain: `grep -rn "requireSession" apps/api/src` returns nothing.
 
-- [ ] **Step 2: Strip the auth routes**
+- [ ] **Step 7: Strip the auth routes**
 
 In `apps/api/src/routes/auth.ts`, delete the `/register` and `/login` handlers, the `credentialsSchema`, and the `hashPassword`/`verifyPassword`/session-cookie imports. Keep `/me` and `/pats`, now using `requireUser`. If a `/logout` handler exists, delete it — Clerk owns sign-out.
 
-- [ ] **Step 3: Delete the dead files**
+- [ ] **Step 8: Delete the dead files**
 
 ```bash
 git rm apps/api/src/auth/password.ts apps/api/src/auth/session.ts apps/api/src/auth/set-password-script.test.ts apps/api/scripts/set-password.mjs
 ```
 
-- [ ] **Step 4: Rewrite the auth tests**
+- [ ] **Step 9: Rewrite the auth tests**
 
 In `apps/api/src/auth/auth.test.ts`, delete every register, login, and session-lifecycle case. Keep and adapt the PAT cases, building the app with a fake verifier:
 
@@ -919,30 +889,37 @@ expect(token.startsWith("tok_")).toBe(true);
 
 Then assert that token still authenticates `POST /v1/events` — proving the agent path is untouched by the auth swap.
 
-- [ ] **Step 5: Run the full suite**
+- [ ] **Step 10: Run the full suite**
 
 Run: `pnpm test`
 
-Expected: PASS. If anything still imports `password.js` or `session.js`, the build fails loudly — fix the import, do not restore the file.
+Expected: **PASS, entirely.** The middleware swap and the password-stack deletion are one task precisely so the suite is never red at a commit boundary — see Global Constraints. If anything still imports `password.js` or `session.js`, the build fails loudly: fix the import, do not restore the file.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 11: Commit — one commit for the whole task**
 
 ```bash
 git add -A apps/api
-git commit -m "feat(api)!: delete the password and session stack
+git commit -m "feat(api)!: authenticate the dashboard with Clerk
 
-Clerk owns human authentication. Removes password.ts, session.ts, the
-register and login routes, and the set-password recovery script that
-existed only because there was no reset flow.
+Introduces requireUser and deletes the password stack in one change, so no
+commit leaves the suite red.
 
-PAT routes are untouched: agents need no update and no re-install.
+PATs share the Authorization header, so tok_-prefixed values are rejected
+before reaching Clerk: an agent credential must never authenticate a
+dashboard route. PAT routes are otherwise untouched — agents need no update
+and no re-install.
+
+Removes password.ts, session.ts, the register and login routes, and the
+set-password recovery script that existed only because there was no reset
+flow. CLERK_SECRET_KEY is now required at boot. Drops BOOTSTRAP_EMAIL and
+BOOTSTRAP_PASSWORD, which env.ts parsed but no code ever read.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 7: Cross-tenant isolation tests
+### Task 6: Cross-tenant isolation tests
 
 Open signup makes every route a potential leak. Task 1 fixed the write path; this proves the read paths.
 
@@ -1088,7 +1065,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 8: Clerk in the dashboard
+### Task 7: Clerk in the dashboard
 
 **Files:**
 - Modify: `apps/web/package.json` (add `@clerk/react`)
@@ -1232,7 +1209,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 9: Stop the Inno installer minting machine IDs
+### Task 8: Stop the Inno installer minting machine IDs
 
 `apps/agent/src/identity.ts` mints `randomUUID()`, and `install.ps1` uses `[guid]::NewGuid()`. Only `TokenOpsAgent.iss` writes `machine.json` itself using `GetDateTimeString('yyyymmddhhnnsszzz')` — a low-entropy, guessable timestamp that also feeds `buildEventId`, which hashes `machineId` into every event ID.
 
@@ -1304,7 +1281,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 10: Documentation
+### Task 9: Documentation
 
 **Files:**
 - Modify: `README.md`
