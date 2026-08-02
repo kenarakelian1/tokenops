@@ -74,7 +74,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
     async insertUser(email, passwordHash) {
       const [row] = await db
         .insert(users)
-        .values({ email, passwordHash })
+        .values({ email: email.toLowerCase(), passwordHash })
         .returning();
       return toAuthUser(row);
     },
@@ -83,7 +83,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
       const [row] = await db
         .select()
         .from(users)
-        .where(eq(users.email, email))
+        .where(eq(users.email, email.toLowerCase()))
         .limit(1);
       return row ? toAuthUser(row) : null;
     },
@@ -161,7 +161,9 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
       const [row] = await db
         .select()
         .from(users)
-        .where(and(eq(users.email, email), isNull(users.clerkUserId)))
+        .where(
+          and(eq(users.email, email.toLowerCase()), isNull(users.clerkUserId)),
+        )
         .limit(1);
       return row ? toAuthUser(row) : null;
     },
@@ -173,7 +175,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
     async insertClerkUser(email, clerkUserId) {
       const [row] = await db
         .insert(users)
-        .values({ email, clerkUserId })
+        .values({ email: email.toLowerCase(), clerkUserId })
         .returning();
       return toAuthUser(row);
     },
@@ -197,19 +199,23 @@ export function createMemoryAuthRepo(): AuthRepo {
     passwordHash: string | null,
     clerkUserId: string | null,
   ): AuthUser {
-    if (emailIndex.has(email.toLowerCase())) {
+    const normalizedEmail = email.toLowerCase();
+    if (emailIndex.has(normalizedEmail)) {
       throw new Error("email already exists");
+    }
+    if (clerkUserId && clerkIndex.has(clerkUserId)) {
+      throw new Error("clerk_user_id already exists");
     }
     const id = crypto.randomUUID();
     const user: AuthUser = {
       id,
-      email,
+      email: normalizedEmail,
       clerkUserId,
       passwordHash,
       budgetUsdMonthly: null,
     };
     userMap.set(id, user);
-    emailIndex.set(email.toLowerCase(), id);
+    emailIndex.set(normalizedEmail, id);
     if (clerkUserId) {
       clerkIndex.set(clerkUserId, id);
     }
@@ -283,10 +289,16 @@ export function createMemoryAuthRepo(): AuthRepo {
 
     async linkClerkId(userId, clerkUserId) {
       const user = userMap.get(userId);
-      if (user) {
-        user.clerkUserId = clerkUserId;
-        clerkIndex.set(clerkUserId, userId);
+      if (!user) return;
+      const existingOwner = clerkIndex.get(clerkUserId);
+      if (existingOwner && existingOwner !== userId) {
+        throw new Error("clerk_user_id already exists");
       }
+      if (user.clerkUserId) {
+        clerkIndex.delete(user.clerkUserId);
+      }
+      user.clerkUserId = clerkUserId;
+      clerkIndex.set(clerkUserId, userId);
     },
 
     async insertClerkUser(email, clerkUserId) {

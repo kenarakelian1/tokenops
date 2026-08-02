@@ -221,6 +221,22 @@ describe("auth routes", () => {
     expect(res.status).toBe(401);
   });
 
+  it("login rejects a Clerk-linked user with no password hash", async () => {
+    const { app, authRepo } = appWithMemory();
+    await authRepo.insertClerkUser("clerkonly@example.com", "user_clerk_only");
+
+    const res = await app.request("/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "clerkonly@example.com",
+        password: "whatever123",
+      }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "invalid_credentials" });
+  });
+
   it("me requires session; works with cookie", async () => {
     const { app } = appWithMemory();
     const reg = await app.request("/v1/auth/register", {
