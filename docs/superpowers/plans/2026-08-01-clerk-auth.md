@@ -86,7 +86,7 @@ Append to `apps/api/src/services/events-repo.test.ts`:
 
 ```ts
 it("does not let one user's heartbeat mutate another user's machine row", async () => {
-  const repo = createInMemoryEventsRepo();
+  const repo = createMemoryEventsRepo();
 
   await repo.upsertMachine("user-a", "machine-1", "alice-laptop", 0);
   await repo.upsertMachine("user-b", "machine-1", "mallory-laptop", 5);
@@ -112,7 +112,7 @@ Expected: FAIL. The in-memory repo keys machines by `machineId`, so `user-a` see
 
 - [ ] **Step 3: Key the in-memory repo by owner**
 
-In `apps/api/src/services/events-repo.ts`, inside `createInMemoryEventsRepo`, change the machine map key to include the owner:
+In `apps/api/src/services/events-repo.ts`, inside `createMemoryEventsRepo`, change the machine map key to include the owner:
 
 ```ts
 // Mirrors the (user_id, machine_id) primary key. Keying on machineId alone
@@ -939,7 +939,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app.js";
 import { createFakeVerifier } from "../auth/clerk.js";
 import { createMemoryAuthRepo } from "../auth/repo.js";
-import { createInMemoryEventsRepo } from "../services/events-repo.js";
+import { createMemoryEventsRepo } from "../services/events-repo.js";
 
 const verifier = createFakeVerifier({
   "token-a": { clerkUserId: "user_a", email: "a@example.com" },
@@ -952,11 +952,11 @@ function bearer(token: string) {
 
 describe("tenant isolation", () => {
   let app: ReturnType<typeof createApp>;
-  let eventsRepo: ReturnType<typeof createInMemoryEventsRepo>;
+  let eventsRepo: ReturnType<typeof createMemoryEventsRepo>;
 
   beforeEach(async () => {
     const authRepo = createMemoryAuthRepo();
-    eventsRepo = createInMemoryEventsRepo();
+    eventsRepo = createMemoryEventsRepo();
     app = createApp({
       db: undefined as never,
       authRepo,
@@ -1020,13 +1020,13 @@ describe("tenant isolation", () => {
 ```
 
 Add the seed helper at the top of the file, matching whatever
-`createInMemoryEventsRepo` exposes for inserting recommendations — read the
+`createMemoryEventsRepo` exposes for inserting recommendations — read the
 repo's `insertRecommendations` signature before writing it rather than
 guessing at the row shape:
 
 ```ts
 async function seedRecommendationFor(
-  repo: ReturnType<typeof createInMemoryEventsRepo>,
+  repo: ReturnType<typeof createMemoryEventsRepo>,
   userId: string,
 ): Promise<string> {
   await repo.insertRecommendations(userId, [
@@ -1356,6 +1356,28 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
+
+## Deploy constraint — read before migrating production
+
+**Migrations 0002 and later must not be applied to production until Task 5 has
+landed. The schema change and the Clerk middleware ship as one atomic deploy.**
+
+Task 2 drops the `sessions` table while `requireSession`, register, login, and
+logout are still live. Production builds its repo through
+`createDrizzleAuthRepo`, so those paths reach session methods whose table no
+longer exists and return **500**, not 401 — every cookie-authenticated endpoint
+included. Only the tests are unaffected, because they inject the in-memory repo.
+
+Deploying the branch head is safe; deploying any commit between Task 2 and
+Task 5 is not.
+
+Two intended, irreversible side effects at deploy time:
+
+- Dropping `sessions` signs out every currently logged-in user.
+- `DROP TABLE "sessions" CASCADE` is drizzle-kit's default output and cannot be
+  hand-edited under the plan's constraints. Before applying, check production
+  for out-of-band dependents (`\d+ sessions`, `pg_depend`) that `CASCADE` would
+  remove silently.
 
 ## Post-merge
 
