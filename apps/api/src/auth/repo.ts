@@ -44,7 +44,19 @@ export type AuthRepo = {
   ): Promise<{ userId: string; revokedAt: Date | null } | null>;
   getUserByClerkId(clerkUserId: string): Promise<AuthUser | null>;
   getUnlinkedUserByEmail(email: string): Promise<AuthUser | null>;
-  linkClerkId(userId: string, clerkUserId: string): Promise<void>;
+  /**
+   * Link a clerk_user_id to a user row, but only while that row's
+   * clerk_user_id is still NULL. Returns whether the link actually
+   * happened. This is the write-side of the adopt-at-most-once invariant:
+   * a read check (`getUnlinkedUserByEmail`) is not enough on its own,
+   * because two concurrent callers can both pass the read before either
+   * writes. Returning `false` (rather than silently overwriting or
+   * throwing) lets the caller detect a lost race and resolve it instead of
+   * one write clobbering the other — the previous unconditional `SET`
+   * allowed a second, different Clerk identity to steal an already-linked
+   * row via last-write-wins.
+   */
+  linkClerkId(userId: string, clerkUserId: string): Promise<boolean>;
   insertClerkUser(
     email: string,
     clerkUserId: string | null,
@@ -169,7 +181,12 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
     },
 
     async linkClerkId(userId, clerkUserId) {
-      await db.update(users).set({ clerkUserId }).where(eq(users.id, userId));
+      const rows = await db
+        .update(users)
+        .set({ clerkUserId })
+        .where(and(eq(users.id, userId), isNull(users.clerkUserId)))
+        .returning({ id: users.id });
+      return rows.length > 0;
     },
 
     async insertClerkUser(email, clerkUserId) {
@@ -289,16 +306,20 @@ export function createMemoryAuthRepo(): AuthRepo {
 
     async linkClerkId(userId, clerkUserId) {
       const user = userMap.get(userId);
-      if (!user) return;
+      if (!user) return false;
+      // Mirrors the Drizzle repo's `isNull(users.clerkUserId)` predicate:
+      // linking only succeeds while this row is still unlinked. Once set,
+      // it is immutable via this method — adoption runs at most once per
+      // row, and a second caller (a lost race, not a deliberate relink)
+      // gets `false` instead of silently overwriting the first link.
+      if (user.clerkUserId !== null) return false;
       const existingOwner = clerkIndex.get(clerkUserId);
       if (existingOwner && existingOwner !== userId) {
         throw new Error("clerk_user_id already exists");
       }
-      if (user.clerkUserId) {
-        clerkIndex.delete(user.clerkUserId);
-      }
       user.clerkUserId = clerkUserId;
       clerkIndex.set(clerkUserId, userId);
+      return true;
     },
 
     async insertClerkUser(email, clerkUserId) {

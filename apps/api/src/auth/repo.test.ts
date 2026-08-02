@@ -24,20 +24,32 @@ describe("AuthRepo Clerk lookups", () => {
       legacy.id,
     );
 
-    await repo.linkClerkId(legacy.id, "user_clerk_legacy");
+    expect(await repo.linkClerkId(legacy.id, "user_clerk_legacy")).toBe(true);
     expect(await repo.getUnlinkedUserByEmail("legacy@example.com")).toBeNull();
   });
 
-  it("relinking a user to a new clerk id retires the old lookup key", async () => {
+  it("links a still-unlinked row and reports success", async () => {
     const repo = createMemoryAuthRepo();
     const user = await repo.insertClerkUser("relink@example.com", null);
 
-    await repo.linkClerkId(user.id, "user_clerk_a");
+    expect(await repo.linkClerkId(user.id, "user_clerk_a")).toBe(true);
     expect((await repo.getUserByClerkId("user_clerk_a"))?.id).toBe(user.id);
+  });
 
-    await repo.linkClerkId(user.id, "user_clerk_b");
-    expect(await repo.getUserByClerkId("user_clerk_a")).toBeNull();
-    expect((await repo.getUserByClerkId("user_clerk_b"))?.id).toBe(user.id);
+  it("refuses to relink an already-linked row and reports no-op (adopt-at-most-once)", async () => {
+    // A row's clerk_user_id is immutable via linkClerkId once set. Without
+    // this guard, a second (losing) writer in a race could silently
+    // overwrite the first — last-write-wins account takeover. See
+    // resolveUserId in provision.ts, whose only caller-visible contract
+    // depends on this.
+    const repo = createMemoryAuthRepo();
+    const user = await repo.insertClerkUser("relink@example.com", null);
+
+    expect(await repo.linkClerkId(user.id, "user_clerk_a")).toBe(true);
+    expect(await repo.linkClerkId(user.id, "user_clerk_b")).toBe(false);
+
+    expect((await repo.getUserByClerkId("user_clerk_a"))?.id).toBe(user.id);
+    expect(await repo.getUserByClerkId("user_clerk_b")).toBeNull();
   });
 
   it("rejects linking a clerk id already claimed by another user", async () => {
