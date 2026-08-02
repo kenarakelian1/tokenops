@@ -1,12 +1,7 @@
+import { Show, UserButton, useAuth } from "@clerk/react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  NavLink,
-  Navigate,
-  Route,
-  Routes,
-  useNavigate,
-} from "react-router-dom";
-import { ApiError, getMe, logout, type UserMe } from "./api/client";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { getMe, setAuthTokenGetter, type UserMe } from "./api/client";
 import { Explore } from "./pages/Explore";
 import { Login } from "./pages/Login";
 import { Machines } from "./pages/Machines";
@@ -14,26 +9,41 @@ import { Overview } from "./pages/Overview";
 import { Recommendations } from "./pages/Recommendations";
 import { Settings } from "./pages/Settings";
 
-type AuthState =
-  | { status: "loading" }
-  | { status: "anonymous" }
-  | { status: "authed"; user: UserMe };
-
 export function App() {
-  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
-  const navigate = useNavigate();
+  const { getToken } = useAuth();
+
+  // Registered synchronously during render, not inside a useEffect: React
+  // commits a subtree's effects bottom-up (children's effects fire before
+  // the parent's), so a useEffect here would run *after* e.g. Dashboard's
+  // own mount-time fetch effect when both mount in the same commit — that
+  // first request would go out with no Authorization header and 401. A
+  // plain call in the component body runs before React even renders any
+  // children, so the getter is always in place before anything can fetch.
+  setAuthTokenGetter(() => getToken());
+
+  return (
+    <>
+      <Show when="signed-out">
+        <Login />
+      </Show>
+      <Show when="signed-in">
+        <Dashboard />
+      </Show>
+    </>
+  );
+}
+
+function Dashboard() {
+  const [user, setUser] = useState<UserMe | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const refreshMe = useCallback(async () => {
     try {
-      const user = await getMe();
-      setAuth({ status: "authed", user });
+      const me = await getMe();
+      setUser(me);
+      setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setAuth({ status: "anonymous" });
-        return;
-      }
-      // Network / other errors: treat as anonymous so Login is reachable
-      setAuth({ status: "anonymous" });
+      setError(err instanceof Error ? err.message : "Failed to load account");
     }
   }, []);
 
@@ -41,39 +51,9 @@ export function App() {
     void refreshMe();
   }, [refreshMe]);
 
-  const onLoggedIn = (user: UserMe) => {
-    setAuth({ status: "authed", user });
-    navigate("/");
-  };
-
-  const onLogout = async () => {
-    try {
-      await logout();
-    } catch {
-      // ignore
-    }
-    setAuth({ status: "anonymous" });
-    navigate("/login");
-  };
-
-  const onUserUpdated = (user: UserMe) => {
-    setAuth({ status: "authed", user });
-  };
-
-  if (auth.status === "loading") {
-    return <div className="login-page muted">Loading…</div>;
+  if (!user) {
+    return <div className="login-page muted">{error ?? "Loading…"}</div>;
   }
-
-  if (auth.status === "anonymous") {
-    return (
-      <Routes>
-        <Route path="/login" element={<Login onLoggedIn={onLoggedIn} />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    );
-  }
-
-  const { user } = auth;
 
   return (
     <div className="app-shell">
@@ -96,9 +76,7 @@ export function App() {
         </NavLink>
         <div className="sidebar-footer">
           <div>{user.email}</div>
-          <button type="button" className="btn-ghost" onClick={() => void onLogout()}>
-            Log out
-          </button>
+          <UserButton />
         </div>
       </aside>
       <main className="main">
@@ -109,7 +87,7 @@ export function App() {
           <Route path="/machines" element={<Machines />} />
           <Route
             path="/settings"
-            element={<Settings user={user} onUserUpdated={onUserUpdated} />}
+            element={<Settings user={user} onUserUpdated={setUser} />}
           />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
