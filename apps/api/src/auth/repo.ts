@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import { users, pats } from "../db/schema.js";
 
@@ -6,34 +6,16 @@ export type AuthUser = {
   id: string;
   email: string;
   clerkUserId: string | null;
-  /**
-   * Retained (nullable) for the password-auth code paths that still exist
-   * until Task 5 replaces session-based auth with Clerk. Not part of the
-   * Task 2 brief's `AuthUser` shape, but removing it now breaks
-   * auth/session.ts, routes/auth.ts, and their tests, which are out of
-   * scope for this task.
-   */
-  passwordHash: string | null;
   budgetUsdMonthly: string | null;
 };
 
 export type AuthRepo = {
-  countUsers(): Promise<number>;
-  insertUser(email: string, passwordHash: string): Promise<AuthUser>;
   getUserByEmail(email: string): Promise<AuthUser | null>;
   getUserById(id: string): Promise<AuthUser | null>;
   updateBudgetUsdMonthly(
     userId: string,
     budgetUsdMonthly: string | null,
   ): Promise<void>;
-  /** @deprecated Retained until Task 5 removes session-based auth. */
-  insertSession(id: string, userId: string, expiresAt: Date): Promise<void>;
-  /** @deprecated Retained until Task 5 removes session-based auth. */
-  getSession(
-    id: string,
-  ): Promise<{ userId: string; expiresAt: Date } | null>;
-  /** @deprecated Retained until Task 5 removes session-based auth. */
-  deleteSession(id: string): Promise<void>;
   insertPat(
     userId: string,
     name: string,
@@ -68,7 +50,6 @@ function toAuthUser(row: typeof users.$inferSelect): AuthUser {
     id: row.id,
     email: row.email,
     clerkUserId: row.clerkUserId,
-    passwordHash: row.passwordHash,
     budgetUsdMonthly: row.budgetUsdMonthly,
   };
 }
@@ -76,21 +57,6 @@ function toAuthUser(row: typeof users.$inferSelect): AuthUser {
 /** Drizzle-backed AuthRepo for production. */
 export function createDrizzleAuthRepo(db: Db): AuthRepo {
   return {
-    async countUsers() {
-      const rows = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(users);
-      return rows[0]?.count ?? 0;
-    },
-
-    async insertUser(email, passwordHash) {
-      const [row] = await db
-        .insert(users)
-        .values({ email: email.toLowerCase(), passwordHash })
-        .returning();
-      return toAuthUser(row);
-    },
-
     async getUserByEmail(email) {
       const [row] = await db
         .select()
@@ -114,29 +80,6 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         .update(users)
         .set({ budgetUsdMonthly })
         .where(eq(users.id, userId));
-    },
-
-    async insertSession() {
-      // The `sessions` table was dropped in this migration (see
-      // apps/api/drizzle/0002_*). Task 5 removes this method and its
-      // callers (auth/session.ts) entirely; until then this is dead code
-      // in production (no test exercises the Drizzle-backed repo's
-      // session methods).
-      throw new Error(
-        "insertSession: sessions table has been dropped; pending Task 5 removal",
-      );
-    },
-
-    async getSession() {
-      throw new Error(
-        "getSession: sessions table has been dropped; pending Task 5 removal",
-      );
-    },
-
-    async deleteSession() {
-      throw new Error(
-        "deleteSession: sessions table has been dropped; pending Task 5 removal",
-      );
     },
 
     async insertPat(userId, name, tokenHash) {
@@ -204,18 +147,13 @@ export function createMemoryAuthRepo(): AuthRepo {
   const userMap = new Map<string, AuthUser>();
   const emailIndex = new Map<string, string>();
   const clerkIndex = new Map<string, string>();
-  const sessionMap = new Map<string, { userId: string; expiresAt: Date }>();
   const patMap = new Map<
     string,
     { id: string; userId: string; name: string; revokedAt: Date | null }
   >();
   let patSeq = 0;
 
-  function insert(
-    email: string,
-    passwordHash: string | null,
-    clerkUserId: string | null,
-  ): AuthUser {
+  function insert(email: string, clerkUserId: string | null): AuthUser {
     const normalizedEmail = email.toLowerCase();
     if (emailIndex.has(normalizedEmail)) {
       throw new Error("email already exists");
@@ -228,7 +166,6 @@ export function createMemoryAuthRepo(): AuthRepo {
       id,
       email: normalizedEmail,
       clerkUserId,
-      passwordHash,
       budgetUsdMonthly: null,
     };
     userMap.set(id, user);
@@ -240,14 +177,6 @@ export function createMemoryAuthRepo(): AuthRepo {
   }
 
   return {
-    async countUsers() {
-      return userMap.size;
-    },
-
-    async insertUser(email, passwordHash) {
-      return insert(email, passwordHash, null);
-    },
-
     async getUserByEmail(email) {
       const id = emailIndex.get(email.toLowerCase());
       if (!id) return null;
@@ -263,18 +192,6 @@ export function createMemoryAuthRepo(): AuthRepo {
       if (user) {
         user.budgetUsdMonthly = budgetUsdMonthly;
       }
-    },
-
-    async insertSession(id, userId, expiresAt) {
-      sessionMap.set(id, { userId, expiresAt });
-    },
-
-    async getSession(id) {
-      return sessionMap.get(id) ?? null;
-    },
-
-    async deleteSession(id) {
-      sessionMap.delete(id);
     },
 
     async insertPat(userId, name, tokenHash) {
@@ -323,7 +240,7 @@ export function createMemoryAuthRepo(): AuthRepo {
     },
 
     async insertClerkUser(email, clerkUserId) {
-      return insert(email, null, clerkUserId);
+      return insert(email, clerkUserId);
     },
   };
 }

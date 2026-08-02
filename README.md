@@ -66,21 +66,14 @@ docker compose -f deploy/docker-compose.yml up --build
 | http://localhost:3000 | API direct (`GET /health` → `{ "ok": true }`) |
 | `localhost:5432` | Postgres (`tokenops` / `tokenops` / `tokenops`) |
 
-Register the first (and only) user:
+Sign up / sign in via the dashboard at `http://localhost:8080` — Clerk handles
+the account itself. Once signed in, create an agent PAT (send the dashboard's
+Clerk session token as a Bearer token):
 
 ```bash
-curl -X POST http://localhost:8080/v1/auth/register \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","password":"at-least-8-chars"}'
-```
-
-After the first user, registration closes. Log in via the dashboard, then create an agent PAT:
-
-```bash
-# After login, session cookie is set. Create a personal access token:
 curl -X POST http://localhost:8080/v1/auth/pats \
   -H 'content-type: application/json' \
-  -b cookies.txt \
+  -H 'Authorization: Bearer <clerk-session-jwt>' \
   -d '{"name":"laptop-agent"}'
 # → { "token": "…", "id": "…" }  — copy the token once; it is not shown again
 ```
@@ -338,31 +331,16 @@ After Compose is up and you have logged in:
 | `HOSTED_LIMITS` | no | unset/false | When `true`: max 3 machines; default 30-day raw event retention |
 | `RAW_EVENT_RETENTION_DAYS` | no | unset | If set, delete `usage_events` older than N days (aggregates kept) |
 | `CORS_ORIGIN` | no | unset | Single browser origin for credentialed CORS (prefer same-origin proxy) |
-| `BOOTSTRAP_EMAIL` | no | — | Reserved — parsed by `env.ts` but **not yet used**; it does not create a user |
-| `BOOTSTRAP_PASSWORD` | no | — | Reserved — see above |
+| `CLERK_SECRET_KEY` | yes | — | Clerk Backend API secret key; required at boot |
+| `CLERK_JWT_KEY` | no | unset | Pins Clerk JWT verification to a specific instance key for networkless verification |
 
-### Accounts and lost passwords
+### Accounts
 
-TokenOps is single-user and sends no email, so there is deliberately no signup
-form and no self-serve reset:
-
-- **First user** — `POST /v1/auth/register`. It returns `403 registration_closed`
-  once any user exists, so this works exactly once per instance.
-- **Lost password** — recover from the database with the admin script. Existing
-  PATs survive (agents keep shipping); all sessions are dropped.
-
-```bash
-# Railway — run against the Postgres service so DATABASE_PUBLIC_URL is injected
-# (the private DATABASE_URL host is not reachable from a laptop)
-railway run --service Postgres node apps/api/scripts/set-password.mjs you@example.com
-
-# Compose / self-host
-DATABASE_URL=postgres://tokenops:tokenops@localhost:5432/tokenops \
-  node apps/api/scripts/set-password.mjs you@example.com
-```
-
-The password is prompted on stdin, never passed as an argument, so it stays out
-of shell history and process listings.
+The dashboard authenticates via [Clerk](https://clerk.com) — sign-up, sign-in,
+and session management all live on Clerk's side. The API verifies the Clerk
+session JWT on `Authorization: Bearer` and provisions (or adopts, by email) a
+local `users` row on first sight (see `apps/api/src/auth/provision.ts`).
+Agents keep using long-lived PATs (`POST /v1/auth/pats`), unaffected by this.
 
 ### Content TTL
 
@@ -383,7 +361,7 @@ See `deploy/env.example`. Compose defaults:
 
 - `DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops`
 - `SESSION_SECRET` from env or a dev placeholder (change for real use)
-- Optional vars (`BOOTSTRAP_*`, `CORS_ORIGIN`, `RAW_EVENT_RETENTION_DAYS`) are **omitted** when unset (empty strings would fail strict Zod validation without the API’s empty→undefined normalization)
+- Optional vars (`CLERK_JWT_KEY`, `CORS_ORIGIN`, `RAW_EVENT_RETENTION_DAYS`) are **omitted** when unset (empty strings would fail strict Zod validation without the API’s empty→undefined normalization)
 
 ## Railway
 

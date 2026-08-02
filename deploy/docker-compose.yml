@@ -32,6 +32,7 @@ services:
     environment:
       DATABASE_URL: postgres://tokenops:tokenops@db:5432/tokenops
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY (see deploy/env.example)}
       HOST: 0.0.0.0
       PORT: "3000"
       # Self-host defaults: no machine cap, unlimited raw event retention
@@ -39,8 +40,7 @@ services:
       # Optional — only pass when set (empty strings break Zod .optional() without emptyToUndefined):
       # RAW_EVENT_RETENTION_DAYS: "30"
       # CORS_ORIGIN: http://localhost:5173
-      # BOOTSTRAP_EMAIL: admin@example.com
-      # BOOTSTRAP_PASSWORD: your-secure-password
+      # CLERK_JWT_KEY: your_clerk_jwt_key
     ports:
       - "3000:3000"
     healthcheck:

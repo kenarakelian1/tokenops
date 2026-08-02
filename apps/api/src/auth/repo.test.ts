@@ -72,7 +72,7 @@ describe("AuthRepo Clerk lookups", () => {
 
   it("normalizes email case: mixed-case lookup finds a lowercase-stored row", async () => {
     const repo = createMemoryAuthRepo();
-    const created = await repo.insertUser("Mixed@Example.com", "some-hash");
+    const created = await repo.insertClerkUser("Mixed@Example.com", null);
     expect(created.email).toBe("mixed@example.com");
 
     const found = await repo.getUserByEmail("MIXED@EXAMPLE.COM");

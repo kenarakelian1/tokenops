@@ -20,8 +20,15 @@ export function emptyToUndefined(
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   SESSION_SECRET: z.string().min(1, "SESSION_SECRET is required"),
-  BOOTSTRAP_EMAIL: z.string().email().optional(),
-  BOOTSTRAP_PASSWORD: z.string().min(1).optional(),
+  /**
+   * Clerk Backend API secret key. Required at boot — without it the API
+   * cannot verify any dashboard session, so failing fast here surfaces the
+   * cause in ten seconds instead of a 500 on first request. Get one from
+   * the Clerk dashboard (see README.md for setup instructions).
+   */
+  CLERK_SECRET_KEY: z.string().min(1, "CLERK_SECRET_KEY is required — see README.md for Clerk setup"),
+  /** Optional: pins Clerk JWT verification to a specific instance key, enabling networkless verification. */
+  CLERK_JWT_KEY: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default("0.0.0.0"),
   /** When "true", enforce free-tier machine limit and 30d raw event retention. */

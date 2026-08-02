@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { IngestBatchSchema } from "@tokenops/shared";
-import { requirePat, requireSession } from "../auth/middleware.js";
+import { requirePat, requireUser } from "../auth/middleware.js";
 import type { EventsRepo } from "../services/events-repo.js";
 import { ingest, MachineLimitError } from "../services/ingest.js";
 import type { UsageEventRow } from "../db/schema.js";
@@ -57,8 +57,8 @@ eventsRoutes.post("/", requirePat, async (c) => {
   }
 });
 
-/** Session: filtered event list. */
-eventsRoutes.get("/", requireSession, async (c) => {
+/** Dashboard: filtered event list. */
+eventsRoutes.get("/", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
   const limitRaw = c.req.query("limit");

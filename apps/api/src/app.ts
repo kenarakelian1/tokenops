@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Db } from "./db/client.js";
+import { createClerkVerifier, type ClerkVerifier } from "./auth/clerk.js";
 import {
   createDrizzleAuthRepo,
   type AuthRepo,
@@ -24,6 +25,8 @@ export type AppDeps = {
   authRepo?: AuthRepo;
   /** Override for tests (in-memory). Defaults to Drizzle-backed repo. */
   eventsRepo?: EventsRepo;
+  /** Override for tests (fake, offline). Defaults to a real Clerk-backed verifier. */
+  clerkVerifier?: ClerkVerifier;
   /** When true, enforce max 3 machines. Defaults to HOSTED_LIMITS env. */
   hostedLimits?: boolean;
   /**
@@ -37,6 +40,7 @@ export type AppVariables = {
   db: Db;
   authRepo: AuthRepo;
   eventsRepo: EventsRepo;
+  clerkVerifier: ClerkVerifier;
   hostedLimits: boolean;
   userId: string;
 };
@@ -45,6 +49,12 @@ export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
   const app = new Hono<{ Variables: AppVariables }>();
   const authRepo = deps.authRepo ?? createDrizzleAuthRepo(deps.db);
   const eventsRepo = deps.eventsRepo ?? createDrizzleEventsRepo(deps.db);
+  const clerkVerifier =
+    deps.clerkVerifier ??
+    createClerkVerifier({
+      secretKey: process.env.CLERK_SECRET_KEY!,
+      jwtKey: process.env.CLERK_JWT_KEY,
+    });
   const hostedLimits =
     deps.hostedLimits ?? process.env.HOSTED_LIMITS === "true";
   const corsOrigin =
@@ -66,6 +76,7 @@ export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
     c.set("db", deps.db);
     c.set("authRepo", authRepo);
     c.set("eventsRepo", eventsRepo);
+    c.set("clerkVerifier", clerkVerifier);
     c.set("hostedLimits", hostedLimits);
     await next();
   });
@@ -82,4 +93,4 @@ export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
   return app;
 }
 
-export { requireSession, requirePat } from "./auth/middleware.js";
+export { requireUser, requirePat } from "./auth/middleware.js";

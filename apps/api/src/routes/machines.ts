@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireSession } from "../auth/middleware.js";
+import { requireUser } from "../auth/middleware.js";
 import type { Machine } from "../db/schema.js";
 import type { EventsRepo } from "../services/events-repo.js";
 
@@ -19,8 +19,8 @@ function machineToDto(row: Machine) {
 
 export const machinesRoutes = new Hono<{ Variables: MachinesRouteVariables }>();
 
-/** Session: list machines for the user. */
-machinesRoutes.get("/", requireSession, async (c) => {
+/** Dashboard: list machines for the user. */
+machinesRoutes.get("/", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
   const rows = await repo.listMachines(userId);

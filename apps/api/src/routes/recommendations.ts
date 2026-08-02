@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireSession } from "../auth/middleware.js";
+import { requireUser } from "../auth/middleware.js";
 import type { Recommendation, RecommendationStatus } from "../db/schema.js";
 import type { EventsRepo } from "../services/events-repo.js";
 
@@ -28,8 +28,8 @@ export const recommendationsRoutes = new Hono<{
   Variables: RecommendationsRouteVariables;
 }>();
 
-/** Session: list recommendations (default open). */
-recommendationsRoutes.get("/", requireSession, async (c) => {
+/** Dashboard: list recommendations (default open). */
+recommendationsRoutes.get("/", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
   const statusParam = c.req.query("status");
@@ -45,8 +45,8 @@ recommendationsRoutes.get("/", requireSession, async (c) => {
   return c.json({ recommendations: rows.map(recToDto) });
 });
 
-/** Session: dismiss a recommendation. */
-recommendationsRoutes.post("/:id/dismiss", requireSession, async (c) => {
+/** Dashboard: dismiss a recommendation. */
+recommendationsRoutes.post("/:id/dismiss", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
   const id = c.req.param("id");
