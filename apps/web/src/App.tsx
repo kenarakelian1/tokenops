@@ -10,7 +10,7 @@ import { Recommendations } from "./pages/Recommendations";
 import { Settings } from "./pages/Settings";
 
 export function App() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded } = useAuth();
 
   // Registered synchronously during render, not inside a useEffect: React
   // commits a subtree's effects bottom-up (children's effects fire before
@@ -20,6 +20,13 @@ export function App() {
   // plain call in the component body runs before React even renders any
   // children, so the getter is always in place before anything can fetch.
   setAuthTokenGetter(() => getToken());
+
+  // Show's "signed-out"/"signed-in" branches both render nothing until
+  // Clerk finishes its startup round-trip (isLoaded), which otherwise reads
+  // as a blank white page rather than a loading state.
+  if (!isLoaded) {
+    return <div className="login-page muted">Loading…</div>;
+  }
 
   return (
     <>
@@ -52,7 +59,23 @@ function Dashboard() {
   }, [refreshMe]);
 
   if (!user) {
-    return <div className="login-page muted">{error ?? "Loading…"}</div>;
+    // Clerk has already authenticated this user by the time Dashboard
+    // mounts — only our own /v1/auth/me JIT-provisioning call can fail
+    // here. Without an escape hatch, a 401/500/timeout on that call would
+    // otherwise strand a signed-in user on a bare error string with no way
+    // to retry or sign out (the old code fell back to the Login page on a
+    // failed session probe; Clerk owns that now, so we provide our own).
+    return (
+      <div className="login-page muted">
+        <div>{error ?? "Loading…"}</div>
+        {error ? (
+          <button type="button" className="btn" onClick={() => void refreshMe()}>
+            Retry
+          </button>
+        ) : null}
+        <UserButton />
+      </div>
+    );
   }
 
   return (
@@ -87,7 +110,7 @@ function Dashboard() {
           <Route path="/machines" element={<Machines />} />
           <Route
             path="/settings"
-            element={<Settings user={user} onUserUpdated={setUser} />}
+            element={<Settings user={user} onUserUpdated={(u) => setUser(u)} />}
           />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
