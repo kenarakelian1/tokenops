@@ -45,16 +45,43 @@ export type AppVariables = {
   userId: string;
 };
 
+/**
+ * Builds the default (real) verifier without touching `process.env` until a
+ * request actually needs it. `createApp` runs for every test file, including
+ * ones that never authenticate (e.g. health.test.ts) and never inject a fake
+ * — constructing a real `@clerk/backend` client eagerly there would depend
+ * on `CLERK_SECRET_KEY` being set even though `env.ts`'s boot-time validation
+ * is the thing meant to guarantee that, not this module.
+ */
+function createDefaultClerkVerifier(): ClerkVerifier {
+  let real: ClerkVerifier | undefined;
+  function ensure(): ClerkVerifier {
+    if (!real) {
+      const secretKey = process.env.CLERK_SECRET_KEY;
+      if (!secretKey) {
+        throw new Error(
+          "CLERK_SECRET_KEY is required to construct the default Clerk verifier " +
+            "(env.ts should have failed at boot before this ever runs)",
+        );
+      }
+      real = createClerkVerifier({
+        secretKey,
+        jwtKey: process.env.CLERK_JWT_KEY,
+      });
+    }
+    return real;
+  }
+  return {
+    verifyToken: (token) => ensure().verifyToken(token),
+    fetchEmail: (clerkUserId) => ensure().fetchEmail(clerkUserId),
+  };
+}
+
 export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
   const app = new Hono<{ Variables: AppVariables }>();
   const authRepo = deps.authRepo ?? createDrizzleAuthRepo(deps.db);
   const eventsRepo = deps.eventsRepo ?? createDrizzleEventsRepo(deps.db);
-  const clerkVerifier =
-    deps.clerkVerifier ??
-    createClerkVerifier({
-      secretKey: process.env.CLERK_SECRET_KEY!,
-      jwtKey: process.env.CLERK_JWT_KEY,
-    });
+  const clerkVerifier = deps.clerkVerifier ?? createDefaultClerkVerifier();
   const hostedLimits =
     deps.hostedLimits ?? process.env.HOSTED_LIMITS === "true";
   const corsOrigin =

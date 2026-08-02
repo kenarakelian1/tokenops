@@ -61,6 +61,6 @@ describe("loadEnv", () => {
 
   it("rejects a missing CLERK_SECRET_KEY", () => {
     const { CLERK_SECRET_KEY, ...withoutKey } = { ...base, CLERK_SECRET_KEY: "sk_test_x" };
-    expect(() => loadEnv(withoutKey)).toThrow();
+    expect(() => loadEnv(withoutKey)).toThrow(/CLERK_SECRET_KEY/);
   });
 });

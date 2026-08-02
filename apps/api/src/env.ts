@@ -26,7 +26,11 @@ const envSchema = z.object({
    * cause in ten seconds instead of a 500 on first request. Get one from
    * the Clerk dashboard (see README.md for setup instructions).
    */
-  CLERK_SECRET_KEY: z.string().min(1, "CLERK_SECRET_KEY is required — see README.md for Clerk setup"),
+  CLERK_SECRET_KEY: z
+    .string({
+      error: "CLERK_SECRET_KEY is required — see README.md for Clerk setup",
+    })
+    .min(1, "CLERK_SECRET_KEY is required — see README.md for Clerk setup"),
   /** Optional: pins Clerk JWT verification to a specific instance key, enabling networkless verification. */
   CLERK_JWT_KEY: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(3000),

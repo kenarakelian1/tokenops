@@ -46,17 +46,18 @@ Phase 1 includes:
 | Piece | Role |
 |-------|------|
 | `@tokenops/agent` | Capture, privacy gate, durable outbox, ship to cloud |
-| `@tokenops/api` | Auth (session + PAT), ingest, aggregates, recommendations |
+| `@tokenops/api` | Auth (Clerk-verified dashboard session + PAT), ingest, aggregates, recommendations |
 | `@tokenops/web` | Dashboard UI |
 | `@tokenops/shared` | Event schema, features, pricing, rules, privacy |
 
-Compose runs **db** + **api** + **web** (nginx serves the SPA and proxies `/v1` and `/health` for same-origin cookies).
+Compose runs **db** + **api** + **web** (nginx serves the SPA and proxies `/v1` and `/health` for same-origin API calls).
 
 ## Quick start (Docker Compose)
 
 ```bash
 # From repo root
 export SESSION_SECRET="$(openssl rand -hex 32)"   # required in production
+export CLERK_SECRET_KEY="sk_test_..."             # required — from the Clerk dashboard
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
@@ -66,9 +67,13 @@ docker compose -f deploy/docker-compose.yml up --build
 | http://localhost:3000 | API direct (`GET /health` → `{ "ok": true }`) |
 | `localhost:5432` | Postgres (`tokenops` / `tokenops` / `tokenops`) |
 
-Sign up / sign in via the dashboard at `http://localhost:8080` — Clerk handles
-the account itself. Once signed in, create an agent PAT (send the dashboard's
-Clerk session token as a Bearer token):
+**Dashboard sign-in is pending.** The API verifies Clerk session JWTs
+(`GET /v1/auth/me`, `POST /v1/auth/pats` both require one), but `@tokenops/web`
+does not yet embed Clerk — it still calls the now-removed `POST /v1/auth/login`
+and `/logout`, so the dashboard's own login page does not work until that
+integration lands. Until then, mint a PAT directly against the API using a
+Clerk session JWT obtained some other way (e.g. the Clerk dashboard's test
+tokens, or `curl` after wiring up `@clerk/clerk-js` yourself):
 
 ```bash
 curl -X POST http://localhost:8080/v1/auth/pats \
@@ -379,7 +384,7 @@ Self-deploy:
 
 1. New project → add **Postgres** plugin (`DATABASE_URL` injected).
 2. Deploy API from repo root with `railway.toml` / `deploy/api.Dockerfile`.
-3. Set `SESSION_SECRET`. For hosted free tier set `HOSTED_LIMITS=true`.
+3. Set `SESSION_SECRET` and `CLERK_SECRET_KEY` (API refuses to boot without either). For hosted free tier set `HOSTED_LIMITS=true`.
 4. Deploy web as a second service (`deploy/web.Dockerfile`) so nginx can reach `tokenops-api:3000` on the private network.
 
 Health check path: `/health`.
@@ -429,7 +434,7 @@ pnpm --filter @tokenops/agent build
 | Package | Notes |
 |---------|-------|
 | `packages/shared` | Schema, pricing, features, rules — no I/O |
-| `apps/api` | Needs `DATABASE_URL` + `SESSION_SECRET` for `pnpm --filter @tokenops/api dev` |
+| `apps/api` | Needs `DATABASE_URL` + `SESSION_SECRET` + `CLERK_SECRET_KEY` for `pnpm --filter @tokenops/api dev` |
 | `apps/agent` | Unit tests mock upstream; no live provider keys in CI |
 | `apps/web` | `pnpm --filter @tokenops/web dev` for Vite (UI against Compose/Railway API preferred) |
 

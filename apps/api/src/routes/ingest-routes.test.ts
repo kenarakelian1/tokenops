@@ -92,6 +92,19 @@ describe("POST /v1/events", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects a Clerk session token (dashboard credential) on a PAT route", async () => {
+    const { app, userAuth } = await setup();
+    const res = await app.request("/v1/events", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: userAuth,
+      },
+      body: JSON.stringify({ events: [sampleEvent("e1")] }),
+    });
+    expect(res.status).toBe(401);
+  });
+
   it("ingests batch and is idempotent", async () => {
     const { app, pat } = await setup();
     const body = JSON.stringify({ events: [sampleEvent("e1")] });
