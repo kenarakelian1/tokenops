@@ -15,6 +15,13 @@
       "when": 1785612705329,
       "tag": "0001_tiny_pandemic",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785674492708,
+      "tag": "0002_clever_the_hood",
+      "breakpoints": true
     }
   ]
 }

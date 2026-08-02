@@ -80,6 +80,9 @@ authRoutes.post("/login", async (c) => {
     return c.json({ error: "invalid_credentials" }, 401);
   }
 
+  if (!user.passwordHash) {
+    return c.json({ error: "invalid_credentials" }, 401);
+  }
   const ok = await verifyPassword(parsed.data.password, user.passwordHash);
   if (!ok) {
     return c.json({ error: "invalid_credentials" }, 401);

@@ -14,7 +14,8 @@ import {
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
+  clerkUserId: text("clerk_user_id").unique(),
+  passwordHash: text("password_hash"),
   budgetUsdMonthly: numeric("budget_usd_monthly", {
     precision: 12,
     scale: 4,
@@ -22,14 +23,6 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
-
-export const sessions = pgTable("sessions", {
-  id: text("id").primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
 export const pats = pgTable(
@@ -153,7 +146,6 @@ export const recommendations = pgTable(
 );
 
 export type User = typeof users.$inferSelect;
-export type Session = typeof sessions.$inferSelect;
 export type Pat = typeof pats.$inferSelect;
 export type Machine = typeof machines.$inferSelect;
 export type UsageEventRow = typeof usageEvents.$inferSelect;

@@ -1,11 +1,19 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
-import { users, sessions, pats } from "../db/schema.js";
+import { users, pats } from "../db/schema.js";
 
 export type AuthUser = {
   id: string;
   email: string;
-  passwordHash: string;
+  clerkUserId: string | null;
+  /**
+   * Retained (nullable) for the password-auth code paths that still exist
+   * until Task 5 replaces session-based auth with Clerk. Not part of the
+   * Task 2 brief's `AuthUser` shape, but removing it now breaks
+   * auth/session.ts, routes/auth.ts, and their tests, which are out of
+   * scope for this task.
+   */
+  passwordHash: string | null;
   budgetUsdMonthly: string | null;
 };
 
@@ -18,10 +26,13 @@ export type AuthRepo = {
     userId: string,
     budgetUsdMonthly: string | null,
   ): Promise<void>;
+  /** @deprecated Retained until Task 5 removes session-based auth. */
   insertSession(id: string, userId: string, expiresAt: Date): Promise<void>;
+  /** @deprecated Retained until Task 5 removes session-based auth. */
   getSession(
     id: string,
   ): Promise<{ userId: string; expiresAt: Date } | null>;
+  /** @deprecated Retained until Task 5 removes session-based auth. */
   deleteSession(id: string): Promise<void>;
   insertPat(
     userId: string,
@@ -31,7 +42,24 @@ export type AuthRepo = {
   getPatByTokenHash(
     tokenHash: string,
   ): Promise<{ userId: string; revokedAt: Date | null } | null>;
+  getUserByClerkId(clerkUserId: string): Promise<AuthUser | null>;
+  getUnlinkedUserByEmail(email: string): Promise<AuthUser | null>;
+  linkClerkId(userId: string, clerkUserId: string): Promise<void>;
+  insertClerkUser(
+    email: string,
+    clerkUserId: string | null,
+  ): Promise<AuthUser>;
 };
+
+function toAuthUser(row: typeof users.$inferSelect): AuthUser {
+  return {
+    id: row.id,
+    email: row.email,
+    clerkUserId: row.clerkUserId,
+    passwordHash: row.passwordHash,
+    budgetUsdMonthly: row.budgetUsdMonthly,
+  };
+}
 
 /** Drizzle-backed AuthRepo for production. */
 export function createDrizzleAuthRepo(db: Db): AuthRepo {
@@ -48,12 +76,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         .insert(users)
         .values({ email, passwordHash })
         .returning();
-      return {
-        id: row.id,
-        email: row.email,
-        passwordHash: row.passwordHash,
-        budgetUsdMonthly: row.budgetUsdMonthly,
-      };
+      return toAuthUser(row);
     },
 
     async getUserByEmail(email) {
@@ -62,13 +85,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         .from(users)
         .where(eq(users.email, email))
         .limit(1);
-      if (!row) return null;
-      return {
-        id: row.id,
-        email: row.email,
-        passwordHash: row.passwordHash,
-        budgetUsdMonthly: row.budgetUsdMonthly,
-      };
+      return row ? toAuthUser(row) : null;
     },
 
     async getUserById(id) {
@@ -77,13 +94,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         .from(users)
         .where(eq(users.id, id))
         .limit(1);
-      if (!row) return null;
-      return {
-        id: row.id,
-        email: row.email,
-        passwordHash: row.passwordHash,
-        budgetUsdMonthly: row.budgetUsdMonthly,
-      };
+      return row ? toAuthUser(row) : null;
     },
 
     async updateBudgetUsdMonthly(userId, budgetUsdMonthly) {
@@ -93,22 +104,27 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
         .where(eq(users.id, userId));
     },
 
-    async insertSession(id, userId, expiresAt) {
-      await db.insert(sessions).values({ id, userId, expiresAt });
+    async insertSession() {
+      // The `sessions` table was dropped in this migration (see
+      // apps/api/drizzle/0002_*). Task 5 removes this method and its
+      // callers (auth/session.ts) entirely; until then this is dead code
+      // in production (no test exercises the Drizzle-backed repo's
+      // session methods).
+      throw new Error(
+        "insertSession: sessions table has been dropped; pending Task 5 removal",
+      );
     },
 
-    async getSession(id) {
-      const [row] = await db
-        .select()
-        .from(sessions)
-        .where(eq(sessions.id, id))
-        .limit(1);
-      if (!row) return null;
-      return { userId: row.userId, expiresAt: row.expiresAt };
+    async getSession() {
+      throw new Error(
+        "getSession: sessions table has been dropped; pending Task 5 removal",
+      );
     },
 
-    async deleteSession(id) {
-      await db.delete(sessions).where(eq(sessions.id, id));
+    async deleteSession() {
+      throw new Error(
+        "deleteSession: sessions table has been dropped; pending Task 5 removal",
+      );
     },
 
     async insertPat(userId, name, tokenHash) {
@@ -131,6 +147,36 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
       if (!row) return null;
       return { userId: row.userId, revokedAt: row.revokedAt };
     },
+
+    async getUserByClerkId(clerkUserId) {
+      const [row] = await db
+        .select()
+        .from(users)
+        .where(eq(users.clerkUserId, clerkUserId))
+        .limit(1);
+      return row ? toAuthUser(row) : null;
+    },
+
+    async getUnlinkedUserByEmail(email) {
+      const [row] = await db
+        .select()
+        .from(users)
+        .where(and(eq(users.email, email), isNull(users.clerkUserId)))
+        .limit(1);
+      return row ? toAuthUser(row) : null;
+    },
+
+    async linkClerkId(userId, clerkUserId) {
+      await db.update(users).set({ clerkUserId }).where(eq(users.id, userId));
+    },
+
+    async insertClerkUser(email, clerkUserId) {
+      const [row] = await db
+        .insert(users)
+        .values({ email, clerkUserId })
+        .returning();
+      return toAuthUser(row);
+    },
   };
 }
 
@@ -138,6 +184,7 @@ export function createDrizzleAuthRepo(db: Db): AuthRepo {
 export function createMemoryAuthRepo(): AuthRepo {
   const userMap = new Map<string, AuthUser>();
   const emailIndex = new Map<string, string>();
+  const clerkIndex = new Map<string, string>();
   const sessionMap = new Map<string, { userId: string; expiresAt: Date }>();
   const patMap = new Map<
     string,
@@ -145,25 +192,37 @@ export function createMemoryAuthRepo(): AuthRepo {
   >();
   let patSeq = 0;
 
+  function insert(
+    email: string,
+    passwordHash: string | null,
+    clerkUserId: string | null,
+  ): AuthUser {
+    if (emailIndex.has(email.toLowerCase())) {
+      throw new Error("email already exists");
+    }
+    const id = crypto.randomUUID();
+    const user: AuthUser = {
+      id,
+      email,
+      clerkUserId,
+      passwordHash,
+      budgetUsdMonthly: null,
+    };
+    userMap.set(id, user);
+    emailIndex.set(email.toLowerCase(), id);
+    if (clerkUserId) {
+      clerkIndex.set(clerkUserId, id);
+    }
+    return user;
+  }
+
   return {
     async countUsers() {
       return userMap.size;
     },
 
     async insertUser(email, passwordHash) {
-      if (emailIndex.has(email.toLowerCase())) {
-        throw new Error("email already exists");
-      }
-      const id = crypto.randomUUID();
-      const user: AuthUser = {
-        id,
-        email,
-        passwordHash,
-        budgetUsdMonthly: null,
-      };
-      userMap.set(id, user);
-      emailIndex.set(email.toLowerCase(), id);
-      return user;
+      return insert(email, passwordHash, null);
     },
 
     async getUserByEmail(email) {
@@ -206,6 +265,32 @@ export function createMemoryAuthRepo(): AuthRepo {
       const row = patMap.get(tokenHash);
       if (!row) return null;
       return { userId: row.userId, revokedAt: row.revokedAt };
+    },
+
+    async getUserByClerkId(clerkUserId) {
+      const id = clerkIndex.get(clerkUserId);
+      if (!id) return null;
+      return userMap.get(id) ?? null;
+    },
+
+    async getUnlinkedUserByEmail(email) {
+      const id = emailIndex.get(email.toLowerCase());
+      if (!id) return null;
+      const user = userMap.get(id);
+      if (!user || user.clerkUserId) return null;
+      return user;
+    },
+
+    async linkClerkId(userId, clerkUserId) {
+      const user = userMap.get(userId);
+      if (user) {
+        user.clerkUserId = clerkUserId;
+        clerkIndex.set(clerkUserId, userId);
+      }
+    },
+
+    async insertClerkUser(email, clerkUserId) {
+      return insert(email, null, clerkUserId);
     },
   };
 }
