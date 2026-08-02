@@ -66,7 +66,12 @@ export function createFakeVerifier(
     async fetchEmail(clerkUserId) {
       const email = byClerkId.get(clerkUserId);
       if (!email) throw new Error(`no fake user ${clerkUserId}`);
-      return email;
+      // Must normalize exactly as createClerkVerifier does. Otherwise a
+      // mixed-case fixture email would pass a test here while the same
+      // input fails against production, where emails are canonically
+      // lowercase (see repo.ts) — masking exactly the bug this double
+      // exists to catch.
+      return email.toLowerCase();
     },
   };
 }

@@ -497,7 +497,10 @@ export function createFakeVerifier(
     async fetchEmail(clerkUserId) {
       const email = byClerkId.get(clerkUserId);
       if (!email) throw new Error(`no fake user ${clerkUserId}`);
-      return email;
+      // Lowercase exactly as the real implementation does. A double that
+      // skips normalisation would let a mixed-case fixture pass a test that
+      // production fails — the precise trap Task 2's fix round closed.
+      return email.toLowerCase();
     },
   };
 }

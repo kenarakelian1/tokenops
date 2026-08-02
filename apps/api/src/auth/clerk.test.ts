@@ -23,4 +23,13 @@ describe("createFakeVerifier", () => {
   it("throws when asked for an unknown user's email", async () => {
     await expect(verifier.fetchEmail("user_nope")).rejects.toThrow();
   });
+
+  it("lowercases a mixed-case fixture email, matching the real verifier", async () => {
+    const mixedCaseVerifier = createFakeVerifier({
+      "token-bob": { clerkUserId: "user_bob", email: "Bob@Example.COM" },
+    });
+    expect(await mixedCaseVerifier.fetchEmail("user_bob")).toBe(
+      "bob@example.com",
+    );
+  });
 });
