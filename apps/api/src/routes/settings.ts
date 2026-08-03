@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { requireSession } from "../auth/middleware.js";
+import { requireUser } from "../auth/middleware.js";
 import type { AuthRepo } from "../auth/repo.js";
+import type { ClerkVerifier } from "../auth/clerk.js";
 
 export type SettingsRouteVariables = {
   authRepo: AuthRepo;
+  clerkVerifier: ClerkVerifier;
   userId: string;
 };
 
@@ -14,8 +16,8 @@ const settingsSchema = z.object({
 
 export const settingsRoutes = new Hono<{ Variables: SettingsRouteVariables }>();
 
-/** Session: update user settings (budget). */
-settingsRoutes.put("/", requireSession, async (c) => {
+/** Dashboard: update user settings (budget). */
+settingsRoutes.put("/", requireUser, async (c) => {
   const repo = c.get("authRepo");
   const userId = c.get("userId");
   const body = await c.req.json().catch(() => null);

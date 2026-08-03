@@ -98,4 +98,14 @@ describe("TokenOpsAgent.iss wizard pages", () => {
     expect(pages.get("ToolsPage")).toBe("CreateCustomPage");
     expect(adds.get("ToolsPage") ?? 0).toBe(0);
   });
+
+  it("does not mint machine ids in the installer", () => {
+    const source = readFileSync(ISS_PATH, "utf8");
+
+    // The agent owns identity: identity.ts uses randomUUID() on first run.
+    // A timestamp-derived id here is guessable and also weakens every event id,
+    // since buildEventId hashes machineId.
+    expect(source).not.toMatch(/machineId/i);
+    expect(source).not.toMatch(/GuidStr/);
+  });
 });

@@ -1,11 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { UsageEvent } from "@tokenops/shared";
 import { createApp } from "../app.js";
+import { createFakeVerifier } from "../auth/clerk.js";
 import { createMemoryAuthRepo } from "../auth/repo.js";
 import { createMemoryEventsRepo } from "../services/events-repo.js";
-import { hashPassword } from "../auth/password.js";
 import { createPat } from "../auth/pat.js";
-import { createSession, SESSION_COOKIE } from "../auth/session.js";
 
 function sampleEvent(
   eventId: string,
@@ -57,16 +56,19 @@ function frontierTrivial(eventId: string): UsageEvent {
 async function setup(opts: { hostedLimits?: boolean } = {}) {
   const authRepo = createMemoryAuthRepo();
   const eventsRepo = createMemoryEventsRepo();
-  const user = await authRepo.insertUser(
+  const clerkVerifier = createFakeVerifier({
+    "token-owner": { clerkUserId: "user_owner", email: "owner@example.com" },
+  });
+  const user = await authRepo.insertClerkUser(
     "owner@example.com",
-    await hashPassword("password1"),
+    "user_owner",
   );
   const { token } = await createPat(authRepo, user.id, "agent");
-  const session = await createSession(authRepo, user.id);
   const app = createApp({
     db: null as never,
     authRepo,
     eventsRepo,
+    clerkVerifier,
     hostedLimits: opts.hostedLimits ?? false,
   });
   return {
@@ -75,7 +77,7 @@ async function setup(opts: { hostedLimits?: boolean } = {}) {
     eventsRepo,
     userId: user.id,
     pat: token,
-    cookie: `${SESSION_COOKIE}=${session.id}`,
+    userAuth: "Bearer token-owner",
   };
 }
 
@@ -85,6 +87,19 @@ describe("POST /v1/events", () => {
     const res = await app.request("/v1/events", {
       method: "POST",
       headers: { "content-type": "application/json" },
+      body: JSON.stringify({ events: [sampleEvent("e1")] }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a Clerk session token (dashboard credential) on a PAT route", async () => {
+    const { app, userAuth } = await setup();
+    const res = await app.request("/v1/events", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: userAuth,
+      },
       body: JSON.stringify({ events: [sampleEvent("e1")] }),
     });
     expect(res.status).toBe(401);
@@ -167,8 +182,8 @@ describe("POST /v1/events", () => {
 });
 
 describe("GET /v1/events + aggregates + recommendations", () => {
-  it("lists events with session auth", async () => {
-    const { app, pat, cookie } = await setup();
+  it("lists events with dashboard auth", async () => {
+    const { app, pat, userAuth } = await setup();
     await app.request("/v1/events", {
       method: "POST",
       headers: {
@@ -187,7 +202,7 @@ describe("GET /v1/events + aggregates + recommendations", () => {
     expect(unauth.status).toBe(401);
 
     const list = await app.request("/v1/events?model=gpt-4o-mini", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(list.status).toBe(200);
     const body = (await list.json()) as { events: { eventId: string }[] };
@@ -195,7 +210,7 @@ describe("GET /v1/events + aggregates + recommendations", () => {
     expect(body.events[0].eventId).toBe("e1");
 
     const aggs = await app.request("/v1/aggregates?from=2026-07-01&to=2026-07-01", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(aggs.status).toBe(200);
     const aggBody = (await aggs.json()) as {
@@ -207,7 +222,7 @@ describe("GET /v1/events + aggregates + recommendations", () => {
     ).toBe(2);
 
     const recs = await app.request("/v1/recommendations?status=open", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(recs.status).toBe(200);
     const recBody = (await recs.json()) as {
@@ -222,12 +237,12 @@ describe("GET /v1/events + aggregates + recommendations", () => {
     )!.id;
     const dismiss = await app.request(`/v1/recommendations/${id}/dismiss`, {
       method: "POST",
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(dismiss.status).toBe(200);
 
     const openAfter = await app.request("/v1/recommendations?status=open", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     const openBody = (await openAfter.json()) as {
       recommendations: unknown[];
@@ -238,7 +253,7 @@ describe("GET /v1/events + aggregates + recommendations", () => {
 
 describe("POST /v1/heartbeats + GET /v1/machines", () => {
   it("records heartbeat and lists machines", async () => {
-    const { app, pat, cookie } = await setup();
+    const { app, pat, userAuth } = await setup();
     const hb = await app.request("/v1/heartbeats", {
       method: "POST",
       headers: {
@@ -254,7 +269,7 @@ describe("POST /v1/heartbeats + GET /v1/machines", () => {
     expect(hb.status).toBe(200);
 
     const machines = await app.request("/v1/machines", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(machines.status).toBe(200);
     const body = (await machines.json()) as {
@@ -271,12 +286,12 @@ describe("POST /v1/heartbeats + GET /v1/machines", () => {
 
 describe("PUT /v1/settings", () => {
   it("updates budgetUsdMonthly", async () => {
-    const { app, cookie } = await setup();
+    const { app, userAuth } = await setup();
     const res = await app.request("/v1/settings", {
       method: "PUT",
       headers: {
         "content-type": "application/json",
-        cookie,
+        Authorization: userAuth,
       },
       body: JSON.stringify({ budgetUsdMonthly: 50 }),
     });
@@ -284,7 +299,7 @@ describe("PUT /v1/settings", () => {
     expect(await res.json()).toEqual({ budgetUsdMonthly: 50 });
 
     const me = await app.request("/v1/auth/me", {
-      headers: { cookie },
+      headers: { Authorization: userAuth },
     });
     expect(await me.json()).toMatchObject({ budgetUsdMonthly: "50" });
   });

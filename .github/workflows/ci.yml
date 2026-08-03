@@ -31,6 +31,15 @@ jobs:
         run: pnpm test
 
       - name: Build packages
+        # @tokenops/web's vite.config.ts throws at build time without a Clerk
+        # publishable key (it's baked into the client bundle). A publishable
+        # key is public by design, so a repo Actions *variable* is the right
+        # place for a real one — but the fallback placeholder means a fresh
+        # checkout/fork is green with zero repo configuration; only the
+        # string is inlined at build time, so a real value is never required
+        # for `build` to succeed.
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_ci_placeholder_0000000000000000000000000000' }}
         run: |
           pnpm --filter @tokenops/api build
           pnpm --filter @tokenops/agent build

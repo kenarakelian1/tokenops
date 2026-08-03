@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clerk Authentication Design — 2026-08-01</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1>Clerk authentication — design</h1>
+<p class="meta"><strong>Date:</strong> 2026-08-01
+<strong>Status:</strong> Approved, not yet implemented
+<strong>Supersedes:</strong> the password/session auth introduced in the Phase 1 design</p>
+<h2>Problem</h2>
+<p>TokenOps authenticates the dashboard with an email/password pair and a
+server-side <code>sessions</code> table. That design has no recovery path and no way to
+add a second account:</p>
+<ul>
+<li><code>POST /v1/auth/register</code> returns <code>403 registration_closed</code> once any user
+exists, so an instance admits exactly one account, forever.</li>
+<li>There is no reset endpoint, no change-password endpoint, and no email
+transport. A forgotten password stranded the owner of the production
+instance on 2026-07-31.</li>
+<li><code>BOOTSTRAP_EMAIL</code> and <code>BOOTSTRAP_PASSWORD</code> are parsed by <code>env.ts</code> and were
+documented in the README, but no code reads them. They cannot bootstrap or
+rescue anything.</li>
+</ul>
+<p><code>apps/api/scripts/set-password.mjs</code> restored access by writing a scrypt hash
+directly to Postgres. That unblocks an operator with shell and database
+access. It does nothing for a paying customer.</p>
+<p>TokenOps is moving to an open-core model: the repository stays MIT and
+self-hostable, and a hosted deployment sells the same product as a service.
+The hosted side needs self-serve signup, password reset, and MFA. Building
+those means running email infrastructure — deliverability, expiring tokens,
+rate limiting — which is a poor use of effort for a usage-observability
+product.</p>
+<h2>Decision</h2>
+<p>Delegate all human authentication to Clerk and delete the local password
+stack outright. Clerk becomes a hard dependency for every deployment,
+self-hosted included.</p>
+<p>The alternative considered was a pluggable provider — Clerk when
+<code>CLERK_SECRET_KEY</code> is set, passwords otherwise — which would keep
+<code>docker compose up</code> working with no third-party account. It was rejected in
+favour of a single auth path: two mechanisms means two sets of middleware,
+two migration states, and two test matrices, permanently.</p>
+<p><strong>Accepted cost:</strong> a self-hoster must create a free Clerk application and set
+two environment variables before they can sign in. The README and Compose
+docs must say so plainly, and the API must fail fast when the keys are
+absent.</p>
+<h2>Non-goals</h2>
+<ul>
+<li><strong>Billing and paid plans.</strong> <code>HOSTED_LIMITS</code> already caps the free tier at
+three machines. Plan enforcement and payment belong in a separate spec.</li>
+<li><strong>Organisations and team accounts.</strong> One Clerk user maps to one TokenOps
+account. Clerk Organisations are available later without schema churn.</li>
+<li><strong>Replacing PATs.</strong> Agents are headless daemons; a bearer token they own is
+the correct primitive. PATs stay exactly as they are.</li>
+<li><strong>Webhook-driven provisioning.</strong> Just-in-time creation covers signup.
+<code>user.deleted</code> webhooks arrive when account deletion is needed.</li>
+</ul>
+<h2>Architecture</h2>
+<h3>Request flow</h3>
+<p>Two credential types share the <code>Authorization</code> header and are unambiguous,
+because PATs carry a <code>tok_</code> prefix that a JWT cannot:</p>
+<table>
+<thead>
+<tr>
+<th>Caller</th>
+<th>Credential</th>
+<th>Middleware</th>
+<th>Resolves to</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Dashboard SPA</td>
+<td>Clerk session JWT</td>
+<td><code>requireUser</code></td>
+<td><code>users.id</code></td>
+</tr>
+<tr>
+<td>Local agent</td>
+<td><code>tok_…</code> PAT</td>
+<td><code>requirePat</code></td>
+<td><code>users.id</code></td>
+</tr>
+</tbody></table>
+<p>Both set the same <code>userId</code> context variable that every route already reads.
+This is what keeps the change small: routes consume <code>userId</code> and nothing
+else, so swapping the browser mechanism touches one middleware and one
+mapping function, not the eight route groups.</p>
+<p>The SPA obtains its token from <code>useAuth().getToken()</code> and attaches it to each
+API call. The API verifies it with <code>@clerk/backend</code>.</p>
+<p>Bearer tokens rather than Clerk&#39;s session cookie: the token is explicit,
+survives a future split of web and API onto separate origins, and avoids
+depending on cookie forwarding through the nginx <code>/v1/</code> proxy.</p>
+<h3>Verification port</h3>
+<p>Token verification sits behind an injectable interface, matching the existing
+<code>authRepo</code> / <code>eventsRepo</code> dependency injection in <code>createApp</code>:</p>
+<pre><code class="language-ts">export type ClerkVerifier = {
+  /** Returns the Clerk user id and primary email, or null when invalid. */
+  verify(token: string): Promise&lt;{ clerkUserId: string; email: string } | null&gt;;
+};
+</code></pre>
+<p>The production implementation wraps <code>@clerk/backend</code>. Tests inject a fake, so
+the suite stays offline and fast — the current tests make no network calls and
+that must not regress.</p>
+<h3>Just-in-time provisioning</h3>
+<p>On each verified request, <code>requireUser</code> resolves the Clerk identity to a local
+user:</p>
+<ol>
+<li><code>select … from users where clerk_user_id = $1</code> — hit, done.</li>
+<li>Miss: <code>select … from users where email = $1 and clerk_user_id is null</code> —
+hit means this is the pre-Clerk account. Adopt it by setting
+<code>clerk_user_id</code>, preserving its id and therefore its PATs, machines,
+events, aggregates, and recommendations.</li>
+<li>Miss: insert a new user row with the Clerk id and email.</li>
+</ol>
+<p>Step 2 is the migration path for the live production account and runs at most
+once per legacy row. It is safe to leave in place permanently; a row can only
+be adopted while <code>clerk_user_id</code> is null.</p>
+<p>Email is stored for display only. Clerk remains the source of truth, and the
+stored copy refreshes whenever a verified token presents a different address.</p>
+<h2>Data model</h2>
+<pre><code class="language-sql">ALTER TABLE users ADD COLUMN clerk_user_id text UNIQUE;   -- nullable for adoption
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+DROP TABLE sessions;
+</code></pre>
+<p><code>password_hash</code> is loosened rather than dropped in this migration so a
+rollback does not destroy credentials. A follow-up migration drops the column
+and sets <code>clerk_user_id NOT NULL</code> once adoption is confirmed in production.</p>
+<h3>Tenant isolation fixes</h3>
+<p>These ship in the same change. They are latent today because one account
+exists; open signup makes them exploitable.</p>
+<p><strong><code>machines</code> primary key.</strong> <code>machine_id</code> is currently a global primary key,
+and <code>upsertMachine</code> conflicts on <code>machines.machineId</code> alone while setting
+<code>name</code> and <code>lastSeenAt</code> without scoping to the owner
+(<code>apps/api/src/services/events-repo.ts:321</code>). A second user heartbeating a
+colliding id silently overwrites the first user&#39;s row. Ownership does not
+move, so the victim sees a stranger&#39;s machine name and the attacker&#39;s machine
+never registers.</p>
+<p>Fix: composite primary key <code>(user_id, machine_id)</code>, with the conflict target
+changed to match.</p>
+<p><strong>Machine id entropy.</strong> <code>apps/agent/src/identity.ts</code> mints <code>randomUUID()</code>, but
+the Windows installer writes <code>machine.json</code> itself using
+<code>GetDateTimeString(&#39;yyyymmddhhnnsszzz&#39;)</code> — a low-entropy, guessable
+timestamp. Two generators for one identifier, and the weaker one is
+predictable. It also feeds <code>buildEventId</code>, which hashes <code>machineId</code> into every
+event id, so weak machine ids weaken event ids.</p>
+<p>Fix: the installer stops generating identity and lets the agent create it on
+first run.</p>
+<h2>Removals</h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>apps/api/src/auth/password.ts</code></td>
+<td>scrypt hashing, unused</td>
+</tr>
+<tr>
+<td><code>apps/api/src/auth/session.ts</code></td>
+<td>session issuance and lookup</td>
+</tr>
+<tr>
+<td><code>apps/api/scripts/set-password.mjs</code></td>
+<td>recovery script, obsolete</td>
+</tr>
+<tr>
+<td><code>apps/api/src/auth/set-password-script.test.ts</code></td>
+<td>pins the above</td>
+</tr>
+<tr>
+<td><code>POST /v1/auth/register</code>, <code>POST /v1/auth/login</code></td>
+<td>Clerk owns both</td>
+</tr>
+<tr>
+<td><code>sessions</code> table</td>
+<td>dropped in this migration; nothing reads it once Clerk lands</td>
+</tr>
+<tr>
+<td><code>users.password_hash</code></td>
+<td>loosened now, dropped in the follow-up migration</td>
+</tr>
+<tr>
+<td>Password form in <code>apps/web/src/pages/Login.tsx</code></td>
+<td>replaced by Clerk</td>
+</tr>
+</tbody></table>
+<p><code>requireSession</code> is renamed <code>requireUser</code> at its new call sites rather than
+kept as an alias; the name described a mechanism that no longer exists.</p>
+<h2>Error handling</h2>
+<ul>
+<li><strong>Missing <code>CLERK_SECRET_KEY</code> at boot</strong> — the process exits with a message
+naming the variable and linking the setup docs. <code>env.ts</code> already validates
+with Zod; the key joins the required set. Failing at boot rather than on the
+first request is the difference between a ten-second fix and an hour of
+debugging for a self-hoster.</li>
+<li><strong>Invalid, expired, or malformed token</strong> — <code>401 {&quot;error&quot;:&quot;unauthorized&quot;}</code>,
+matching the current shape so the SPA&#39;s <code>ApiError</code> handling is unchanged.</li>
+<li><strong>Valid token, provisioning fails</strong> — <code>500</code>, logged with the Clerk user id.
+Never fall through to an unauthenticated state.</li>
+<li><strong>Clerk unreachable</strong> — the implementation must use Clerk&#39;s networkless
+verification path, checking the JWT signature against a cached JWKS rather
+than calling Clerk per request, so an outage does not break already
+signed-in dashboards mid-session. Fresh sign-in still requires Clerk. The
+exact SDK call is confirmed against current Clerk docs during
+implementation, not assumed here.</li>
+</ul>
+<h2>Testing</h2>
+<p>Existing <code>auth.test.ts</code> cases for register, login, and session lifecycle are
+deleted with the code they cover. New coverage:</p>
+<p><strong>Provisioning</strong></p>
+<ul>
+<li>New Clerk identity creates exactly one user row</li>
+<li>Repeated requests reuse the row rather than duplicating</li>
+<li>Legacy row with matching email and null <code>clerk_user_id</code> is adopted, and its
+id is unchanged so PATs keep resolving</li>
+<li>A legacy row already carrying a different <code>clerk_user_id</code> is not re-adopted</li>
+</ul>
+<p><strong>Credentials</strong></p>
+<ul>
+<li>Clerk JWT authenticates a dashboard route</li>
+<li><code>tok_…</code> PAT continues to authenticate ingest and heartbeat routes</li>
+<li>A PAT is rejected on dashboard-only routes and a JWT on PAT-only routes</li>
+<li>Invalid and expired tokens return <code>401</code></li>
+</ul>
+<p><strong>Tenant isolation</strong> — new, and the reason the isolation fixes ship here</p>
+<ul>
+<li>User B cannot read A&#39;s events, machines, aggregates, or recommendations</li>
+<li>B&#39;s heartbeat against A&#39;s <code>machine_id</code> does not mutate A&#39;s row</li>
+<li>B cannot dismiss A&#39;s recommendation</li>
+</ul>
+<p>Verification is faked through the <code>ClerkVerifier</code> port; the suite stays
+offline.</p>
+<h2>Rollout</h2>
+<ol>
+<li>Merge behind the migration that adds <code>clerk_user_id</code> as nullable.</li>
+<li>Deploy the API with <code>CLERK_SECRET_KEY</code>, and the web build with
+<code>VITE_CLERK_PUBLISHABLE_KEY</code>.</li>
+<li>Sign in with Clerk using the address on the existing account; confirm
+adoption preserved the PAT by checking that the running agent still ships.</li>
+<li>Follow-up migration: <code>clerk_user_id NOT NULL</code>, drop <code>password_hash</code>.</li>
+</ol>
+<p>The agent requires no update and no re-install at any point.</p>
+<h2>Follow-ups</h2>
+<ul>
+<li>Billing and plan enforcement — separate spec</li>
+<li><code>user.deleted</code> webhook for account deletion</li>
+<li>Clerk Organisations if team accounts are ever wanted</li>
+<li><code>README.html</code> regeneration, which is currently stale against <code>README.md</code></li>
+</ul>
+</main>
+</body>
+</html>

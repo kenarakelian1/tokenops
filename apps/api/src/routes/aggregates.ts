@@ -1,10 +1,14 @@
 import { Hono } from "hono";
-import { requireSession } from "../auth/middleware.js";
+import { requireUser } from "../auth/middleware.js";
+import type { AuthRepo } from "../auth/repo.js";
+import type { ClerkVerifier } from "../auth/clerk.js";
 import { listAggregates } from "../services/aggregates.js";
 import type { EventsRepo } from "../services/events-repo.js";
 
 export type AggregatesRouteVariables = {
   eventsRepo: EventsRepo;
+  authRepo: AuthRepo;
+  clerkVerifier: ClerkVerifier;
   userId: string;
 };
 
@@ -12,8 +16,8 @@ export const aggregatesRoutes = new Hono<{
   Variables: AggregatesRouteVariables;
 }>();
 
-/** Session: daily aggregates by day/machine/app/model. */
-aggregatesRoutes.get("/", requireSession, async (c) => {
+/** Dashboard: daily aggregates by day/machine/app/model. */
+aggregatesRoutes.get("/", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
   const rows = await listAggregates(repo, userId, {

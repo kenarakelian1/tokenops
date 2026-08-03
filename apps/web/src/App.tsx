@@ -1,12 +1,7 @@
+import { Show, UserButton, useAuth } from "@clerk/react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  NavLink,
-  Navigate,
-  Route,
-  Routes,
-  useNavigate,
-} from "react-router-dom";
-import { ApiError, getMe, logout, type UserMe } from "./api/client";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { getMe, setAuthTokenGetter, type UserMe } from "./api/client";
 import { Explore } from "./pages/Explore";
 import { Login } from "./pages/Login";
 import { Machines } from "./pages/Machines";
@@ -14,26 +9,48 @@ import { Overview } from "./pages/Overview";
 import { Recommendations } from "./pages/Recommendations";
 import { Settings } from "./pages/Settings";
 
-type AuthState =
-  | { status: "loading" }
-  | { status: "anonymous" }
-  | { status: "authed"; user: UserMe };
-
 export function App() {
-  const [auth, setAuth] = useState<AuthState>({ status: "loading" });
-  const navigate = useNavigate();
+  const { getToken, isLoaded } = useAuth();
+
+  // Registered synchronously during render, not inside a useEffect: React
+  // commits a subtree's effects bottom-up (children's effects fire before
+  // the parent's), so a useEffect here would run *after* e.g. Dashboard's
+  // own mount-time fetch effect when both mount in the same commit — that
+  // first request would go out with no Authorization header and 401. A
+  // plain call in the component body runs before React even renders any
+  // children, so the getter is always in place before anything can fetch.
+  setAuthTokenGetter(() => getToken());
+
+  // Show's "signed-out"/"signed-in" branches both render nothing until
+  // Clerk finishes its startup round-trip (isLoaded), which otherwise reads
+  // as a blank white page rather than a loading state.
+  if (!isLoaded) {
+    return <div className="login-page muted">Loading…</div>;
+  }
+
+  return (
+    <>
+      <Show when="signed-out">
+        <Login />
+      </Show>
+      <Show when="signed-in">
+        <Dashboard />
+      </Show>
+    </>
+  );
+}
+
+function Dashboard() {
+  const [user, setUser] = useState<UserMe | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const refreshMe = useCallback(async () => {
     try {
-      const user = await getMe();
-      setAuth({ status: "authed", user });
+      const me = await getMe();
+      setUser(me);
+      setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setAuth({ status: "anonymous" });
-        return;
-      }
-      // Network / other errors: treat as anonymous so Login is reachable
-      setAuth({ status: "anonymous" });
+      setError(err instanceof Error ? err.message : "Failed to load account");
     }
   }, []);
 
@@ -41,39 +58,25 @@ export function App() {
     void refreshMe();
   }, [refreshMe]);
 
-  const onLoggedIn = (user: UserMe) => {
-    setAuth({ status: "authed", user });
-    navigate("/");
-  };
-
-  const onLogout = async () => {
-    try {
-      await logout();
-    } catch {
-      // ignore
-    }
-    setAuth({ status: "anonymous" });
-    navigate("/login");
-  };
-
-  const onUserUpdated = (user: UserMe) => {
-    setAuth({ status: "authed", user });
-  };
-
-  if (auth.status === "loading") {
-    return <div className="login-page muted">Loading…</div>;
-  }
-
-  if (auth.status === "anonymous") {
+  if (!user) {
+    // Clerk has already authenticated this user by the time Dashboard
+    // mounts — only our own /v1/auth/me JIT-provisioning call can fail
+    // here. Without an escape hatch, a 401/500/timeout on that call would
+    // otherwise strand a signed-in user on a bare error string with no way
+    // to retry or sign out (the old code fell back to the Login page on a
+    // failed session probe; Clerk owns that now, so we provide our own).
     return (
-      <Routes>
-        <Route path="/login" element={<Login onLoggedIn={onLoggedIn} />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <div className="login-page muted">
+        <div>{error ?? "Loading…"}</div>
+        {error ? (
+          <button type="button" className="btn" onClick={() => void refreshMe()}>
+            Retry
+          </button>
+        ) : null}
+        <UserButton />
+      </div>
     );
   }
-
-  const { user } = auth;
 
   return (
     <div className="app-shell">
@@ -96,9 +99,7 @@ export function App() {
         </NavLink>
         <div className="sidebar-footer">
           <div>{user.email}</div>
-          <button type="button" className="btn-ghost" onClick={() => void onLogout()}>
-            Log out
-          </button>
+          <UserButton />
         </div>
       </aside>
       <main className="main">
@@ -109,7 +110,7 @@ export function App() {
           <Route path="/machines" element={<Machines />} />
           <Route
             path="/settings"
-            element={<Settings user={user} onUserUpdated={onUserUpdated} />}
+            element={<Settings user={user} onUserUpdated={(u) => setUser(u)} />}
           />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

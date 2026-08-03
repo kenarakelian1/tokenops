@@ -20,6 +20,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Supplies the Clerk session token. Set once at app start; `api()` is a plain
+ * module function and cannot call React hooks itself.
+ */
+let authTokenGetter: (() => Promise<string | null>) | null = null;
+
+export function setAuthTokenGetter(getter: () => Promise<string | null>): void {
+  authTokenGetter = getter;
+}
+
 export async function api<T>(
   path: string,
   init?: RequestInit,
@@ -33,9 +43,13 @@ export async function api<T>(
     headers.set("Content-Type", "application/json");
   }
 
+  const token = await authTokenGetter?.();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    credentials: "include",
     headers,
   });
 
@@ -110,18 +124,7 @@ export type MachineDto = {
 
 // --- Endpoint helpers ---
 
-/** Login sets the session cookie; body is id/email only — call getMe() for full profile. */
-export function login(email: string, password: string) {
-  return api<{ id: string; email: string }>("/v1/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-}
-
-export function logout() {
-  return api<{ ok: boolean }>("/v1/auth/logout", { method: "POST" });
-}
-
+/** Clerk owns sign-in/out; this just hydrates the app's own user record (budget, etc). */
 export function getMe() {
   return api<UserMe>("/v1/auth/me");
 }

@@ -244,14 +244,13 @@ end;
 
 procedure WriteConfig;
 var
-  ConfigDir, ConfigPath, IdentityPath, BinDir, AppDir: string;
+  ConfigDir, ConfigPath, BinDir, AppDir: string;
   Upstream, OtelListen, CloudUrl, Pat, MachineName: string;
   UseClaude, UseCursor, UseGrok, UseOpenAI, UseOther, ProxyOn: Boolean;
   Lines: TArrayOfString;
   OpenAIKey, XaiKey: string;
   EnvList: string;
   Manifest: string;
-  GuidStr: string;
 begin
   AppDir := ExpandConstant('{app}');
   ConfigDir := ExpandConstant('{userappdata}\..\.tokenops');
@@ -259,7 +258,6 @@ begin
   ConfigDir := ExpandConstant('{userdocs}\..\.tokenops');
   ConfigDir := GetEnv('USERPROFILE') + '\.tokenops';
   ConfigPath := ConfigDir + '\config.toml';
-  IdentityPath := ConfigDir + '\machine.json';
   BinDir := ExpandConstant('{localappdata}\TokenOps\bin');
 
   UseClaude := CheckClaude.Checked;
@@ -318,18 +316,9 @@ begin
   Lines[21] := '';
   SaveStringsToFile(ConfigPath, Lines, False);
 
-  { machine identity }
-  if not FileExists(IdentityPath) then
-  begin
-    GuidStr := GetDateTimeString('yyyymmddhhnnsszzz', '', '') + '-' +
-      GetDateTimeString('hhnnss', '', '');
-    SetArrayLength(Lines, 4);
-    Lines[0] := '{';
-    Lines[1] := '  "machineId": "' + GuidStr + '",';
-    Lines[2] := '  "machineName": "' + EscapeToml(MachineName) + '"';
-    Lines[3] := '}';
-    SaveStringsToFile(IdentityPath, Lines, False);
-  end;
+  { Machine identity is created by the agent on first run (randomUUID in
+    identity.ts). The installer must not mint one: a timestamp-derived id is
+    guessable, and buildEventId hashes the machine id into every event id. }
 
   { launchers }
   WriteLauncher(AppDir + '\tokenops.cmd', AppDir);

@@ -31,7 +31,11 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://tokenops:tokenops@db:5432/tokenops
-      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
+      # Required by the API at boot (env.ts fails fast with a clear message
+      # if unset) — left optional here so `docker compose config`/`ps`/
+      # `up db` don't abort on interpolation before the api service even
+      # starts.
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
       HOST: 0.0.0.0
       PORT: "3000"
       # Self-host defaults: no machine cap, unlimited raw event retention
@@ -39,8 +43,7 @@ services:
       # Optional — only pass when set (empty strings break Zod .optional() without emptyToUndefined):
       # RAW_EVENT_RETENTION_DAYS: "30"
       # CORS_ORIGIN: http://localhost:5173
-      # BOOTSTRAP_EMAIL: admin@example.com
-      # BOOTSTRAP_PASSWORD: your-secure-password
+      # CLERK_JWT_KEY: your_clerk_jwt_key
     ports:
       - "3000:3000"
     healthcheck:
@@ -58,6 +61,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile
+      args:
+        # Baked into the client bundle at build time (see apps/web/vite.config.ts,
+        # which throws and fails this build if unset rather than shipping a
+        # bundle that white-screens on Clerk's MissingPublishableKey at runtime).
+        # Defaults to "" here — same reason as CLERK_SECRET_KEY below — so
+        # `docker compose config`/`up db` don't abort on interpolation before
+        # you've exported it; the real failure surfaces loudly at web build time.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
     depends_on:
       tokenops-api:
         condition: service_healthy

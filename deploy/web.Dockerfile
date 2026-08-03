@@ -16,6 +16,11 @@ RUN pnpm install --frozen-lockfile
 
 COPY apps/web apps/web
 
+# Baked into the client bundle at build time — see apps/web/vite.config.ts,
+# which now fails the build loudly if this is unset rather than shipping a
+# bundle that white-screens on Clerk's MissingPublishableKey at runtime.
+ARG VITE_CLERK_PUBLISHABLE_KEY
+ENV VITE_CLERK_PUBLISHABLE_KEY=${VITE_CLERK_PUBLISHABLE_KEY}
 ENV VITE_API_URL=
 RUN pnpm --filter @tokenops/web build
 

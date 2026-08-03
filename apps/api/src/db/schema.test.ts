@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   users,
-  sessions,
   pats,
   machines,
   usageEvents,
@@ -14,7 +13,6 @@ describe("drizzle schema tables", () => {
   it("exports all expected tables", () => {
     const tables = [
       users,
-      sessions,
       pats,
       machines,
       usageEvents,
@@ -22,7 +20,7 @@ describe("drizzle schema tables", () => {
       dailyAggregates,
       recommendations,
     ];
-    expect(tables).toHaveLength(8);
+    expect(tables).toHaveLength(7);
     for (const table of tables) {
       expect(table).toBeDefined();
     }
