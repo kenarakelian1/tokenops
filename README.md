@@ -34,7 +34,7 @@ Phase 1 includes:
 │  Postgres · aggregates      │
 │  rules · content TTL job    │
 └─────────────┬───────────────┘
-              │  session cookie
+              │  Clerk session JWT (Bearer)
               ▼
 ┌─────────────────────────────┐
 │  Web dashboard (Vite/React) │
@@ -52,12 +52,30 @@ Phase 1 includes:
 
 Compose runs **db** + **api** + **web** (nginx serves the SPA and proxies `/v1` and `/health` for same-origin API calls).
 
+## Authentication
+
+TokenOps uses [Clerk](https://clerk.com) for all human sign-in. **Every
+deployment needs a Clerk application, including self-hosted ones.**
+`docker compose up` alone does not yield a working login — Clerk is a hard
+dependency, not an optional integration. Sign-up, password reset, and MFA are
+handled by Clerk, so TokenOps runs no email infrastructure.
+
+1. Create a free application at [dashboard.clerk.com](https://dashboard.clerk.com)
+2. Set `CLERK_SECRET_KEY` on the API
+3. Set `VITE_CLERK_PUBLISHABLE_KEY` on the web build (it is baked into the
+   client bundle at **build** time — see [Web](#web-appsweb) below)
+
+Agents authenticate separately with `tok_…` PATs and are unaffected by Clerk —
+no change or re-install needed for existing agents. Create a PAT from the
+dashboard once signed in, under **Settings → Agent access token**.
+
 ## Quick start (Docker Compose)
 
 ```bash
 # From repo root
-export SESSION_SECRET="$(openssl rand -hex 32)"   # required in production
-export CLERK_SECRET_KEY="sk_test_..."             # required — from the Clerk dashboard
+export SESSION_SECRET="$(openssl rand -hex 32)"        # required at boot (unused; see env table)
+export CLERK_SECRET_KEY="sk_test_..."                   # required — from the Clerk dashboard
+export VITE_CLERK_PUBLISHABLE_KEY="pk_test_..."         # required — web build fails without it
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
@@ -67,13 +85,10 @@ docker compose -f deploy/docker-compose.yml up --build
 | http://localhost:3000 | API direct (`GET /health` → `{ "ok": true }`) |
 | `localhost:5432` | Postgres (`tokenops` / `tokenops` / `tokenops`) |
 
-**Dashboard sign-in is pending.** The API verifies Clerk session JWTs
-(`GET /v1/auth/me`, `POST /v1/auth/pats` both require one), but `@tokenops/web`
-does not yet embed Clerk — it still calls the now-removed `POST /v1/auth/login`
-and `/logout`, so the dashboard's own login page does not work until that
-integration lands. Until then, mint a PAT directly against the API using a
-Clerk session JWT obtained some other way (e.g. the Clerk dashboard's test
-tokens, or `curl` after wiring up `@clerk/clerk-js` yourself):
+Sign in at http://localhost:8080 with Clerk (`@tokenops/web` embeds
+`@clerk/react`'s `<SignIn />`); the API JIT-provisions a local `users` row on
+first verified request. Then create an ingest PAT from the dashboard
+**Settings** page, or directly against the API with a Clerk session JWT:
 
 ```bash
 curl -X POST http://localhost:8080/v1/auth/pats \
@@ -82,6 +97,10 @@ curl -X POST http://localhost:8080/v1/auth/pats \
   -d '{"name":"laptop-agent"}'
 # → { "token": "…", "id": "…" }  — copy the token once; it is not shown again
 ```
+
+There is no `POST /v1/auth/register` or `/v1/auth/login` — Clerk owns
+sign-up and sign-in entirely; only `GET /v1/auth/me` and
+`POST /v1/auth/pats` remain on the API, both behind a Clerk session JWT.
 
 ## Local agent: `tokenops init` + `agent run`
 
@@ -330,14 +349,22 @@ After Compose is up and you have logged in:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | yes | — | Postgres connection string |
-| `SESSION_SECRET` | yes | — | Secret for app / session integrity |
+| `SESSION_SECRET` | yes | — | Required at boot by `env.ts`, but not currently read by any code path — cookie sessions were removed with the Clerk migration. Kept for now; a follow-up should drop it |
 | `PORT` | no | `3000` | HTTP port |
 | `HOST` | no | `0.0.0.0` | Bind address |
 | `HOSTED_LIMITS` | no | unset/false | When `true`: max 3 machines; default 30-day raw event retention |
 | `RAW_EVENT_RETENTION_DAYS` | no | unset | If set, delete `usage_events` older than N days (aggregates kept) |
 | `CORS_ORIGIN` | no | unset | Single browser origin for credentialed CORS (prefer same-origin proxy) |
-| `CLERK_SECRET_KEY` | yes | — | Clerk Backend API secret key; required at boot |
-| `CLERK_JWT_KEY` | no | unset | Pins Clerk JWT verification to a specific instance key for networkless verification |
+| `CLERK_SECRET_KEY` | yes | — | Clerk Backend API secret key; the API refuses to boot without it |
+| `CLERK_JWT_KEY` | **recommended for production** | unset | PEM public key for networkless JWT verification |
+
+**Set `CLERK_JWT_KEY` in production.** Without it, `verifyToken` fetches
+Clerk's JWKS over the network on cache misses; if Clerk is unreachable, that
+fetch fails and every request is rejected `401 unauthorized` — a Clerk outage
+then looks to users exactly like a bad login, not an outage. Setting
+`CLERK_JWT_KEY` (a PEM key from the Clerk dashboard, pinned to your instance)
+makes verification fully networkless, so it keeps working through a Clerk API
+outage.
 
 ### Accounts
 
@@ -359,6 +386,7 @@ Agents keep using long-lived PATs (`POST /v1/auth/pats`), unaffected by this.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `VITE_API_URL` | no | `""` (same origin) | API base URL at **build** time. Empty when nginx proxies `/v1` |
+| `VITE_CLERK_PUBLISHABLE_KEY` | **yes, at build time** | — | Clerk publishable key baked into the client bundle; `vite build` throws and aborts the build if unset (see `apps/web/vite.config.ts`) |
 
 ### Compose helpers
 
@@ -366,6 +394,13 @@ See `deploy/env.example`. Compose defaults:
 
 - `DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops`
 - `SESSION_SECRET` from env or a dev placeholder (change for real use)
+- `CLERK_SECRET_KEY` and `VITE_CLERK_PUBLISHABLE_KEY` are passed through from
+  your shell env — **Compose will not sign in without `CLERK_SECRET_KEY`, and
+  the `tokenops-web` image will fail to build without
+  `VITE_CLERK_PUBLISHABLE_KEY`** (empty defaults to `""` in the `args:`/
+  `environment:` blocks purely so `docker compose config`/`up db` don't abort
+  on interpolation before you've exported them — the real failure surfaces
+  loudly at API boot or web build time instead)
 - Optional vars (`CLERK_JWT_KEY`, `CORS_ORIGIN`, `RAW_EVENT_RETENTION_DAYS`) are **omitted** when unset (empty strings would fail strict Zod validation without the API’s empty→undefined normalization)
 
 ## Railway
@@ -384,8 +419,9 @@ Self-deploy:
 
 1. New project → add **Postgres** plugin (`DATABASE_URL` injected).
 2. Deploy API from repo root with `railway.toml` / `deploy/api.Dockerfile`.
-3. Set `SESSION_SECRET` and `CLERK_SECRET_KEY` (API refuses to boot without either). For hosted free tier set `HOSTED_LIMITS=true`.
+3. Set `SESSION_SECRET` and `CLERK_SECRET_KEY` (API refuses to boot without either). For hosted free tier set `HOSTED_LIMITS=true`. Set `CLERK_JWT_KEY` too — see [Environment variables](#api-appsapi) for why.
 4. Deploy web as a second service (`deploy/web.Dockerfile`) so nginx can reach `tokenops-api:3000` on the private network.
+5. **Before the web service's first build**, set `VITE_CLERK_PUBLISHABLE_KEY` as a Variable on that service. `deploy/web.Dockerfile` declares `ARG VITE_CLERK_PUBLISHABLE_KEY`, and Railway only populates a declared `ARG` from a service Variable of the same name at build time — there is no `railway.toml`/`railway.json` field that injects it for you (config-as-code there only covers `[build]`/`[deploy]`, not variables). **Skipping this step fails the web build outright**, because `apps/web/vite.config.ts` throws on a missing key instead of shipping a broken bundle.
 
 Health check path: `/health`.
 
@@ -436,7 +472,7 @@ pnpm --filter @tokenops/agent build
 | `packages/shared` | Schema, pricing, features, rules — no I/O |
 | `apps/api` | Needs `DATABASE_URL` + `SESSION_SECRET` + `CLERK_SECRET_KEY` for `pnpm --filter @tokenops/api dev` |
 | `apps/agent` | Unit tests mock upstream; no live provider keys in CI |
-| `apps/web` | `pnpm --filter @tokenops/web dev` for Vite (UI against Compose/Railway API preferred) |
+| `apps/web` | `pnpm --filter @tokenops/web dev` for Vite (UI against Compose/Railway API preferred); `build` additionally requires `VITE_CLERK_PUBLISHABLE_KEY` or it throws |
 
 **Policy:** automated tests run locally (Vitest + fixtures). Product verification (smoke, demos) uses Compose or Railway URLs — not ad-hoc localhost servers for “it works.”
 

@@ -62,6 +62,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/web.Dockerfile
+      args:
+        # Baked into the client bundle at build time (see apps/web/vite.config.ts,
+        # which throws and fails this build if unset rather than shipping a
+        # bundle that white-screens on Clerk's MissingPublishableKey at runtime).
+        # Defaults to "" here — same reason as CLERK_SECRET_KEY below — so
+        # `docker compose config`/`up db` don't abort on interpolation before
+        # you've exported it; the real failure surfaces loudly at web build time.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
     depends_on:
       tokenops-api:
         condition: service_healthy

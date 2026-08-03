@@ -6,6 +6,16 @@
 # Web: deploy as a second service using deploy/web.Dockerfile, or serve static
 # assets from a CDN and set CORS_ORIGIN + VITE_API_URL. Preferred for cookies:
 # put a reverse proxy (or Railway public domain) so web and /v1 share one origin.
+#
+# IMPORTANT — the web service's build WILL FAIL without one extra step:
+# deploy/web.Dockerfile declares `ARG VITE_CLERK_PUBLISHABLE_KEY`, which Vite
+# bakes into the client bundle at build time (apps/web/vite.config.ts throws
+# if it's unset, rather than shipping a bundle that white-screens at runtime).
+# Railway only populates a declared Dockerfile ARG from a service Variable of
+# the same name — there is no railway.toml/railway.json field for this
+# (config-as-code here covers only [build]/[deploy], not variables). Before
+# the web service's first build, set VITE_CLERK_PUBLISHABLE_KEY as a Variable
+# on that Railway service (dashboard, or `railway variables --set`).
 
 [build]
 builder = "DOCKERFILE"
