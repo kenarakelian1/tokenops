@@ -1,7 +1,7 @@
 # Railway configuration for TokenOps API
 # - Create a project, attach the Postgres plugin (sets DATABASE_URL)
 # - Service root: repository root; Dockerfile path below
-# - Set SESSION_SECRET (required). Optionally HOSTED_LIMITS=true for free-tier caps.
+# - Set CLERK_SECRET_KEY (required). Optionally HOSTED_LIMITS=true for free-tier caps.
 #
 # Web: deploy as a second service using deploy/web.Dockerfile, or serve static
 # assets from a CDN and set CORS_ORIGIN + VITE_API_URL. Preferred for cookies:

@@ -1,10 +1,14 @@
 import { Hono } from "hono";
 import { requireUser } from "../auth/middleware.js";
+import type { AuthRepo } from "../auth/repo.js";
+import type { ClerkVerifier } from "../auth/clerk.js";
 import type { Machine } from "../db/schema.js";
 import type { EventsRepo } from "../services/events-repo.js";
 
 export type MachinesRouteVariables = {
   eventsRepo: EventsRepo;
+  authRepo: AuthRepo;
+  clerkVerifier: ClerkVerifier;
   userId: string;
 };
 

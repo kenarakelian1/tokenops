@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TokenOps — README</title>
+  <title>TokenOps</title>
   <style>
     :root {
       --bg: #f7f5f0;
@@ -195,7 +195,6 @@ no change or re-install needed for existing agents. Create a PAT from the
 dashboard once signed in, under <strong>Settings → Agent access token</strong>.</p>
 <h2 id="quick-start-docker-compose">Quick start (Docker Compose)</h2>
 <pre><code class="language-bash"># From repo root
-export SESSION_SECRET=&quot;$(openssl rand -hex 32)&quot;        # required at boot (unused; see env table)
 export CLERK_SECRET_KEY=&quot;sk_test_...&quot;                   # required — from the Clerk dashboard
 export VITE_CLERK_PUBLISHABLE_KEY=&quot;pk_test_...&quot;         # required — web build fails without it
 docker compose -f deploy/docker-compose.yml up --build
@@ -486,12 +485,6 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 <td>Postgres connection string</td>
 </tr>
 <tr>
-<td><code>SESSION_SECRET</code></td>
-<td>yes</td>
-<td>—</td>
-<td>Required at boot by <code>env.ts</code>, but not currently read by any code path — cookie sessions were removed with the Clerk migration. Kept for now; a follow-up should drop it</td>
-</tr>
-<tr>
 <td><code>PORT</code></td>
 <td>no</td>
 <td><code>3000</code></td>
@@ -583,7 +576,6 @@ Agents keep using long-lived PATs (<code>POST /v1/auth/pats</code>), unaffected 
 <p>See <code>deploy/env.example</code>. Compose defaults:</p>
 <ul>
 <li><code>DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops</code></li>
-<li><code>SESSION_SECRET</code> from env or a dev placeholder (change for real use)</li>
 <li><code>CLERK_SECRET_KEY</code> and <code>VITE_CLERK_PUBLISHABLE_KEY</code> are passed through from
 your shell env — <strong>Compose will not sign in without <code>CLERK_SECRET_KEY</code>, and
 the <code>tokenops-web</code> image will fail to build without
@@ -615,16 +607,73 @@ loudly at API boot or web build time instead)</li>
 <td><a href="https://tokenops-api-production.up.railway.app/health">https://tokenops-api-production.up.railway.app/health</a></td>
 </tr>
 </tbody></table>
-<p>Prefer the <strong>web</strong> URL for login (nginx proxies <code>/v1</code> to <code>tokenops-api</code> on the private network — cookies stay same-origin).</p>
+<p>Prefer the <strong>web</strong> URL for login (nginx proxies <code>/v1</code> to <code>tokenops-api</code> on the private network, so the dashboard and API share one origin).</p>
 <p>Self-deploy:</p>
 <ol>
 <li>New project → add <strong>Postgres</strong> plugin (<code>DATABASE_URL</code> injected).</li>
 <li>Deploy API from repo root with <code>railway.toml</code> / <code>deploy/api.Dockerfile</code>.</li>
-<li>Set <code>SESSION_SECRET</code> and <code>CLERK_SECRET_KEY</code> (API refuses to boot without either). For hosted free tier set <code>HOSTED_LIMITS=true</code>. Set <code>CLERK_JWT_KEY</code> too — see <a href="#api-appsapi">Environment variables</a> for why.</li>
+<li>Set <code>CLERK_SECRET_KEY</code> (API refuses to boot without it). For hosted free tier set <code>HOSTED_LIMITS=true</code>. Set <code>CLERK_JWT_KEY</code> too — see <a href="#api-appsapi">Environment variables</a> for why.</li>
 <li>Deploy web as a second service (<code>deploy/web.Dockerfile</code>) so nginx can reach <code>tokenops-api:3000</code> on the private network.</li>
 <li><strong>Before the web service&#39;s first build</strong>, set <code>VITE_CLERK_PUBLISHABLE_KEY</code> as a Variable on that service. <code>deploy/web.Dockerfile</code> declares <code>ARG VITE_CLERK_PUBLISHABLE_KEY</code>, and Railway only populates a declared <code>ARG</code> from a service Variable of the same name at build time — there is no <code>railway.toml</code>/<code>railway.json</code> field that injects it for you (config-as-code there only covers <code>[build]</code>/<code>[deploy]</code>, not variables). <strong>Skipping this step fails the web build outright</strong>, because <code>apps/web/vite.config.ts</code> throws on a missing key instead of shipping a broken bundle.</li>
 </ol>
 <p>Health check path: <code>/health</code>.</p>
+<h3 id="adoption-verification-production-cutover">Adoption verification (production cutover)</h3>
+<p>The production account (<code>kenarakelian1@gmail.com</code>) predates Clerk and has
+<code>clerk_user_id IS NULL</code>. On first Clerk sign-in, <code>resolveUserId</code> (see
+<code>apps/api/src/auth/provision.ts</code>) adopts that row by matching email, which
+preserves its <code>id</code> — and therefore the existing PAT, machines, and usage
+ledger that foreign-key to it. The email match is a plain lowercase
+comparison, not Clerk&#39;s identity, so <strong>anything other than a case difference
+between the Clerk identity&#39;s primary email and the stored <code>users.email</code>
+misses adoption silently</strong> (no error, no <code>409</code>) and creates a second, empty
+account instead. A Gmail dot-alias signed in via Google SSO (e.g.
+<code>ken.arakelian1@gmail.com</code>) is exactly this trap. The symptom is an empty
+dashboard after a fine-looking login; making a new PAT and reinstalling the
+agent only compounds it, since the new PAT attaches to the new, empty
+account.</p>
+<p><strong>Recommended:</strong> create the Clerk user directly with the exact production
+address (Clerk dashboard → Users → Create), rather than letting the account
+holder self-serve sign up (which may go through Google SSO and resolve a
+slightly different address).</p>
+<p><strong>Before deploying</strong>, record the current state:</p>
+<pre><code class="language-sql">select id, email, clerk_user_id from users;
+</code></pre>
+<p><strong>After the first Clerk sign-in</strong>, run it again and confirm:</p>
+<ul>
+<li>the <strong>same</strong> <code>id</code> as before,</li>
+<li><code>clerk_user_id</code> is now set (non-null),</li>
+<li>still exactly <strong>one</strong> row.</li>
+</ul>
+<p>If a second row appears, adoption missed (email mismatch). Do not create a
+new PAT against it — instead, fix the Clerk user&#39;s primary email to match
+<code>users.email</code> exactly (or update <code>users.email</code> to match Clerk, whichever is
+correct), delete the erroneous second row, and re-authenticate.</p>
+<h3 id="migration-0002-rollback-and-rolling-deploy-notes">Migration 0002 rollback and rolling-deploy notes</h3>
+<ul>
+<li><p><strong>No image rollback after migration 0002.</strong> <code>apps/api/drizzle/0002_clever_the_hood.sql</code>
+drops the <code>sessions</code> table and adds <code>users.clerk_user_id</code>. A pre-branch API
+image finds no <code>sessions</code> table and 500s on every dashboard route, so once
+0002 is applied, rolling back the API image is not an option — roll forward
+only.</p>
+</li>
+<li><p><strong>Before applying migration 0002</strong>, check production for out-of-band
+dependents on <code>sessions</code> before running it, since the generated SQL uses
+<code>DROP TABLE ... CASCADE</code>:</p>
+<pre><code class="language-sql">\d+ sessions
+-- and/or
+select * from pg_depend where refobjid = &#39;sessions&#39;::regclass;
+</code></pre>
+</li>
+<li><p><strong>Brief agent-ingest errors during the rolling deploy are expected and
+self-healing.</strong> Migration <code>0001_tiny_pandemic.sql</code> changes the <code>machines</code>
+primary key from <code>machine_id</code> alone to the composite
+<code>(user_id, machine_id)</code>. While the old API container is still serving
+traffic during the rollover, its <code>upsertMachine</code> still issues
+<code>ON CONFLICT (&quot;machine_id&quot;)</code>, which Postgres rejects once the PK is
+composite. No data is lost — the agent&#39;s local outbox keeps the affected
+rows pending and retries until the new container is serving.</p>
+</li>
+</ul>
 <h2 id="desktop-agent-installer-windows">Desktop agent installer (Windows)</h2>
 <h3 id="download-from-github-releases-easiest">Download from GitHub Releases (easiest)</h3>
 <ol>
@@ -670,7 +719,7 @@ pnpm --filter @tokenops/agent build
 </tr>
 <tr>
 <td><code>apps/api</code></td>
-<td>Needs <code>DATABASE_URL</code> + <code>SESSION_SECRET</code> + <code>CLERK_SECRET_KEY</code> for <code>pnpm --filter @tokenops/api dev</code></td>
+<td>Needs <code>DATABASE_URL</code> + <code>CLERK_SECRET_KEY</code> for <code>pnpm --filter @tokenops/api dev</code></td>
 </tr>
 <tr>
 <td><code>apps/agent</code></td>

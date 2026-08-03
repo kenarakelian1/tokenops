@@ -3,7 +3,6 @@ import { emptyToUndefined, loadEnv } from "./env.js";
 
 const base = {
   DATABASE_URL: "postgres://localhost/tokenops",
-  SESSION_SECRET: "test-secret",
   CLERK_SECRET_KEY: "sk_test_x",
 };
 
@@ -23,7 +22,6 @@ describe("loadEnv", () => {
   it("accepts minimal required env", () => {
     const env = loadEnv(base);
     expect(env.DATABASE_URL).toBe(base.DATABASE_URL);
-    expect(env.SESSION_SECRET).toBe(base.SESSION_SECRET);
     expect(env.CLERK_SECRET_KEY).toBe(base.CLERK_SECRET_KEY);
     expect(env.PORT).toBe(3000);
     expect(env.HOST).toBe("0.0.0.0");

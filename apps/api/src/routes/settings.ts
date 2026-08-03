@@ -2,9 +2,11 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/middleware.js";
 import type { AuthRepo } from "../auth/repo.js";
+import type { ClerkVerifier } from "../auth/clerk.js";
 
 export type SettingsRouteVariables = {
   authRepo: AuthRepo;
+  clerkVerifier: ClerkVerifier;
   userId: string;
 };
 

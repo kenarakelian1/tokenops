@@ -1,12 +1,16 @@
 import { Hono } from "hono";
 import { IngestBatchSchema } from "@tokenops/shared";
 import { requirePat, requireUser } from "../auth/middleware.js";
+import type { AuthRepo } from "../auth/repo.js";
+import type { ClerkVerifier } from "../auth/clerk.js";
 import type { EventsRepo } from "../services/events-repo.js";
 import { ingest, MachineLimitError } from "../services/ingest.js";
 import type { UsageEventRow } from "../db/schema.js";
 
 export type EventsRouteVariables = {
   eventsRepo: EventsRepo;
+  authRepo: AuthRepo;
+  clerkVerifier: ClerkVerifier;
   userId: string;
   hostedLimits: boolean;
 };

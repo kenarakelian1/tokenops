@@ -31,7 +31,8 @@ export type AppDeps = {
   hostedLimits?: boolean;
   /**
    * When set, enable credentialed CORS for this origin.
-   * Prefer same-origin reverse proxy (omit) for cookie sessions.
+   * Prefer same-origin reverse proxy (omit) so the dashboard and API share
+   * an origin without needing CORS at all.
    */
   corsOrigin?: string;
 };

@@ -50,6 +50,10 @@ export const requireUser: MiddlewareHandler<AuthEnv> = async (c, next) => {
     if (err instanceof EmailConflictError) {
       return c.json({ error: "email_conflict" }, 409);
     }
+    console.error(
+      `Provisioning failed for Clerk user ${identity.clerkUserId}:`,
+      err,
+    );
     throw err;
   }
 

@@ -19,7 +19,6 @@ export function emptyToUndefined(
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
-  SESSION_SECRET: z.string().min(1, "SESSION_SECRET is required"),
   /**
    * Clerk Backend API secret key. Required at boot — without it the API
    * cannot verify any dashboard session, so failing fast here surfaces the
@@ -44,7 +43,8 @@ const envSchema = z.object({
   RAW_EVENT_RETENTION_DAYS: z.coerce.number().int().nonnegative().optional(),
   /**
    * Browser origin allowed for credentialed CORS (e.g. https://app.example.com).
-   * Prefer same-origin reverse proxy (empty) so cookies work without CORS.
+   * Prefer same-origin reverse proxy (empty) so the dashboard and API share
+   * an origin without needing CORS at all.
    */
   CORS_ORIGIN: z.string().url().optional(),
 });

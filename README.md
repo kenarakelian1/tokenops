@@ -73,7 +73,6 @@ dashboard once signed in, under **Settings → Agent access token**.
 
 ```bash
 # From repo root
-export SESSION_SECRET="$(openssl rand -hex 32)"        # required at boot (unused; see env table)
 export CLERK_SECRET_KEY="sk_test_..."                   # required — from the Clerk dashboard
 export VITE_CLERK_PUBLISHABLE_KEY="pk_test_..."         # required — web build fails without it
 docker compose -f deploy/docker-compose.yml up --build
@@ -349,7 +348,6 @@ After Compose is up and you have logged in:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | yes | — | Postgres connection string |
-| `SESSION_SECRET` | yes | — | Required at boot by `env.ts`, but not currently read by any code path — cookie sessions were removed with the Clerk migration. Kept for now; a follow-up should drop it |
 | `PORT` | no | `3000` | HTTP port |
 | `HOST` | no | `0.0.0.0` | Bind address |
 | `HOSTED_LIMITS` | no | unset/false | When `true`: max 3 machines; default 30-day raw event retention |
@@ -393,7 +391,6 @@ Agents keep using long-lived PATs (`POST /v1/auth/pats`), unaffected by this.
 See `deploy/env.example`. Compose defaults:
 
 - `DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops`
-- `SESSION_SECRET` from env or a dev placeholder (change for real use)
 - `CLERK_SECRET_KEY` and `VITE_CLERK_PUBLISHABLE_KEY` are passed through from
   your shell env — **Compose will not sign in without `CLERK_SECRET_KEY`, and
   the `tokenops-web` image will fail to build without
@@ -413,17 +410,81 @@ Hosted free-tier (this repo’s project):
 | **API** | https://tokenops-api-production.up.railway.app |
 | **Health** | https://tokenops-api-production.up.railway.app/health |
 
-Prefer the **web** URL for login (nginx proxies `/v1` to `tokenops-api` on the private network — cookies stay same-origin).
+Prefer the **web** URL for login (nginx proxies `/v1` to `tokenops-api` on the private network, so the dashboard and API share one origin).
 
 Self-deploy:
 
 1. New project → add **Postgres** plugin (`DATABASE_URL` injected).
 2. Deploy API from repo root with `railway.toml` / `deploy/api.Dockerfile`.
-3. Set `SESSION_SECRET` and `CLERK_SECRET_KEY` (API refuses to boot without either). For hosted free tier set `HOSTED_LIMITS=true`. Set `CLERK_JWT_KEY` too — see [Environment variables](#api-appsapi) for why.
+3. Set `CLERK_SECRET_KEY` (API refuses to boot without it). For hosted free tier set `HOSTED_LIMITS=true`. Set `CLERK_JWT_KEY` too — see [Environment variables](#api-appsapi) for why.
 4. Deploy web as a second service (`deploy/web.Dockerfile`) so nginx can reach `tokenops-api:3000` on the private network.
 5. **Before the web service's first build**, set `VITE_CLERK_PUBLISHABLE_KEY` as a Variable on that service. `deploy/web.Dockerfile` declares `ARG VITE_CLERK_PUBLISHABLE_KEY`, and Railway only populates a declared `ARG` from a service Variable of the same name at build time — there is no `railway.toml`/`railway.json` field that injects it for you (config-as-code there only covers `[build]`/`[deploy]`, not variables). **Skipping this step fails the web build outright**, because `apps/web/vite.config.ts` throws on a missing key instead of shipping a broken bundle.
 
 Health check path: `/health`.
+
+### Adoption verification (production cutover)
+
+The production account (`kenarakelian1@gmail.com`) predates Clerk and has
+`clerk_user_id IS NULL`. On first Clerk sign-in, `resolveUserId` (see
+`apps/api/src/auth/provision.ts`) adopts that row by matching email, which
+preserves its `id` — and therefore the existing PAT, machines, and usage
+ledger that foreign-key to it. The email match is a plain lowercase
+comparison, not Clerk's identity, so **anything other than a case difference
+between the Clerk identity's primary email and the stored `users.email`
+misses adoption silently** (no error, no `409`) and creates a second, empty
+account instead. A Gmail dot-alias signed in via Google SSO (e.g.
+`ken.arakelian1@gmail.com`) is exactly this trap. The symptom is an empty
+dashboard after a fine-looking login; making a new PAT and reinstalling the
+agent only compounds it, since the new PAT attaches to the new, empty
+account.
+
+**Recommended:** create the Clerk user directly with the exact production
+address (Clerk dashboard → Users → Create), rather than letting the account
+holder self-serve sign up (which may go through Google SSO and resolve a
+slightly different address).
+
+**Before deploying**, record the current state:
+
+```sql
+select id, email, clerk_user_id from users;
+```
+
+**After the first Clerk sign-in**, run it again and confirm:
+
+- the **same** `id` as before,
+- `clerk_user_id` is now set (non-null),
+- still exactly **one** row.
+
+If a second row appears, adoption missed (email mismatch). Do not create a
+new PAT against it — instead, fix the Clerk user's primary email to match
+`users.email` exactly (or update `users.email` to match Clerk, whichever is
+correct), delete the erroneous second row, and re-authenticate.
+
+### Migration 0002 rollback and rolling-deploy notes
+
+- **No image rollback after migration 0002.** `apps/api/drizzle/0002_clever_the_hood.sql`
+  drops the `sessions` table and adds `users.clerk_user_id`. A pre-branch API
+  image finds no `sessions` table and 500s on every dashboard route, so once
+  0002 is applied, rolling back the API image is not an option — roll forward
+  only.
+- **Before applying migration 0002**, check production for out-of-band
+  dependents on `sessions` before running it, since the generated SQL uses
+  `DROP TABLE ... CASCADE`:
+
+  ```sql
+  \d+ sessions
+  -- and/or
+  select * from pg_depend where refobjid = 'sessions'::regclass;
+  ```
+
+- **Brief agent-ingest errors during the rolling deploy are expected and
+  self-healing.** Migration `0001_tiny_pandemic.sql` changes the `machines`
+  primary key from `machine_id` alone to the composite
+  `(user_id, machine_id)`. While the old API container is still serving
+  traffic during the rollover, its `upsertMachine` still issues
+  `ON CONFLICT ("machine_id")`, which Postgres rejects once the PK is
+  composite. No data is lost — the agent's local outbox keeps the affected
+  rows pending and retries until the new container is serving.
 
 ## Desktop agent installer (Windows)
 
@@ -470,7 +531,7 @@ pnpm --filter @tokenops/agent build
 | Package | Notes |
 |---------|-------|
 | `packages/shared` | Schema, pricing, features, rules — no I/O |
-| `apps/api` | Needs `DATABASE_URL` + `SESSION_SECRET` + `CLERK_SECRET_KEY` for `pnpm --filter @tokenops/api dev` |
+| `apps/api` | Needs `DATABASE_URL` + `CLERK_SECRET_KEY` for `pnpm --filter @tokenops/api dev` |
 | `apps/agent` | Unit tests mock upstream; no live provider keys in CI |
 | `apps/web` | `pnpm --filter @tokenops/web dev` for Vite (UI against Compose/Railway API preferred); `build` additionally requires `VITE_CLERK_PUBLISHABLE_KEY` or it throws |
 

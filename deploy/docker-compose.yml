@@ -31,7 +31,6 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://tokenops:tokenops@db:5432/tokenops
-      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
       # Required by the API at boot (env.ts fails fast with a clear message
       # if unset) — left optional here so `docker compose config`/`ps`/
       # `up db` don't abort on interpolation before the api service even
