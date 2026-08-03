@@ -113,7 +113,7 @@
 </head>
 <body>
 <main>
-<h1>TokenOps</h1>
+<h1 id="tokenops">TokenOps</h1>
 <p><strong>Open-source AI usage observability.</strong> A local agent captures LLM calls on each machine; a cloud API stores aggregates and optional short-TTL content; a web dashboard shows spend, explore, and efficiency recommendations.</p>
 <p>TokenOps answers: <em>where did my tokens go, across apps and computers — and what waste can I cut?</em></p>
 <p>Phase 1 includes:</p>
@@ -127,7 +127,7 @@
 <blockquote>
 <p>Money in the UI is always labeled <strong>estimated</strong>. Provider API keys never leave your machine.</p>
 </blockquote>
-<h2>Architecture</h2>
+<h2 id="architecture">Architecture</h2>
 <pre><code>┌─────────────────────────────┐
 │  Claude Code / OpenAI SDK   │
 └─────────────┬───────────────┘
@@ -178,7 +178,7 @@
 </tr>
 </tbody></table>
 <p>Compose runs <strong>db</strong> + <strong>api</strong> + <strong>web</strong> (nginx serves the SPA and proxies <code>/v1</code> and <code>/health</code> for same-origin API calls).</p>
-<h2>Authentication</h2>
+<h2 id="authentication">Authentication</h2>
 <p>TokenOps uses <a href="https://clerk.com">Clerk</a> for all human sign-in. <strong>Every
 deployment needs a Clerk application, including self-hosted ones.</strong>
 <code>docker compose up</code> alone does not yield a working login — Clerk is a hard
@@ -193,7 +193,7 @@ client bundle at <strong>build</strong> time — see <a href="#web-appsweb">Web<
 <p>Agents authenticate separately with <code>tok_…</code> PATs and are unaffected by Clerk —
 no change or re-install needed for existing agents. Create a PAT from the
 dashboard once signed in, under <strong>Settings → Agent access token</strong>.</p>
-<h2>Quick start (Docker Compose)</h2>
+<h2 id="quick-start-docker-compose">Quick start (Docker Compose)</h2>
 <pre><code class="language-bash"># From repo root
 export SESSION_SECRET=&quot;$(openssl rand -hex 32)&quot;        # required at boot (unused; see env table)
 export CLERK_SECRET_KEY=&quot;sk_test_...&quot;                   # required — from the Clerk dashboard
@@ -233,7 +233,7 @@ first verified request. Then create an ingest PAT from the dashboard
 <p>There is no <code>POST /v1/auth/register</code> or <code>/v1/auth/login</code> — Clerk owns
 sign-up and sign-in entirely; only <code>GET /v1/auth/me</code> and
 <code>POST /v1/auth/pats</code> remain on the API, both behind a Clerk session JWT.</p>
-<h2>Local agent: <code>tokenops init</code> + <code>agent run</code></h2>
+<h2 id="local-agent-tokenops-init-agent-run">Local agent: <code>tokenops init</code> + <code>agent run</code></h2>
 <p>The agent runs on each machine that generates LLM traffic.</p>
 <pre><code class="language-bash">pnpm install
 pnpm --filter @tokenops/agent build
@@ -294,9 +294,9 @@ claude_code = true
 name = &quot;desktop&quot;
 </code></pre>
 <p>Create an ingest PAT from the dashboard <strong>Settings</strong> page (or <code>POST /v1/auth/pats</code> while logged in).</p>
-<h2>Point OpenAI / Grok (xAI) SDK at the local proxy</h2>
+<h2 id="point-openai-grok-xai-sdk-at-the-local-proxy">Point OpenAI / Grok (xAI) SDK at the local proxy</h2>
 <p>With the agent running, point any OpenAI-compatible client at the proxy. The agent measures usage, extracts features, enqueues events, and forwards the request upstream with your local key.</p>
-<h3>OpenAI</h3>
+<h3 id="openai">OpenAI</h3>
 <pre><code class="language-toml"># ~/.tokenops/config.toml
 [proxy]
 listen = &quot;127.0.0.1:8787&quot;
@@ -306,7 +306,7 @@ upstream = &quot;https://api.openai.com&quot;
 tokenops agent run
 </code></pre>
 <p>Events use <code>app=openai-proxy</code>, <code>provider=openai</code>.</p>
-<h3>Grok / xAI</h3>
+<h3 id="grok-xai">Grok / xAI</h3>
 <pre><code class="language-toml">[proxy]
 listen = &quot;127.0.0.1:8787&quot;
 upstream = &quot;https://api.x.ai/v1&quot;
@@ -327,7 +327,7 @@ await grok.chat.completions.create({
   messages: [{ role: &quot;user&quot;, content: &quot;hello&quot; }],
 });
 </code></pre>
-<h3>Shared client pattern (either provider)</h3>
+<h3 id="shared-client-pattern-either-provider">Shared client pattern (either provider)</h3>
 <pre><code class="language-ts">import OpenAI from &quot;openai&quot;;
 
 const client = new OpenAI({
@@ -350,8 +350,8 @@ const res = await client.chat.completions.create({
 <li>Optional <code>session_id</code> / <code>sessionId</code> / <code>metadata.session_id</code> / OpenAI <code>user</code> → event <code>sessionId</code></li>
 <li>If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns</li>
 </ul>
-<h2>Claude Code (JSONL + OpenTelemetry)</h2>
-<h3>Preferred: OpenTelemetry metrics (official Claude Code telemetry)</h3>
+<h2 id="claude-code-jsonl-opentelemetry">Claude Code (JSONL + OpenTelemetry)</h2>
+<h3 id="preferred-opentelemetry-metrics-official-claude-code-telemetry">Preferred: OpenTelemetry metrics (official Claude Code telemetry)</h3>
 <p>With the agent running (<code>tokenops agent run</code>), default OTLP HTTP listen is <strong><code>127.0.0.1:4318</code></strong>.</p>
 <p>In the shell where you launch Claude Code (use <strong>HTTP JSON</strong>, not gRPC — TokenOps does not speak OTLP/gRPC yet):</p>
 <pre><code class="language-bash"># Windows PowerShell
@@ -393,14 +393,14 @@ claude_code_otel_listen = &quot;127.0.0.1:4318&quot;   # empty string disables O
 <blockquote>
 <p>Your snippet with <code>OTEL_EXPORTER_OTLP_PROTOCOL=grpc</code> and port <strong>4317</strong> is the default OTEL collector setup. Point Claude at <strong>TokenOps</strong> with <strong><code>http/json</code> + 4318</strong> instead, or run an OTEL Collector that forwards metrics to TokenOps HTTP.</p>
 </blockquote>
-<h3>Fallback: JSONL path</h3>
+<h3 id="fallback-jsonl-path">Fallback: JSONL path</h3>
 <p>When <code>sources.claude_code = true</code>, the agent also watches a usage JSONL file and maps each line into the shared event schema (<code>app=claude-code</code>).</p>
 <p><strong>Default path:</strong> <code>~/.tokenops/claude-code-usage.jsonl</code><br><strong>Override:</strong> set <code>sources.claude_code_path</code> in config (absolute path to a file or directory).</p>
 <p>Each line is one JSON object. Required fields: <code>model</code>, <code>inputTokens</code> (or <code>input_tokens</code>), <code>outputTokens</code> (or <code>output_tokens</code>). Optional: <code>timestamp</code>, <code>sessionId</code>, <code>requestPreview</code> / <code>responsePreview</code>.</p>
 <p>Example line:</p>
 <pre><code class="language-json">{&quot;timestamp&quot;:&quot;2026-07-27T10:00:00.000Z&quot;,&quot;model&quot;:&quot;claude-sonnet-4&quot;,&quot;inputTokens&quot;:1200,&quot;outputTokens&quot;:350,&quot;sessionId&quot;:&quot;sess-1&quot;,&quot;requestPreview&quot;:&quot;…&quot;,&quot;responsePreview&quot;:&quot;…&quot;}
 </code></pre>
-<h3>End-to-end fixture path</h3>
+<h3 id="end-to-end-fixture-path">End-to-end fixture path</h3>
 <p>A checked-in sample log for tests and manual smoke:</p>
 <pre><code>apps/agent/test/fixtures/claude-code-usage.jsonl
 </code></pre>
@@ -410,7 +410,7 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 # Or append more lines — the watcher tails the file
 </code></pre>
 <p>Then open the dashboard Explore view (or query <code>GET /v1/events</code>) after the next outbox flush (~5s).</p>
-<h2>Privacy modes</h2>
+<h2 id="privacy-modes">Privacy modes</h2>
 <p>Configured under <code>[privacy]</code> in <code>config.toml</code>. <strong>Metadata + features always ship.</strong> Content (request/response bodies) is gated:</p>
 <table>
 <thead>
@@ -440,7 +440,7 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 <li>Provider <strong>API keys never appear in ingest payloads</strong> (proxy tests assert this).</li>
 <li>Cloud content rows expire via the API expire-content job; <code>has_content</code> is cleared on the usage event.</li>
 </ul>
-<h2>Free tier and self-host</h2>
+<h2 id="free-tier-and-self-host">Free tier and self-host</h2>
 <table>
 <thead>
 <tr>
@@ -459,7 +459,7 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 </tbody></table>
 <p>Content TTL (7 days) applies whenever content was ingested under <code>cloud_ttl</code>, self-host or hosted.</p>
 <p>See <a href="#environment-variables">Environment variables</a> and <a href="#railway">Railway</a> below.</p>
-<h2>Dashboard</h2>
+<h2 id="dashboard">Dashboard</h2>
 <p>After Compose is up and you have logged in:</p>
 <ol>
 <li><strong>Overview</strong> — tokens &amp; est. $ (today / 7d / 30d), top models</li>
@@ -468,8 +468,8 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 <li><strong>Machines</strong> — last seen, sync health</li>
 <li><strong>Settings</strong> — budget banner threshold, <strong>create agent PAT</strong>, retention notes</li>
 </ol>
-<h2>Environment variables</h2>
-<h3>API (<code>apps/api</code>)</h3>
+<h2 id="environment-variables">Environment variables</h2>
+<h3 id="api-appsapi">API (<code>apps/api</code>)</h3>
 <table>
 <thead>
 <tr>
@@ -541,13 +541,13 @@ then looks to users exactly like a bad login, not an outage. Setting
 <code>CLERK_JWT_KEY</code> (a PEM key from the Clerk dashboard, pinned to your instance)
 makes verification fully networkless, so it keeps working through a Clerk API
 outage.</p>
-<h3>Accounts</h3>
+<h3 id="accounts">Accounts</h3>
 <p>The dashboard authenticates via <a href="https://clerk.com">Clerk</a> — sign-up, sign-in,
 and session management all live on Clerk&#39;s side. The API verifies the Clerk
 session JWT on <code>Authorization: Bearer</code> and provisions (or adopts, by email) a
 local <code>users</code> row on first sight (see <code>apps/api/src/auth/provision.ts</code>).
 Agents keep using long-lived PATs (<code>POST /v1/auth/pats</code>), unaffected by this.</p>
-<h3>Content TTL</h3>
+<h3 id="content-ttl">Content TTL</h3>
 <ul>
 <li>Optional request/response bodies in <code>event_content</code> expire after <strong>7 days</strong> (set at ingest).</li>
 <li>Hourly job (<code>apps/api/src/jobs/expire-content.ts</code>):<ol>
@@ -556,7 +556,7 @@ Agents keep using long-lived PATs (<code>POST /v1/auth/pats</code>), unaffected 
 </ol>
 </li>
 </ul>
-<h3>Web (<code>apps/web</code>)</h3>
+<h3 id="web-appsweb">Web (<code>apps/web</code>)</h3>
 <table>
 <thead>
 <tr>
@@ -579,7 +579,7 @@ Agents keep using long-lived PATs (<code>POST /v1/auth/pats</code>), unaffected 
 <td>Clerk publishable key baked into the client bundle; <code>vite build</code> throws and aborts the build if unset (see <code>apps/web/vite.config.ts</code>)</td>
 </tr>
 </tbody></table>
-<h3>Compose helpers</h3>
+<h3 id="compose-helpers">Compose helpers</h3>
 <p>See <code>deploy/env.example</code>. Compose defaults:</p>
 <ul>
 <li><code>DATABASE_URL=postgres://tokenops:tokenops@db:5432/tokenops</code></li>
@@ -593,7 +593,7 @@ on interpolation before you&#39;ve exported them — the real failure surfaces
 loudly at API boot or web build time instead)</li>
 <li>Optional vars (<code>CLERK_JWT_KEY</code>, <code>CORS_ORIGIN</code>, <code>RAW_EVENT_RETENTION_DAYS</code>) are <strong>omitted</strong> when unset (empty strings would fail strict Zod validation without the API’s empty→undefined normalization)</li>
 </ul>
-<h2>Railway</h2>
+<h2 id="railway">Railway</h2>
 <p>Hosted free-tier (this repo’s project):</p>
 <table>
 <thead>
@@ -625,8 +625,8 @@ loudly at API boot or web build time instead)</li>
 <li><strong>Before the web service&#39;s first build</strong>, set <code>VITE_CLERK_PUBLISHABLE_KEY</code> as a Variable on that service. <code>deploy/web.Dockerfile</code> declares <code>ARG VITE_CLERK_PUBLISHABLE_KEY</code>, and Railway only populates a declared <code>ARG</code> from a service Variable of the same name at build time — there is no <code>railway.toml</code>/<code>railway.json</code> field that injects it for you (config-as-code there only covers <code>[build]</code>/<code>[deploy]</code>, not variables). <strong>Skipping this step fails the web build outright</strong>, because <code>apps/web/vite.config.ts</code> throws on a missing key instead of shipping a broken bundle.</li>
 </ol>
 <p>Health check path: <code>/health</code>.</p>
-<h2>Desktop agent installer (Windows)</h2>
-<h3>Download from GitHub Releases (easiest)</h3>
+<h2 id="desktop-agent-installer-windows">Desktop agent installer (Windows)</h2>
+<h3 id="download-from-github-releases-easiest">Download from GitHub Releases (easiest)</h3>
 <ol>
 <li>Open <strong><a href="https://github.com/kenarakelian1/tokenops/releases">Releases</a></strong>  </li>
 <li>Install <a href="https://nodejs.org/">Node.js 22+</a> if needed  </li>
@@ -638,7 +638,7 @@ loudly at API boot or web build time instead)</li>
 <blockquote>
 <p>The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control warns: <strong>More info → Run anyway</strong>, or right‑click → Properties → <strong>Unblock</strong>.</p>
 </blockquote>
-<h3>Build from source</h3>
+<h3 id="build-from-source">Build from source</h3>
 <pre><code class="language-bat">pnpm.cmd install
 pnpm.cmd package:agent
 </code></pre>
@@ -691,7 +691,7 @@ pnpm --filter @tokenops/agent build
   deploy/              # Compose, Dockerfiles, nginx, Railway
   docs/superpowers/    # Design spec + implementation plan
 </code></pre>
-<h2>License</h2>
+<h2 id="license">License</h2>
 <p>MIT — see <a href="./LICENSE">LICENSE</a>.</p>
 </main>
 </body>

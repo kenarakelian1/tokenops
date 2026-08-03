@@ -10,8 +10,9 @@
     "package:agent": "node scripts/package-agent.mjs"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "marked": "^18.0.7",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5",
-    "@types/node": "^22.10.0"
+    "vitest": "^3.0.5"
   }
 }

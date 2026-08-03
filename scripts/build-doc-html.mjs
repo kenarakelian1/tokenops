@@ -1,36 +1,95 @@
 #!/usr/bin/env node
 /**
- * Wrap marked-generated body HTML in the repo's standalone doc template
- * (inline CSS, serif ~44rem column, light/dark, print rules) — the same
- * look used for docs/superpowers/specs/2026-07-27-tokenops-design.html.
+ * Render a Markdown doc to the repo's standalone HTML template (inline CSS,
+ * serif ~44rem column, light/dark, print rules) — the same look used for
+ * docs/superpowers/specs/2026-07-27-tokenops-design.html.
  *
  * Human-readable docs (README, specs, design memos) ship as both .md and
  * .html per repo convention. Markdown is for editing/diffing; this script
  * produces the HTML for reading.
  *
- * Usage (from repo root):
- *   npx -y marked@15 -i README.md -o /tmp/readme-body.html --gfm
- *   node scripts/build-doc-html.mjs /tmp/readme-body.html README.html [title]
+ * Uses the `marked` library directly (a repo devDependency — `pnpm install`
+ * is all that's needed; nothing is fetched at generation time), and injects
+ * GitHub-style heading `id`s so in-page anchors like `[Web](#web-appsweb)`
+ * that work on GitHub's rendered README also resolve in the standalone HTML
+ * (marked itself does not emit heading ids).
  *
- * If [title] is omitted, the title is taken from the body's first <h1>.
+ * Usage (from repo root, after `pnpm install`):
+ *   node scripts/build-doc-html.mjs README.md README.html [title]
+ *
+ * If [title] is omitted, the title is taken from the rendered body's first <h1>.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { marked } from "marked";
 
 const [, , inputPath, outputPath, titleArg] = process.argv;
 
 if (!inputPath || !outputPath) {
   console.error(
-    "Usage: node scripts/build-doc-html.mjs <body-html-in> <html-out> [title]",
+    "Usage: node scripts/build-doc-html.mjs <markdown-in> <html-out> [title]",
   );
   process.exit(1);
 }
 
-const body = readFileSync(inputPath, "utf8").trim();
+const markdown = readFileSync(inputPath, "utf8");
+const bodyRaw = marked.parse(markdown, { gfm: true }).trim();
+
+function stripTags(html) {
+  return html.replace(/<[^>]+>/g, "");
+}
+
+function decodeEntities(s) {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/**
+ * GitHub's heading-anchor slug rules: lowercase, strip a fixed set of ASCII
+ * punctuation (no hyphen inserted in its place), collapse whitespace to
+ * hyphens, and de-duplicate repeats with a `-1`, `-2`, ... suffix — the same
+ * rules GitHub applies when rendering README.md, so links like
+ * `[Web](#web-appsweb)` resolve identically here and on GitHub.
+ */
+function githubSlug(text, seen) {
+  const base = text
+    .toLowerCase()
+    .trim()
+    .replace(/[!"#$%&'()*+,./:;<=>?@[\]^`{|}~]/g, "")
+    .replace(/\s+/g, "-");
+  const count = seen.get(base);
+  if (count === undefined) {
+    seen.set(base, 0);
+    return base;
+  }
+  const next = count + 1;
+  seen.set(base, next);
+  return `${base}-${next}`;
+}
+
+function addHeadingIds(html) {
+  const seen = new Map();
+  return html.replace(
+    /<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/g,
+    (match, tag, attrs, inner) => {
+      if (/\bid=/.test(attrs)) return match;
+      const text = decodeEntities(stripTags(inner)).trim();
+      if (!text) return match;
+      const slug = githubSlug(text, seen);
+      return `<${tag}${attrs} id="${slug}">${inner}</${tag}>`;
+    },
+  );
+}
+
+const body = addHeadingIds(bodyRaw);
 
 function deriveTitle(html) {
   const match = html.match(/<h1[^>]*>(.*?)<\/h1>/is);
   if (!match) return "TokenOps";
-  return match[1].replace(/<[^>]+>/g, "").trim();
+  return decodeEntities(stripTags(match[1])).trim();
 }
 
 function escapeHtml(s) {
