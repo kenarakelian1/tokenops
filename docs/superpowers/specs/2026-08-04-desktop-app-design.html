@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TokenOps desktop app — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="tokenops-desktop-app-—-design">TokenOps desktop app — design</h1>
+<p><strong>Date:</strong> 2026-08-04
+<strong>Status:</strong> Approved, not yet implemented</p>
+<h2 id="problem">Problem</h2>
+<p>The agent runs as <code>tokenops agent run</code> in a console window. That window is the
+entire local interface, and it is bad at both jobs it has.</p>
+<p>As a surface, it is a black <code>cmd</code> box that sits in the taskbar for as long as
+capture is running. Closing it stops capture, and nothing indicates that.</p>
+<p>As a display, it prints startup lines and then goes quiet. A real session looks
+like this:</p>
+<pre><code>[tokenops] no upstream API key, proxy will start but upstream calls will fail auth
+[tokenops] proxy listening on 127.0.0.1:8787 -&gt; https://api.openai.com
+[tokenops] claude-code adapter watching C:\Users\Ken\.tokenops\claude-code-usage.jsonl
+[tokenops] Claude Code OTEL metrics listening on 127.0.0.1:4318
+</code></pre>
+<p>Everything after that — whether anything was captured, how many events are
+queued, whether shipping to the cloud is failing — requires quitting or opening
+a second terminal to run <code>tokenops status</code>. The warning on line one is the kind
+of thing a person reads once and never sees again, even though it means every
+proxied call will fail.</p>
+<p>There is a second, larger problem hiding behind this. The installer refuses to
+proceed without Node.js 22 on PATH, so the first thing a new user meets is a
+prerequisite download.</p>
+<h2 id="decision">Decision</h2>
+<p>Ship an Electron desktop app: a tray icon plus a real window showing live local
+state. Electron&#39;s main process runs the existing agent code <strong>in-process</strong> by
+importing <code>@tokenops/agent</code> — no second runtime, no child process, no IPC to a
+separate Node.</p>
+<p>Two alternatives were considered:</p>
+<ul>
+<li><strong>Tauri</strong> produces a far smaller binary using the WebView2 already present on
+Windows 11. Rejected because Tauri is Rust and the agent is Node, so Node
+would ship as a sidecar regardless — two runtimes, erasing the size advantage,
+plus Rust in CI.</li>
+<li><strong>No new runtime</strong> — serve a status page on <code>127.0.0.1</code> and run the agent
+hidden via the existing logon task. Smallest possible change, but the &quot;window&quot;
+is a browser tab, and a real tray icon needs a third-party helper binary that
+tends to trip antivirus.</li>
+</ul>
+<p><strong>Accepted cost:</strong> the installer grows from roughly 2.5 MB to 90–120 MB.</p>
+<p><strong>Unlocked benefit:</strong> Electron bundles its own Node, so the Node 22 prerequisite
+disappears. The install stops failing before it starts.</p>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>Cloud data in the window.</strong> Local state only; a button opens the cloud
+dashboard in a browser. Re-implementing the ledger, history, and
+recommendations twice is the thing this design most wants to avoid.</li>
+<li><strong>macOS and Linux builds.</strong> Electron makes them possible later. The installer,
+tray behaviour, and CI are Windows-only today and stay that way.</li>
+<li><strong>Replacing the CLI.</strong> <code>tokenops agent run</code> and <code>tokenops status</code> keep working
+for headless and server installs.</li>
+</ul>
+<h2 id="architecture">Architecture</h2>
+<p>A new <code>apps/desktop</code> package with the three standard Electron layers:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>main</td>
+<td>Owns the agent runtime, tray, window lifecycle, and all disk/DB access</td>
+</tr>
+<tr>
+<td>preload</td>
+<td>Exposes a narrow, typed API over <code>contextBridge</code> — nothing else</td>
+</tr>
+<tr>
+<td>renderer</td>
+<td>React UI. Receives plain data objects; never touches Node or SQLite</td>
+</tr>
+</tbody></table>
+<h3 id="the-agent-becomes-callable">The agent becomes callable</h3>
+<p><code>apps/agent/src/agent-main.ts</code> is CLI-shaped today. It gains a programmatic
+API:</p>
+<pre><code class="language-ts">export type AgentHandle = { stop(): Promise&lt;void&gt; };
+export async function startAgent(opts: { configPath?: string }): Promise&lt;AgentHandle&gt;;
+</code></pre>
+<p>The CLI calls exactly this, so there is one code path and the existing agent
+tests continue to cover it. The desktop main process calls it too.</p>
+<p>This is the only change to shipped agent behaviour in this design.</p>
+<h3 id="local-statistics">Local statistics</h3>
+<p>A new <code>apps/agent/src/local-stats.ts</code> reads the outbox and returns rollups.</p>
+<p>This is cheap because of an existing property of the outbox: <code>markSent</code> sets
+<code>status = &#39;sent&#39;</code> rather than deleting the row, so <strong>sent events keep their
+payloads</strong>. Today&#39;s totals are a query, not a new table.</p>
+<pre><code class="language-ts">export type LocalStats = {
+  today: { inputTokens: number; outputTokens: number; estimatedUsd: number };
+  byApp: Array&lt;{ app: string; inputTokens: number; outputTokens: number }&gt;;
+  byModel: Array&lt;{ model: string; inputTokens: number; outputTokens: number }&gt;;
+  queue: { pending: number; lastError: string | null; lastFlushAt: string | null };
+  recent: Array&lt;{ at: string; app: string; model: string; inputTokens: number; outputTokens: number }&gt;;
+};
+export function readLocalStats(outboxPath: string, now: Date): LocalStats;
+</code></pre>
+<p>Pure SQLite-in, object-out. It unit-tests exactly like the rest of the repo,
+with no Electron in the test path.</p>
+<p>That same retention property has a consequence worth stating plainly: the outbox
+grows without bound today, because nothing prunes sent rows. The desktop window
+is what will make that visible. Pruning is a follow-up, not part of this design,
+but the window must not assume the table is small — queries are bounded by date
+and <code>LIMIT</code>.</p>
+<h3 id="window-contents">Window contents</h3>
+<p>One live view, refreshed by polling <code>readLocalStats</code> over IPC:</p>
+<ul>
+<li><strong>Capture paths with health</strong> — proxy <code>:8787</code>, OTEL receiver <code>:4318</code>, JSONL
+watcher. The proxy row surfaces the missing-upstream-key warning as persistent
+state rather than a line that scrolled away.</li>
+<li><strong>Today</strong> — tokens and estimated cost, broken down by app and model.</li>
+<li><strong>Outbox</strong> — pending count, last error, last successful flush.</li>
+<li><strong>Recent activity</strong> — a rolling feed of captured calls.</li>
+<li><strong>Actions</strong> — open the cloud dashboard, open <code>~/.tokenops</code>, restart the agent,
+quit.</li>
+</ul>
+<h3 id="tray">Tray</h3>
+<p>The icon reflects state: idle, capturing, error. Left-click shows the window;
+right-click gives Show, Pause capture, Open config folder, Quit.</p>
+<p><strong>Closing the window hides to tray; it does not stop capture.</strong> Quit is
+explicit and is the only way to stop the agent. This is the specific failure of
+the console window being corrected, so it must not be softened into &quot;minimise on
+close&quot; behaviour that still exits on some paths.</p>
+<h2 id="security">Security</h2>
+<p>Electron defaults are unsafe for a process holding credentials, and this window
+displays configuration, so the hardening is not boilerplate:</p>
+<ul>
+<li><code>contextIsolation: true</code>, <code>nodeIntegration: false</code>, <code>sandbox: true</code></li>
+<li>A <code>contextBridge</code> API listing each permitted call explicitly — no generic
+&quot;invoke arbitrary channel&quot; bridge</li>
+<li>A restrictive CSP; the renderer loads no remote content</li>
+<li>External links open in the system browser via <code>shell.openExternal</code>, never in
+an Electron window</li>
+<li><strong>The renderer never receives the ingest PAT or any provider API key.</strong> The
+window may show whether a key is <em>present</em>; it never shows the value. Both
+stay in the main process.</li>
+</ul>
+<h2 id="packaging-and-migration">Packaging and migration</h2>
+<p>electron-builder produces an NSIS installer. It becomes the primary download.
+The portable ZIP stays for headless and server installs.</p>
+<p><strong>The Inno Setup installer is retired</strong>, along with <code>installer/windows/TokenOpsAgent.iss</code>
+and the static guard at <code>apps/agent/test/installer-iss.test.ts</code>. CI&#39;s
+<code>installer-windows</code> job is replaced by an electron-builder packaging job.</p>
+<p>Migration from an existing Inno install is the risky part, because the old
+installer left three things behind:</p>
+<ol>
+<li>A <code>TokenOpsAgent</code> scheduled task that runs the CLI agent at logon</li>
+<li>A PATH entry pointing at <code>%LOCALAPPDATA%\TokenOps\bin</code></li>
+<li><code>%LOCALAPPDATA%\TokenOps\install-manifest.json</code></li>
+</ol>
+<p>If both the old task and the new app run, the second one to start <strong>fails to
+bind <code>127.0.0.1:8787</code></strong> and its proxy dies while the rest of it appears healthy.
+Event data itself is safe — <code>buildEventId</code> is deterministic and ingest
+de-duplicates — but a half-working agent is worse than an obvious failure.</p>
+<p>The NSIS installer therefore must, before first run: delete the <code>TokenOpsAgent</code>
+scheduled task if present, remove the stale PATH entry, and leave
+<code>~/.tokenops/config.toml</code> and <code>machine.json</code> untouched so the machine keeps its
+identity and its PAT. Preserving <code>machine.json</code> is what keeps existing history
+attached to the same machine.</p>
+<h2 id="testing">Testing</h2>
+<ul>
+<li><code>local-stats.ts</code> — unit tests over a seeded temporary SQLite file: empty
+database, rows spanning a day boundary, sent versus pending, malformed payload
+rows skipped rather than throwing.</li>
+<li><code>startAgent</code>/<code>stopAgent</code> — start, assert listeners are bound, stop, assert
+ports are released. This is the contract the desktop app depends on.</li>
+<li>Main process — thin coverage of window/tray lifecycle: close hides rather than
+quits, quit stops the agent.</li>
+<li>Renderer — component tests against fixture <code>LocalStats</code> objects, including the
+degraded states (no upstream key, queue backed up, last error set).</li>
+</ul>
+<p>No new test runner. Everything stays on Vitest.</p>
+<h2 id="risks">Risks</h2>
+<ul>
+<li><strong>Installer size</strong> goes up roughly 40×. Accepted, and partly offset by dropping
+the Node prerequisite.</li>
+<li><strong>Electron is a large dependency surface</strong> and will need periodic security
+updates. It is now part of the release cadence.</li>
+<li><strong>Antivirus and SmartScreen.</strong> The current Setup is already unsigned and warns;
+a larger unsigned Electron binary is treated no better. Code signing remains a
+separate, unsolved problem.</li>
+<li><strong>In-process agent means a renderer crash must not take capture down.</strong> The
+agent lives in main precisely for this reason, and the window is disposable.</li>
+</ul>
+<h2 id="follow-ups">Follow-ups</h2>
+<ul>
+<li>Prune sent outbox rows on a retention policy</li>
+<li>Code signing for the installer</li>
+<li>macOS build</li>
+<li>Cloud data in the window, if the browser hand-off proves insufficient</li>
+</ul>
+</main>
+</body>
+</html>
