@@ -1,6 +1,7 @@
 import { BrowserWindow, shell } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isQuitting } from "./quit-state.js";
 
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
 
@@ -54,6 +55,17 @@ export function createMainWindow(): BrowserWindow {
     event.preventDefault();
     if (isSafeExternalUrl(url)) {
       void shell.openExternal(url);
+    }
+  });
+
+  // Closing must NOT stop capture -- that is the console-window behaviour
+  // this app exists to replace. Only an explicit Quit (which sets the shared
+  // `quitting` flag in quit-state.ts via index.ts's before-quit handler)
+  // ends the agent; every other close just hides the window to the tray.
+  win.on("close", (event) => {
+    if (!isQuitting()) {
+      event.preventDefault();
+      win.hide();
     }
   });
 
