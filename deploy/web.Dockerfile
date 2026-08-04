@@ -33,5 +33,12 @@ COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 ENV API_PROXY_PASS=http://tokenops-api:3000
 ENV API_PROXY_HOST=tokenops-api
 
+# nginx cannot read PORT the way a Node process can, so it is substituted into
+# the config at startup. Railway injects its own PORT and probes that port for
+# the healthcheck — without this, the probe hits nothing, nginx logs no request
+# at all, and the deploy fails even though nginx is serving correctly. The
+# default keeps Compose (which sets no PORT) on 80.
+ENV PORT=80
+
 EXPOSE 80
-CMD ["/bin/sh", "-c", "envsubst '${API_PROXY_PASS} ${API_PROXY_HOST}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "envsubst '${API_PROXY_PASS} ${API_PROXY_HOST} ${PORT}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]

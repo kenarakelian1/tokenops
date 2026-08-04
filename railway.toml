@@ -1,28 +1,52 @@
-# Railway configuration for TokenOps API
+# Railway configuration shared by BOTH TokenOps services.
+#
 # - Create a project, attach the Postgres plugin (sets DATABASE_URL)
-# - Service root: repository root; Dockerfile path below
-# - Set CLERK_SECRET_KEY (required). Optionally HOSTED_LIMITS=true for free-tier caps.
+# - Set CLERK_SECRET_KEY on the api service (required; it refuses to boot without it)
+# - Optionally HOSTED_LIMITS=true for free-tier caps
 #
-# Web: deploy as a second service using deploy/web.Dockerfile, or serve static
-# assets from a CDN and set CORS_ORIGIN + VITE_API_URL. Preferred for cookies:
-# put a reverse proxy (or Railway public domain) so web and /v1 share one origin.
+# WHY THERE IS NO [build] SECTION HERE
+# This repo deploys two services (tokenops-api and tokenops-web) from the same
+# directory. A `[build] dockerfilePath` here applies to whichever service is
+# being deployed, so pinning one Dockerfile builds the WRONG image for the
+# other — the web service silently came up running the API entrypoint and
+# crashed on missing DATABASE_URL. Config-as-code takes precedence over
+# per-service settings, so the override could not be corrected from the
+# service side while this block existed.
 #
-# IMPORTANT — the web service's build WILL FAIL without one extra step:
+# Each service pins its own Dockerfile in its Railway service config instead:
+#   railway environment edit \
+#     --service-config tokenops-api build.builder DOCKERFILE \
+#     --service-config tokenops-api build.dockerfilePath "deploy/api.Dockerfile"
+#   railway environment edit \
+#     --service-config tokenops-web build.builder DOCKERFILE \
+#     --service-config tokenops-web build.dockerfilePath "deploy/web.Dockerfile"
+#
+# WEB BUILD REQUIRES ONE VARIABLE
 # deploy/web.Dockerfile declares `ARG VITE_CLERK_PUBLISHABLE_KEY`, which Vite
-# bakes into the client bundle at build time (apps/web/vite.config.ts throws
-# if it's unset, rather than shipping a bundle that white-screens at runtime).
-# Railway only populates a declared Dockerfile ARG from a service Variable of
-# the same name — there is no railway.toml/railway.json field for this
-# (config-as-code here covers only [build]/[deploy], not variables). Before
-# the web service's first build, set VITE_CLERK_PUBLISHABLE_KEY as a Variable
-# on that Railway service (dashboard, or `railway variables --set`).
-
-[build]
-builder = "DOCKERFILE"
-dockerfilePath = "deploy/api.Dockerfile"
+# bakes into the client bundle at build time (apps/web/vite.config.ts throws if
+# it is unset, rather than shipping a bundle that white-screens at runtime).
+# Railway populates a declared Dockerfile ARG from a service Variable of the
+# same name — there is no railway.toml field for it. Set
+# VITE_CLERK_PUBLISHABLE_KEY as a Variable on the web service before its first
+# build. A publishable key is public by design, so it is a Variable, not a
+# secret. Beware setting it by piping into `--set-from-stdin` on PowerShell: a
+# UTF-8 BOM gets prepended and Clerk rejects the key. Use --set "KEY=value".
+#
+# HEALTHCHECK PATH IS "/" ON PURPOSE — DO NOT "FIX" IT TO /health
+# This [deploy] block applies to whichever service is deployed from this
+# directory, so the path has to be valid for both. "/" is served locally by
+# each: the API returns its JSON service banner, and the web service returns
+# index.html from nginx.
+#
+# "/health" looks like the better choice but breaks the web service. The web
+# container has no /health of its own — nginx proxies it OUTBOUND to the API's
+# public URL (see deploy/nginx.conf). That makes the web container's health
+# depend on egress back into the project's own public domain, and the deploy
+# fails the healthcheck even though nginx is serving correctly. The API still
+# has /health for external monitoring; it just isn't what Railway probes.
 
 [deploy]
-healthcheckPath = "/health"
+healthcheckPath = "/"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
