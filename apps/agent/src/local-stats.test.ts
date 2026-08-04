@@ -74,6 +74,24 @@ describe("readLocalStats", () => {
     });
   });
 
+  it("returns zeroes when the file exists but the outbox table is missing", () => {
+    // Distinct from the "no file at all" case above: here `new DatabaseSync`
+    // succeeds (the file is a valid, openable sqlite database) but the
+    // `outbox` table itself is absent, so the query -- not the open -- fails.
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE unrelated (id INTEGER)");
+    db.close();
+
+    const stats = readLocalStats(dbPath, now);
+    expect(stats).toEqual({
+      today: { inputTokens: 0, outputTokens: 0, estimatedUsd: 0, eventCount: 0 },
+      byApp: [],
+      byModel: [],
+      queue: { pending: 0, lastError: null },
+      recent: [],
+    });
+  });
+
   it("counts sent events, not just pending ones", () => {
     const outbox = new Outbox(dbPath);
     const e = event();
@@ -95,6 +113,32 @@ describe("readLocalStats", () => {
 
     const stats = readLocalStats(dbPath, now);
     expect(stats.today.eventCount).toBe(1);
+  });
+
+  it("buckets a late-night event by the local day, not the UTC day", () => {
+    // The whole reason startOfLocalDay uses local Date getters instead of
+    // UTC ones is so the day boundary follows the user's own clock. Prove it
+    // under a real non-zero offset (America/New_York, this machine's own
+    // zone) rather than the file-wide TZ=UTC pin used everywhere else, which
+    // would let a UTC-vs-local bug pass silently. Scoped to this test only.
+    const originalTz = process.env.TZ;
+    process.env.TZ = "America/New_York"; // EDT = UTC-4 in August
+    try {
+      // Local midnight on Aug 4 EDT is 2026-08-04T04:00:00.000Z. A UTC-day
+      // implementation would instead put the boundary at 2026-08-04T00:00:00Z
+      // and wrongly count both events below as "today".
+      const outbox = new Outbox(dbPath);
+      outbox.enqueue(event({ timestamp: "2026-08-04T03:59:59.000Z" })); // 11:59:59pm Aug 3 EDT
+      outbox.enqueue(event({ timestamp: "2026-08-04T04:00:01.000Z" })); // 12:00:01am Aug 4 EDT
+      outbox.close();
+
+      // `now` (2026-08-04T18:00:00.000Z) is 2:00pm Aug 4 EDT -- still Aug 4
+      // locally, so the local-day boundary above is the one in effect.
+      const stats = readLocalStats(dbPath, now);
+      expect(stats.today.eventCount).toBe(1);
+    } finally {
+      process.env.TZ = originalTz;
+    }
   });
 
   it("groups by app and by model", () => {
@@ -158,6 +202,30 @@ describe("readLocalStats", () => {
 
     const stats = readLocalStats(dbPath, now);
     expect(stats.today.eventCount).toBe(1);
+  });
+
+  it("degrades the queue view instead of throwing when the queue queries fail", () => {
+    // The desktop window polls this every ~2s while the agent may be
+    // mid-write to the same file, so a transient SQLITE_BUSY (or any other
+    // query-time failure) on the pending/lastError queries must not blank
+    // the window. Simulate it by dropping a column those queries need but
+    // the payload scan (`rows`) never references, so today/byApp/etc still
+    // compute correctly while only `queue` degrades.
+    const outbox = new Outbox(dbPath);
+    const e = event();
+    outbox.enqueue(e);
+    outbox.close();
+
+    // (Renaming rather than dropping: the outbox schema has an index on
+    // `status`, and node:sqlite's DROP COLUMN cannot rebuild it in place.)
+    const db = new DatabaseSync(dbPath);
+    db.exec("ALTER TABLE outbox RENAME COLUMN status TO status_old");
+    db.close();
+
+    const stats = readLocalStats(dbPath, now);
+    expect(stats.today.eventCount).toBe(1);
+    expect(stats.today.inputTokens).toBe(100);
+    expect(stats.queue).toEqual({ pending: 0, lastError: null });
   });
 
   it("reports queue depth and the latest error", () => {

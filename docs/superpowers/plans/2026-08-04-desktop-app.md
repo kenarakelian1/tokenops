@@ -6,7 +6,13 @@
 
 **Architecture:** A new `apps/desktop` Electron package. The main process runs the existing agent in-process by calling `runAgent()` from `@tokenops/agent` — no second runtime, no child process. A new pure module reads local rollups straight out of the agent's SQLite outbox. The renderer is React, receives plain data over a narrow `contextBridge`, and never touches Node, SQLite, or credentials.
 
-**Tech Stack:** Electron, electron-builder (NSIS), React 19 + Vite, better-sqlite3 (already a transitive dep of the agent's outbox), Vitest.
+**Tech Stack:** Electron, electron-builder (NSIS), React 19 + Vite, `node:sqlite`, Vitest.
+
+> **Correction (found during Task 1):** an earlier draft of this plan named
+> `better-sqlite3`. That package is not used anywhere in this repo. `outbox.ts`
+> imports `DatabaseSync` from Node's built-in **`node:sqlite`**, deliberately, to
+> avoid requiring native build tooling. Any new SQLite code must use
+> `node:sqlite` and must not add a dependency.
 
 **Spec:** `docs/superpowers/specs/2026-08-04-desktop-app-design.md`
 

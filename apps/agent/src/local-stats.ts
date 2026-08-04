@@ -21,6 +21,19 @@ export type LocalStats = {
 
 type PayloadRow = { payload: string };
 
+/** Add tokens for `key` into `map`, creating the bucket on first use. */
+function bump(
+  map: Map<string, { inputTokens: number; outputTokens: number }>,
+  key: string,
+  input: number,
+  output: number,
+): void {
+  const bucket = map.get(key) ?? { inputTokens: 0, outputTokens: 0 };
+  bucket.inputTokens += input;
+  bucket.outputTokens += output;
+  map.set(key, bucket);
+}
+
 function emptyStats(): LocalStats {
   return {
     today: { inputTokens: 0, outputTokens: 0, estimatedUsd: 0, eventCount: 0 },
@@ -106,38 +119,44 @@ export function readLocalStats(dbPath: string, now: Date = new Date()): LocalSta
       today.estimatedUsd += Number(e.costUsd) || 0; // costUsd is nullable (and may be absent on malformed rows)
       today.eventCount += 1;
 
-      const a = byApp.get(app) ?? { inputTokens: 0, outputTokens: 0 };
-      a.inputTokens += input;
-      a.outputTokens += output;
-      byApp.set(app, a);
-
-      const m = byModel.get(model) ?? { inputTokens: 0, outputTokens: 0 };
-      m.inputTokens += input;
-      m.outputTokens += output;
-      byModel.set(model, m);
+      bump(byApp, app, input, output);
+      bump(byModel, model, input, output);
 
       if (recent.length < 20) {
         recent.push({ at, app, model, inputTokens: input, outputTokens: output });
       }
     }
 
-    const pending =
-      (
-        db.prepare(`SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending'`).get() as
-          | { n: number }
-          | undefined
-      )?.n ?? 0;
+    // Polled every ~2s while the agent may be mid-write to this same file, so
+    // a transient SQLITE_BUSY (or any other query-time failure) here must
+    // degrade to a stale-but-safe queue reading rather than throw.
+    let pending = 0;
+    try {
+      pending =
+        (
+          db.prepare(`SELECT COUNT(*) AS n FROM outbox WHERE status = 'pending'`).get() as
+            | { n: number }
+            | undefined
+        )?.n ?? 0;
+    } catch {
+      pending = 0;
+    }
 
-    const lastError =
-      (
-        db
-          .prepare(
-            `SELECT last_error FROM outbox
-             WHERE status = 'pending' AND last_error IS NOT NULL
-             ORDER BY created_at DESC LIMIT 1`,
-          )
-          .get() as { last_error: string } | undefined
-      )?.last_error ?? null;
+    let lastError: string | null = null;
+    try {
+      lastError =
+        (
+          db
+            .prepare(
+              `SELECT last_error FROM outbox
+               WHERE status = 'pending' AND last_error IS NOT NULL
+               ORDER BY created_at DESC LIMIT 1`,
+            )
+            .get() as { last_error: string } | undefined
+        )?.last_error ?? null;
+    } catch {
+      lastError = null;
+    }
 
     return {
       today,
