@@ -445,7 +445,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Run:
 
 ```bash
-pnpm --filter @tokenops/desktop add -D electron electron-builder vite @vitejs/plugin-react typescript
+pnpm --filter @tokenops/desktop add -D electron electron-builder vite @vitejs/plugin-react typescript vitest
 pnpm --filter @tokenops/desktop add react react-dom @tokenops/agent@workspace:^
 ```
 
@@ -476,11 +476,33 @@ app.whenReady().then(async () => {
   win = createMainWindow();
 });
 
-app.on("before-quit", async () => {
-  await agent?.stop();
-  agent = null;
+// Electron invokes before-quit listeners SYNCHRONOUSLY and ignores their
+// return value, so an `async` listener's promise is discarded and the process
+// exits while stop() is still running. The only way to hold up a quit is
+// preventDefault(), then quit again once teardown finishes. This matters
+// because stop() closes the OTEL server, then the proxy (both wait for
+// in-flight connections to drain), and only then the SQLite outbox.
+let quitting = false;
+app.on("before-quit", (event) => {
+  if (quitting) return;
+  event.preventDefault();
+  quitting = true;
+  void (async () => {
+    try {
+      await agent?.stop();
+    } finally {
+      agent = null;
+      app.quit();
+    }
+  })();
 });
 ```
+
+> **Do not verify this with "is port 8787 free after exit?"** The OS reclaims
+> listening sockets on process termination whether or not `close()` ever ran, so
+> that check reads identically whether shutdown worked or never happened. Prove
+> it by observing that teardown completed — e.g. a log line emitted after
+> `stop()` resolves appears before the process exits.
 
 - [ ] **Step 3: Create the window with hardened defaults**
 

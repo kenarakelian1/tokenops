@@ -1,7 +1,27 @@
 import { BrowserWindow, shell } from "electron";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
+
+/**
+ * Only http(s) is ever handed to the OS shell. `shell.openExternal` with an
+ * unvalidated URL is a known Windows attack path -- `file:`, UNC paths
+ * (`\\host\share`), and registered custom protocol handlers can all launch
+ * something other than a browser tab.
+ */
+function isSafeExternalUrl(url: string): boolean {
+  try {
+    return ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
 
 export function createMainWindow(): BrowserWindow {
+  const indexHtmlPath = join(__dirname, "../renderer/index.html");
+  const indexHtmlUrl = pathToFileURL(indexHtmlPath).href;
+
   const win = new BrowserWindow({
     width: 920,
     height: 640,
@@ -15,11 +35,28 @@ export function createMainWindow(): BrowserWindow {
   });
 
   // External links belong in the user's browser, never in an Electron window.
+  // This covers window.open()/target=_blank only -- see will-navigate below
+  // for plain links and location.href assignments in the same window.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
     return { action: "deny" };
   });
 
-  void win.loadFile(join(__dirname, "../renderer/index.html"));
+  // setWindowOpenHandler does not cover a plain <a href> or a script setting
+  // location.href -- those navigate this privileged window itself. Only the
+  // bundled renderer's own index.html may load in-window; anything else is
+  // blocked, and http(s) is redirected to the OS browser instead of being
+  // dropped silently.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url === indexHtmlUrl) return;
+    event.preventDefault();
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
+  });
+
+  void win.loadFile(indexHtmlPath);
   return win;
 }
