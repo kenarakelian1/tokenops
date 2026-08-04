@@ -482,16 +482,29 @@ app.whenReady().then(async () => {
 // preventDefault(), then quit again once teardown finishes. This matters
 // because stop() closes the OTEL server, then the proxy (both wait for
 // in-flight connections to drain), and only then the SQLite outbox.
-let quitting = false;
+// Three states, not two. `if (quitting) return` is WRONG: a second quit
+// (the tray survives, and nothing visibly happens while stop() drains, so a
+// user clicks it again) re-fires before-quit, takes that early return WITHOUT
+// calling preventDefault(), and Electron proceeds to exit — while the first
+// quit's teardown is still in flight. That silently drops capture data: the
+// exact bug this app exists to fix, one level down.
+type QuitPhase = "running" | "stopping" | "stopped";
+let phase: QuitPhase = "running";
+
 app.on("before-quit", (event) => {
-  if (quitting) return;
-  event.preventDefault();
-  quitting = true;
+  if (phase === "stopped") return; // teardown finished; let this quit through
+
+  event.preventDefault(); // hold the quit while stopping, on EVERY call
+  if (phase === "stopping") return; // teardown already running; do not restart it
+
+  phase = "stopping";
   void (async () => {
     try {
       await agent?.stop();
+      console.log("[tokenops] agent stopped cleanly");
     } finally {
       agent = null;
+      phase = "stopped";
       app.quit();
     }
   })();

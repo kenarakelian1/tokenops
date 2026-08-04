@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, type Tray } from "electron";
 import type { AgentHandle } from "@tokenops/agent";
 import { createMainWindow } from "./window.js";
 import { createTray } from "./tray.js";
-import { isQuitting, beginQuitting } from "./quit-state.js";
+import { getQuitPhase, beginStopping, markStopped } from "./quit-state.js";
 
 let agent: AgentHandle | null = null;
 let win: BrowserWindow | null = null;
@@ -58,9 +58,11 @@ if (!gotSingleInstanceLock) {
       },
       onQuit: () => {
         // No need to touch quit-state here: app.quit() below always emits
-        // `before-quit` first, and that handler is what sets `quitting`
-        // (via beginQuitting()) and awaits agent.stop(). Setting it here too
-        // would just be a second writer of the same fact.
+        // `before-quit` first, and that handler owns every phase transition
+        // (running -> stopping -> stopped) and awaits agent.stop(). A rapid
+        // second click on this same menu item just re-fires app.quit(),
+        // which before-quit's phase check below handles correctly (see its
+        // comment) rather than needing anything special here.
         app.quit();
       },
     });
@@ -79,25 +81,38 @@ if (!gotSingleInstanceLock) {
   // Electron calls `before-quit` listeners synchronously and ignores any
   // returned promise -- an `async` listener here does NOT delay quit; it
   // just races `agent.stop()` (OTEL close -> proxy close -> outbox.close())
-  // against process teardown. `preventDefault` + the shared `quitting`
-  // re-entry guard (quit-state.ts) makes the shutdown actually block: quit
-  // is deferred until `stop()` resolves, then requested again (the guard
-  // lets that second request through instead of recursing).
+  // against process teardown. `preventDefault()` + quit-state.ts's
+  // three-phase guard makes the shutdown actually block, including against
+  // a second Quit click landing while `stop()` is still draining:
   //
-  // That same shared flag is also what window.ts's `close` handler checks
-  // to decide "hide to tray" vs "let this close proceed". The two only work
-  // together because they share one flag: the window is only ever allowed
-  // to actually close on the *second* app.quit() call below, once
-  // `isQuitting()` is already true -- i.e. after agent.stop() has resolved.
-  // A separate, independently-set flag (e.g. the brief's `global.isQuitting`
-  // set from the tray's onQuit) would race this one: the window could close
-  // (and window-all-closed fire) before before-quit had a chance to
-  // preventDefault and await the agent, or the two flags could simply drift
-  // out of sync.
+  //   - "running"  -> first request: preventDefault, move to "stopping",
+  //                   kick off agent.stop().
+  //   - "stopping" -> a *second* before-quit while teardown is still in
+  //                   flight (e.g. an impatient second Quit click):
+  //                   preventDefault again -- do NOT let this one through,
+  //                   and do NOT start a second stop() -- then return.
+  //   - "stopped"  -> teardown genuinely finished (set in the `finally`
+  //                   below, right before the second app.quit() call that
+  //                   re-fires this handler): let it through this time.
+  //
+  // A plain boolean here (fix round 1's version) can't tell "stopping" apart
+  // from "stopped", so a second before-quit during "stopping" would skip
+  // preventDefault and let Electron proceed to close the window and exit
+  // mid-teardown -- dropping whatever the outbox had not yet flushed. That
+  // is the exact "closing it silently stopped capture" bug this whole
+  // feature exists to fix, restaged one level down as "quitting twice
+  // stopped capture before it finished."
+  //
+  // window.ts's `close` handler reads the same phase (via
+  // `canWindowClose()`) and only allows the window to actually close once
+  // phase is "stopped" -- i.e. strictly after agent.stop() has resolved --
+  // for the same reason.
   app.on("before-quit", (event) => {
-    if (isQuitting()) return;
-    event.preventDefault();
-    beginQuitting();
+    const phase = getQuitPhase();
+    if (phase === "stopped") return; // teardown genuinely done; let quit through
+    event.preventDefault(); // hold the quit on every call while not yet stopped
+    if (phase === "stopping") return; // already tearing down; don't restart it
+    beginStopping();
     void (async () => {
       try {
         await agent?.stop();
@@ -106,6 +121,7 @@ if (!gotSingleInstanceLock) {
         console.log("[tokenops] agent stopped cleanly");
       } finally {
         agent = null;
+        markStopped();
         app.quit();
       }
     })();
@@ -115,14 +131,13 @@ if (!gotSingleInstanceLock) {
   // removed in Task 3). Once window.ts's `close` handler hides instead of
   // closing, `window-all-closed` can only fire as a byproduct of a quit
   // already in progress: the window is only ever allowed to actually close
-  // when `isQuitting()` is true, which is only ever set inside the
-  // `before-quit` handler above, which only runs in response to an
-  // `app.quit()` call. Electron does not need a `window-all-closed` handler
-  // to finish a quit sequence that `before-quit` already let through -- it
-  // proceeds to `will-quit` and process exit on its own. Re-adding a
-  // `window-all-closed` -> `app.quit()` handler here would at best be a
-  // harmless no-op (the guard above would just return early) and at worst
-  // reintroduce the exact bug Task 2's fix round 1 removed: a second,
-  // uncoordinated path to quit that does not go through the awaited
-  // `agent.stop()`.
+  // once quit-state.ts's phase reaches "stopped", which is only ever set
+  // inside the `before-quit` handler above, which only runs in response to
+  // an `app.quit()` call. Electron does not need a `window-all-closed`
+  // handler to finish a quit sequence that `before-quit` already let
+  // through -- it proceeds to `will-quit` and process exit on its own.
+  // Re-adding a `window-all-closed` -> `app.quit()` handler here would at
+  // best be a harmless no-op (the phase check above would just return
+  // early) and at worst reintroduce a second, uncoordinated path to quit
+  // that does not go through the awaited `agent.stop()`.
 }
