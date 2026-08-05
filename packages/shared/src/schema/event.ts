@@ -36,6 +36,9 @@ export const UsageEventSchema = z.object({
   grain: EventGrainSchema.optional(),
   features: UsageFeaturesSchema,
   hasContent: z.boolean(),
+  /** Cache tokens, reported separately. Still counted inside inputTokens. */
+  cacheReadTokens: z.number().nonnegative().optional(),
+  cacheCreationTokens: z.number().nonnegative().optional(),
   content: z
     .object({
       requestBody: z.unknown().optional(),

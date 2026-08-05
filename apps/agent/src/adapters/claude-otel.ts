@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import {
   buildEventId,
   estimateCostUsd,
-  extractFeatures,
+  getModelTier,
   type UsageEvent,
 } from "@tokenops/shared";
 
@@ -223,7 +223,12 @@ export class ClaudeOtelState {
         cacheRead: 0,
         cacheCreation: 0,
       };
-      // Fold cache into input for ledger totals (matches spend reality roughly)
+      // Cache is still folded into input for ledger totals (matches spend
+      // reality) — this must never change, or every historical spend/token
+      // total shifts silently. cacheReadTokens/cacheCreationTokens below are
+      // additional detail, not a redefinition of inputTokens.
+      const cacheReadTokens = Math.round(bucket.cacheRead);
+      const cacheCreationTokens = Math.round(bucket.cacheCreation);
       const inputTokens = Math.round(
         bucket.input + bucket.cacheRead + bucket.cacheCreation,
       );
@@ -241,16 +246,11 @@ export class ClaudeOtelState {
         .digest("hex")
         .slice(0, 32);
 
-      const features = extractFeatures({
-        model,
-        requestMessages: [
-          {
-            role: "user",
-            content: `[otel] claude_code.token.usage model=${model}`,
-          },
-        ],
-        responseText: "",
-      });
+      // No requestMessages: OTEL gives token counters, not prompts. Deriving
+      // promptChars/messageCount/largePasteScore from a placeholder string is
+      // what made frontier_trivial fire on export windows. modelTier is real —
+      // it comes from the model name.
+      const features = { modelTier: getModelTier(model) };
 
       let costUsd = costDeltas.get(model) ?? null;
       if (costUsd == null) {
@@ -272,7 +272,10 @@ export class ClaudeOtelState {
         model,
         inputTokens,
         outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
         costUsd,
+        grain: "aggregate",
         features,
         hasContent: false,
       };
