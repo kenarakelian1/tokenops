@@ -10,13 +10,29 @@ export const FRONTIER_SHARE_THRESHOLD = 0.8;
  * This is answerable from OTEL totals alone (no per-request features needed),
  * which is exactly why it belongs here rather than in the per-event rules.
  *
- * Savings: total frontier cost across the window minus the same frontier
- * token volume priced at a cheaper in-vendor sibling of the largest frontier
- * contributor. Cross-vendor advice is skipped (see frontier-trivial.ts) —
- * if the biggest contributor has no in-vendor sibling, we fall back to the
- * next-largest frontier model before giving up on the recommendation.
+ * The percentage is the frontier share of ALL tokens in the window, which
+ * can span several frontier-tier models across different vendors — the
+ * detail wording says so explicitly rather than implying the percentage
+ * belongs to the one model it names.
+ *
+ * Savings, by contrast, are deliberately NOT summed across vendors: pricing
+ * every frontier model's tokens at one sibling's rate would silently compare
+ * across vendors (e.g. pricing gpt-4o tokens as if they were claude-sonnet-5),
+ * which is exactly the cross-vendor comparison this rule (and
+ * frontier-trivial.ts) otherwise refuses to make. So estimatedWastedUsd only
+ * prices the largest frontier contributor's own tokens against its own
+ * in-vendor sibling. If that contributor has no in-vendor sibling, we fall
+ * back to the next-largest frontier model before giving up on a
+ * recommendation entirely.
+ *
+ * @param now Comparison instant for date-gated pricing (e.g. the Claude
+ *   Sonnet 5 introductory rate). Defaults to the real current time; tests
+ *   pass a fixed Date to pin behavior on either side of a cutoff.
  */
-export function checkFrontierShare(window: AggregateWindow): RuleHit | null {
+export function checkFrontierShare(
+  window: AggregateWindow,
+  now: Date = new Date(),
+): RuleHit | null {
   const { byModel } = window;
 
   const totalTokens = byModel.reduce(
@@ -28,15 +44,10 @@ export function checkFrontierShare(window: AggregateWindow): RuleHit | null {
   const frontierModels = byModel.filter((m) => m.modelTier === "frontier");
   if (frontierModels.length === 0) return null;
 
-  const frontierInputTokens = frontierModels.reduce(
-    (sum, m) => sum + m.inputTokens,
+  const frontierTokens = frontierModels.reduce(
+    (sum, m) => sum + m.inputTokens + m.outputTokens,
     0,
   );
-  const frontierOutputTokens = frontierModels.reduce(
-    (sum, m) => sum + m.outputTokens,
-    0,
-  );
-  const frontierTokens = frontierInputTokens + frontierOutputTokens;
 
   const frontierFraction = frontierTokens / totalTokens;
   if (frontierFraction <= FRONTIER_SHARE_THRESHOLD) return null;
@@ -61,34 +72,44 @@ export function checkFrontierShare(window: AggregateWindow): RuleHit | null {
   if (!dominant || !suggestedModel) return null;
 
   const pct = Math.floor(frontierFraction * 100);
+  const multipleFrontierModels = frontierModels.length > 1;
 
-  let frontierCost: number | null = 0;
-  for (const m of frontierModels) {
-    const cost = m.costUsd ?? estimateCostUsd(m.model, m.inputTokens, m.outputTokens);
-    if (cost == null) {
-      frontierCost = null;
-      break;
-    }
-    frontierCost += cost;
-  }
+  // Priced against the dominant model's OWN tokens only — see the doc
+  // comment above for why this must not sum other frontier models in.
+  const dominantCost =
+    dominant.costUsd ??
+    estimateCostUsd(
+      dominant.model,
+      dominant.inputTokens,
+      dominant.outputTokens,
+      undefined,
+      now,
+    );
   const siblingCost = estimateCostUsd(
     suggestedModel,
-    frontierInputTokens,
-    frontierOutputTokens,
+    dominant.inputTokens,
+    dominant.outputTokens,
+    undefined,
+    now,
   );
 
   let estimatedWastedUsd: number | null = null;
-  if (frontierCost != null && siblingCost != null) {
-    estimatedWastedUsd = Math.max(0, frontierCost - siblingCost);
+  if (dominantCost != null && siblingCost != null) {
+    estimatedWastedUsd = Math.max(0, dominantCost - siblingCost);
   }
+
+  const detail = multipleFrontierModels
+    ? `${pct}% of your tokens in this window went to frontier-tier models, ` +
+      `the largest being ${dominant.model}. Consider ${suggestedModel} for ` +
+      `routine work.`
+    : `${pct}% of your tokens in this window went to a frontier-tier model ` +
+      `(${dominant.model}). Consider ${suggestedModel} for routine work.`;
 
   return {
     ruleId: "frontier_share",
     severity: "warn",
     title: "Frontier-heavy token mix",
-    detail:
-      `${pct}% of your tokens in this window went to a frontier-tier model ` +
-      `(${dominant.model}). Consider ${suggestedModel} for routine work.`,
+    detail,
     estimatedWastedTokens: frontierTokens,
     estimatedWastedUsd,
     eventIds: [],

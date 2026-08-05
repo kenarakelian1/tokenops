@@ -37,3 +37,10 @@ export {
   type RuleHit,
   type RuleId,
 } from "./rules/index.js";
+export {
+  runAggregateRules,
+  FRONTIER_SHARE_THRESHOLD,
+  CACHE_EFFICIENCY_MIN_READ_RATIO,
+  type ModelWindowTotals,
+  type AggregateWindow,
+} from "./rules/aggregate/index.js";

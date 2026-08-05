@@ -37,7 +37,12 @@ function frontierTrivialFixture(eventId = "ft-1"): UsageEvent {
     model: "gpt-4o",
     inputTokens: 20,
     outputTokens: 10,
-    costUsd: 0.01,
+    // Above MIN_WASTED_USD once the cheaper-sibling (gpt-4o-mini) saving is
+    // netted out ($0.05 − $0.000009 ≈ $0.049991), so the finding clears the
+    // materiality floor introduced in Task 4. At the pre-existing $0.01 this
+    // fixture's waste (~$0.009991) fell just under the floor and the rule
+    // never fired.
+    costUsd: 0.05,
     features: {
       promptChars: 40,
       responseChars: 20,
@@ -166,7 +171,10 @@ describe("ingest", () => {
           timestamp: "2026-07-01T12:02:00.000Z",
           inputTokens: 2000,
           outputTokens: 50,
-          costUsd: 0.004,
+          // Above MIN_WASTED_USD once the wasted-token share of cost is
+          // taken (0.03 * 1000/2050 ≈ 0.0146), so the finding clears the
+          // materiality floor introduced in Task 4.
+          costUsd: 0.03,
           features: { ...baseFeatures, promptChars: 12_000 },
         }),
       ],
