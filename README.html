@@ -674,31 +674,68 @@ composite. No data is lost — the agent&#39;s local outbox keeps the affected
 rows pending and retries until the new container is serving.</p>
 </li>
 </ul>
-<h2 id="desktop-agent-installer-windows">Desktop agent installer (Windows)</h2>
-<h3 id="download-from-github-releases-easiest">Download from GitHub Releases (easiest)</h3>
+<h2 id="desktop-agent-windows">Desktop agent (Windows)</h2>
+<p>The desktop app is the primary way to run the agent: a tray app, not a
+console window you have to keep open.</p>
+<h3 id="download-from-github-releases-recommended">Download from GitHub Releases (recommended)</h3>
 <ol>
-<li>Open <strong><a href="https://github.com/kenarakelian1/tokenops/releases">Releases</a></strong>  </li>
-<li>Install <a href="https://nodejs.org/">Node.js 22+</a> if needed  </li>
-<li>Download <strong><code>TokenOps-Agent-Setup.exe</code></strong> (recommended) <strong>or</strong> <code>tokenops-agent-win.zip</code>  </li>
-<li>Run the Setup wizard (per-user, no admin) — pick AI tools, PAT, startup  </li>
+<li>Open <strong><a href="https://github.com/kenarakelian1/tokenops/releases">Releases</a></strong></li>
+<li>Download <strong><code>TokenOps-Setup-&lt;version&gt;.exe</code></strong></li>
+<li>Run the Setup wizard (per-user, no admin)</li>
+<li>Start Menu → <strong>TokenOps</strong></li>
+</ol>
+<p><strong>Node.js is not required for this path.</strong> Electron bundles its own Node
+runtime, so nothing needs to be installed first.</p>
+<blockquote>
+<p>The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control
+warns: <strong>More info → Run anyway</strong>, or right‑click → Properties → <strong>Unblock</strong>.</p>
+</blockquote>
+<h4 id="tray-behaviour">Tray behaviour</h4>
+<p>Closing the window does <strong>not</strong> stop the agent — it hides the window to the
+system tray and capture keeps running underneath, exactly like the console
+window it replaces never had to stay open. Click the tray icon (or <strong>Show
+TokenOps</strong> from its context menu) to bring the window back. <strong>Quit</strong> (from the
+tray menu) is the only action that actually stops capture; it waits for the
+outbox and proxy to shut down cleanly before the process exits.</p>
+<p>The window itself shows <strong>local-only</strong> data — today&#39;s tokens/estimated cost,
+capture status, and recent activity read straight from the machine&#39;s own
+outbox. It does not show cloud history or recommendations; an <strong>Open
+dashboard</strong> button opens the hosted/self-hosted dashboard in your default
+browser for that.</p>
+<h3 id="portable-zip-headless-server-installs-no-gui">Portable ZIP (headless / server installs, no GUI)</h3>
+<p>For machines where you don&#39;t want a tray icon — servers, CI runners, remote
+sessions — the original console-style install is still available:</p>
+<ol>
+<li>Download <strong><code>tokenops-agent-win.zip</code></strong> from Releases</li>
+<li>Unzip, double-click <code>install.cmd</code> (or <code>install.cmd -Quiet</code> for CI)</li>
 <li>Start Menu → <strong>TokenOps Agent</strong> (or <code>tokenops agent run</code>)</li>
 </ol>
-<p>Portable: unzip <code>tokenops-agent-win.zip</code> → <code>install.cmd</code>.</p>
-<blockquote>
-<p>The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control warns: <strong>More info → Run anyway</strong>, or right‑click → Properties → <strong>Unblock</strong>.</p>
-</blockquote>
+<p><strong>This path still requires <a href="https://nodejs.org/">Node.js 22+</a></strong> on <code>PATH</code> —
+it runs the CLI directly with your system Node, unlike the Setup above.</p>
+<p>Uninstall: <code>uninstall.cmd</code> (portable) or <strong>Apps &amp; features</strong> (Setup app).
+Quiet portable: <code>install.cmd -Quiet</code> / <code>-NoStartup</code>.</p>
+<h3 id="migrating-from-an-older-install">Migrating from an older install</h3>
+<p>If a previous Inno-based install left a <code>TokenOpsAgent</code> Task Scheduler entry
+or a <code>%LOCALAPPDATA%\TokenOps\bin</code> PATH entry behind, installing the new
+Setup removes both automatically (see <code>apps/desktop/build/installer.nsh</code>) so
+the old console-mode agent and the new tray app don&#39;t both try to bind
+<code>127.0.0.1:8787</code>. <code>~/.tokenops/config.toml</code> and <code>machine.json</code> are left
+untouched, so the machine keeps its identity, PAT, and history across the
+switch.</p>
 <h3 id="build-from-source">Build from source</h3>
 <pre><code class="language-bat">pnpm.cmd install
-pnpm.cmd package:agent
+pnpm.cmd --filter &quot;@tokenops/desktop...&quot; build
+pnpm.cmd --filter @tokenops/desktop exec electron-builder --win --publish never
 </code></pre>
-<p>Outputs:</p>
-<ul>
-<li><code>dist\tokenops-agent-win\</code> — portable folder + <code>install.cmd</code>  </li>
-<li><code>dist\TokenOps-Agent-Setup.exe</code> — if <a href="https://jrsoftware.org/isinfo.php">Inno Setup 6</a> is installed</li>
-</ul>
-<p>Wizard options: AI tools (Claude Code, Cursor, Grok/xAI, OpenAI), PAT, optional API keys, start at Windows sign-in.</p>
-<p>Uninstall: <strong>Apps &amp; features</strong> (Setup) or <code>uninstall.cmd</code> (portable).<br>Quiet portable: <code>install.cmd -Quiet</code> / <code>-NoStartup</code>.</p>
-<p>New release: tag <code>v*</code> and push, or run workflow <strong>Release desktop agent</strong>.## Development</p>
+<p>Outputs <code>dist\TokenOps-Setup-&lt;version&gt;.exe</code>. For the portable ZIP payload
+instead:</p>
+<pre><code class="language-bat">pnpm.cmd package:agent
+</code></pre>
+<p>Outputs <code>dist\tokenops-agent-win\</code> — portable folder + <code>install.cmd</code>.</p>
+<p>Wizard options (portable installer): AI tools (Claude Code, Cursor, Grok/xAI,
+OpenAI), PAT, optional API keys, start at Windows sign-in.</p>
+<p>New release: tag <code>v*</code> and push, or run workflow <strong>Release desktop agent</strong>.</p>
+<h2 id="development">Development</h2>
 <pre><code class="language-bash">pnpm install
 pnpm test                 # full monorepo Vitest suite
 pnpm build                # build all packages
