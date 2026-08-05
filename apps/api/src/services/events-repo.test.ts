@@ -55,4 +55,52 @@ describe("events-repo", () => {
     expect(row!.cacheCreationTokens).toBe(5);
     expect(row!.inputTokens).toBe(105);
   });
+
+  it("modelWindowTotals: a window straddling the cache-tracking migration totals null, not a partial sum", async () => {
+    // One row recorded a real cache breakdown (post-migration), the other
+    // never did (pre-migration, cache folded silently into inputTokens).
+    // COALESCE(SUM(...), 0) would report 90 — a partial sum that understates
+    // the window and produces a confidently wrong "low cache reuse" card.
+    // The correct total is null: "don't know" must not collapse into "zero".
+    const repo = createMemoryEventsRepo();
+    const base = {
+      machineId: "machine-1",
+      machineName: "ci-runner",
+      app: "claude-code",
+      provider: "anthropic",
+      model: "claude-opus-5[1m]",
+      features: { modelTier: "unknown" as const },
+      hasContent: false,
+    };
+    await repo.insertEventIfNew("user-a", {
+      ...base,
+      eventId: "evt-with-cache",
+      timestamp: "2026-08-01T00:00:00.000Z",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      costUsd: 0.01,
+      cacheReadTokens: 90,
+      cacheCreationTokens: 10,
+    });
+    await repo.insertEventIfNew("user-a", {
+      ...base,
+      eventId: "evt-no-cache",
+      timestamp: "2026-08-02T00:00:00.000Z",
+      inputTokens: 2_000,
+      outputTokens: 200,
+      costUsd: 0.02,
+      // No cacheReadTokens/cacheCreationTokens at all: pre-migration row.
+    });
+
+    const totals = await repo.modelWindowTotals(
+      "user-a",
+      "2026-07-29T00:00:00.000Z",
+      "2026-08-05T00:00:00.000Z",
+    );
+    expect(totals).toHaveLength(1);
+    expect(totals[0]!.inputTokens).toBe(3_000); // plain sums are unaffected
+    expect(totals[0]!.outputTokens).toBe(300);
+    expect(totals[0]!.cacheReadTokens).toBeNull();
+    expect(totals[0]!.cacheCreationTokens).toBeNull();
+  });
 });

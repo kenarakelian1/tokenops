@@ -1,5 +1,11 @@
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import type { EventGrain, UsageEvent, UsageFeatures } from "@tokenops/shared";
+import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import {
+  getModelTier,
+  type EventGrain,
+  type ModelWindowTotals,
+  type UsageEvent,
+  type UsageFeatures,
+} from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import {
   dailyAggregates,
@@ -73,6 +79,23 @@ export type EventsRepo = {
     userId: string,
     filters: AggregateListFilters,
   ): Promise<DailyAggregate[]>;
+  /**
+   * Per-model totals over [sinceIso, untilIso) for the aggregate rules
+   * (see @tokenops/shared runAggregateRules). inputTokens/outputTokens are
+   * plain sums (the columns are NOT NULL). cacheReadTokens,
+   * cacheCreationTokens, and costUsd are nullable columns where NULL means
+   * "never recorded" (pre cache-tracking / pre grain migration) and 0 means
+   * "recorded as genuinely zero" — collapsing that distinction with
+   * COALESCE(...,0) would silently understate a window that straddles the
+   * migration and produce a confidently wrong finding. So each of those
+   * three totals is `null` whenever ANY row contributing to the model's
+   * group has a null value in that column, and otherwise is the real sum.
+   */
+  modelWindowTotals(
+    userId: string,
+    sinceIso: string,
+    untilIso: string,
+  ): Promise<ModelWindowTotals[]>;
   upsertRecommendation(rec: RecommendationInsert): Promise<void>;
   listRecommendations(
     userId: string,
@@ -267,6 +290,43 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .from(dailyAggregates)
         .where(and(...conditions))
         .orderBy(desc(dailyAggregates.day));
+    },
+
+    async modelWindowTotals(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+      const rows = await db
+        .select({
+          model: usageEvents.model,
+          inputTokens: sql<string>`SUM(${usageEvents.inputTokens})`,
+          outputTokens: sql<string>`SUM(${usageEvents.outputTokens})`,
+          // NULL whenever any row in the group has a NULL cache/cost value —
+          // see the doc comment on EventsRepo.modelWindowTotals for why a
+          // COALESCE-to-0 sum is wrong here.
+          cacheReadTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheReadTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheReadTokens}) END`,
+          cacheCreationTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheCreationTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheCreationTokens}) END`,
+          costUsd: sql<string | null>`CASE WHEN bool_or(${usageEvents.costUsd} IS NULL) THEN NULL ELSE SUM(${usageEvents.costUsd}) END`,
+        })
+        .from(usageEvents)
+        .where(
+          and(
+            eq(usageEvents.userId, userId),
+            gte(usageEvents.timestamp, since),
+            lt(usageEvents.timestamp, until),
+          ),
+        )
+        .groupBy(usageEvents.model);
+
+      return rows.map((r) => ({
+        model: r.model,
+        modelTier: getModelTier(r.model),
+        inputTokens: Number(r.inputTokens),
+        outputTokens: Number(r.outputTokens),
+        cacheReadTokens: r.cacheReadTokens == null ? null : Number(r.cacheReadTokens),
+        cacheCreationTokens:
+          r.cacheCreationTokens == null ? null : Number(r.cacheCreationTokens),
+        costUsd: r.costUsd == null ? null : Number(r.costUsd),
+      }));
     },
 
     async upsertRecommendation(rec) {
@@ -524,6 +584,67 @@ export function createMemoryEventsRepo(): EventsRepo {
           return true;
         })
         .sort((a, b) => b.day.localeCompare(a.day));
+    },
+
+    async modelWindowTotals(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+
+      type Acc = {
+        model: string;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadSum: number;
+        cacheReadAnyNull: boolean;
+        cacheCreationSum: number;
+        cacheCreationAnyNull: boolean;
+        costSum: number;
+        costAnyNull: boolean;
+      };
+      const byModel = new Map<string, Acc>();
+
+      for (const e of eventMap.values()) {
+        if (e.userId !== userId) continue;
+        if (e.timestamp < since || e.timestamp >= until) continue;
+
+        let acc = byModel.get(e.model);
+        if (!acc) {
+          acc = {
+            model: e.model,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadSum: 0,
+            cacheReadAnyNull: false,
+            cacheCreationSum: 0,
+            cacheCreationAnyNull: false,
+            costSum: 0,
+            costAnyNull: false,
+          };
+          byModel.set(e.model, acc);
+        }
+
+        acc.inputTokens += e.inputTokens;
+        acc.outputTokens += e.outputTokens;
+
+        if (e.cacheReadTokens == null) acc.cacheReadAnyNull = true;
+        else acc.cacheReadSum += e.cacheReadTokens;
+
+        if (e.cacheCreationTokens == null) acc.cacheCreationAnyNull = true;
+        else acc.cacheCreationSum += e.cacheCreationTokens;
+
+        if (e.costUsd == null) acc.costAnyNull = true;
+        else acc.costSum += Number(e.costUsd);
+      }
+
+      return [...byModel.values()].map((acc) => ({
+        model: acc.model,
+        modelTier: getModelTier(acc.model),
+        inputTokens: acc.inputTokens,
+        outputTokens: acc.outputTokens,
+        cacheReadTokens: acc.cacheReadAnyNull ? null : acc.cacheReadSum,
+        cacheCreationTokens: acc.cacheCreationAnyNull ? null : acc.cacheCreationSum,
+        costUsd: acc.costAnyNull ? null : acc.costSum,
+      }));
     },
 
     async upsertRecommendation(rec) {
