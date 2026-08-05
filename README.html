@@ -120,7 +120,7 @@
 <ul>
 <li><strong>Unified ledger</strong> — tokens and <strong>estimated</strong> USD by time, machine, app, model, and source</li>
 <li><strong>Two capture paths</strong> — OpenAI-compatible local proxy + Claude Code JSONL adapter</li>
-<li><strong>Three rule-based recommendations</strong> — frontier-for-trivial, full-document I/O, context bloat</li>
+<li><strong>Five rule-based recommendations, in two classes</strong> — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see <a href="#recommendation-rules">Recommendation rules</a></li>
 <li><strong>Privacy controls</strong> — metadata always; raw content optional (<code>off</code> / <code>local</code> / <code>cloud_ttl</code>)</li>
 <li><strong>Self-hostable</strong> — MIT license, Docker Compose, Railway-ready</li>
 </ul>
@@ -463,10 +463,101 @@ cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usag
 <ol>
 <li><strong>Overview</strong> — tokens &amp; est. $ (today / 7d / 30d), top models</li>
 <li><strong>Explore</strong> — filter by machine, app, model, time</li>
-<li><strong>Recommendations</strong> — three efficiency rules with estimated waste; dismiss when done</li>
+<li><strong>Recommendations</strong> — five efficiency rules in two classes, with estimated waste; dismiss when done (see <a href="#recommendation-rules">Recommendation rules</a>)</li>
 <li><strong>Machines</strong> — last seen, sync health</li>
 <li><strong>Settings</strong> — budget banner threshold, <strong>create agent PAT</strong>, retention notes</li>
 </ol>
+<h2 id="recommendation-rules">Recommendation rules</h2>
+<p>Five rule-based recommendations, in two classes: <strong>per-request</strong> rules that
+inspect one event&#39;s derived features, and <strong>window-aggregate</strong> rules that
+inspect per-model token totals over a trailing window. Which class runs for
+you depends on your capture path.</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Class</th>
+<th>Fires when</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>frontier_trivial</code></td>
+<td>per-request</td>
+<td>A frontier-tier model handled a short request (≤2 messages, ≤200 total tokens, low paste score) with a cheaper same-vendor sibling model available</td>
+<td><code>packages/shared/src/rules/frontier-trivial.ts</code></td>
+</tr>
+<tr>
+<td><code>full_document_io</code></td>
+<td>per-request</td>
+<td>Prompt ≥20,000 chars with a high file-dump score (≥0.55) — a whole document pasted instead of an excerpt or diff</td>
+<td><code>packages/shared/src/rules/full-document-io.ts</code></td>
+</tr>
+<tr>
+<td><code>context_bloat</code></td>
+<td>per-request</td>
+<td>A session&#39;s input tokens grew ≥1.8× from that session&#39;s first event while under 25% of the growth was new content</td>
+<td><code>packages/shared/src/rules/context-bloat.ts</code></td>
+</tr>
+<tr>
+<td><code>frontier_share</code></td>
+<td>window aggregate</td>
+<td>Frontier-tier models account for more than 80% of tokens in the trailing 7-day window; names the dominant frontier model&#39;s cheaper sibling</td>
+<td><code>packages/shared/src/rules/aggregate/frontier-share.ts</code></td>
+</tr>
+<tr>
+<td><code>cache_efficiency</code></td>
+<td>window aggregate</td>
+<td>A model&#39;s cache-read tokens are under 50% of its input tokens for the window, and a cache breakdown was actually recorded</td>
+<td><code>packages/shared/src/rules/aggregate/cache-efficiency.ts</code></td>
+</tr>
+</tbody></table>
+<p>Every hit is also subject to a materiality floor (<code>packages/shared/src/rules/materiality.ts</code>)
+— by default at least $0.01 estimated waste, or 5,000 tokens when cost is
+unknown — so cheap, noisy findings never reach the panel.</p>
+<h3 id="why-per-request-rules-dont-fire-for-otel-only-users">Why per-request rules don&#39;t fire for OTEL-only users</h3>
+<p><code>frontier_trivial</code>, <code>full_document_io</code>, and <code>context_bloat</code> read a single
+event&#39;s <code>features</code> — prompt chars, message count, paste/file-dump score, and
+(for <code>context_bloat</code>) that event&#39;s same-session history. An aggregate has
+none of that: it&#39;s a time-bucketed sum, not a request. <code>runRules</code> enforces
+this centrally by discarding every <code>grain: &quot;aggregate&quot;</code> event before any
+per-request rule runs (<code>packages/shared/src/rules/index.ts</code>), rather than
+trusting each rule to opt out on its own.</p>
+<p>Of TokenOps&#39; capture paths, two produce per-request events and can trigger
+these three rules: the <strong>OpenAI-compatible local proxy</strong> and the <strong>Claude
+Code JSONL adapter</strong> (both build full <code>features</code> per call — see
+<code>apps/agent/src/adapters/claude-code.ts</code> and the proxy under
+<code>apps/agent/src/proxy/</code>). The <strong>Claude Code OTEL metrics receiver</strong>
+(<code>apps/agent/src/adapters/claude-otel.ts</code>) cannot: Claude Code&#39;s
+<code>claude_code.token.usage</code> counter carries only a token <code>type</code> and <code>model</code>,
+with no prompt or message to derive features from, so every event it emits
+is stamped <code>grain: &quot;aggregate&quot;</code> and is gated out.</p>
+<p>This means <strong>a user whose only capture path is Claude Code OTEL will never
+see <code>frontier_trivial</code>, <code>full_document_io</code>, or <code>context_bloat</code> fire</strong> — that
+is expected, not a bug. They still get <code>frontier_share</code> and
+<code>cache_efficiency</code>: those two rules run hourly against 7-day per-model token
+totals built from every ingested event regardless of grain or capture path
+(<code>apps/api/src/jobs/aggregate-rules.ts</code>), so OTEL-only usage still populates
+the Recommendations panel, just from the aggregate class only.</p>
+<h3 id="cache-token-fields">Cache token fields</h3>
+<p>Usage events may carry <code>cacheReadTokens</code> / <code>cacheCreationTokens</code>
+(<code>packages/shared/src/schema/event.ts</code>), populated today by the Claude Code
+OTEL receiver. They are <strong>additionally counted inside <code>inputTokens</code>, not on
+top of it</strong> — <code>inputTokens</code> already includes cache-read and cache-creation
+tokens, matching what the provider actually billed. Ledger totals
+(<code>inputTokens + outputTokens</code>) are exactly the same whether or not an event
+reports a cache breakdown. <strong>Do not add <code>cacheReadTokens</code> /
+<code>cacheCreationTokens</code> to <code>inputTokens</code> when computing spend or token
+totals</strong> — that double-counts every Claude Code OTEL user&#39;s usage.</p>
+<p><code>null</code> and <code>0</code> mean different things for these fields, and the distinction
+is load-bearing for <code>cache_efficiency</code>: <code>null</code> means no cache breakdown was
+ever recorded (no capture path had reported one yet when the event was
+written); <code>0</code> means a breakdown was recorded and reuse was genuinely zero.
+Summing a <code>null</code> as <code>0</code> would either wrongly silence a real &quot;paying full
+price for context&quot; finding, or wrongly manufacture a &quot;low cache reuse&quot; card
+on a window straddling the day cache reporting was added. See the doc
+comment on <code>packages/shared/src/rules/aggregate/cache-efficiency.ts</code> for how
+the rule preserves this distinction.</p>
 <h2 id="environment-variables">Environment variables</h2>
 <h3 id="api-appsapi">API (<code>apps/api</code>)</h3>
 <table>

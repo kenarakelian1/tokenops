@@ -8,7 +8,7 @@ Phase 1 includes:
 
 - **Unified ledger** — tokens and **estimated** USD by time, machine, app, model, and source
 - **Two capture paths** — OpenAI-compatible local proxy + Claude Code JSONL adapter
-- **Three rule-based recommendations** — frontier-for-trivial, full-document I/O, context bloat
+- **Five rule-based recommendations, in two classes** — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see [Recommendation rules](#recommendation-rules)
 - **Privacy controls** — metadata always; raw content optional (`off` / `local` / `cloud_ttl`)
 - **Self-hostable** — MIT license, Docker Compose, Railway-ready
 
@@ -337,9 +337,78 @@ After Compose is up and you have logged in:
 
 1. **Overview** — tokens & est. $ (today / 7d / 30d), top models
 2. **Explore** — filter by machine, app, model, time
-3. **Recommendations** — three efficiency rules with estimated waste; dismiss when done
+3. **Recommendations** — five efficiency rules in two classes, with estimated waste; dismiss when done (see [Recommendation rules](#recommendation-rules))
 4. **Machines** — last seen, sync health
 5. **Settings** — budget banner threshold, **create agent PAT**, retention notes
+
+## Recommendation rules
+
+Five rule-based recommendations, in two classes: **per-request** rules that
+inspect one event's derived features, and **window-aggregate** rules that
+inspect per-model token totals over a trailing window. Which class runs for
+you depends on your capture path.
+
+| Rule | Class | Fires when | Source |
+|------|-------|-------------|--------|
+| `frontier_trivial` | per-request | A frontier-tier model handled a short request (≤2 messages, ≤200 total tokens, low paste score) with a cheaper same-vendor sibling model available | `packages/shared/src/rules/frontier-trivial.ts` |
+| `full_document_io` | per-request | Prompt ≥20,000 chars with a high file-dump score (≥0.55) — a whole document pasted instead of an excerpt or diff | `packages/shared/src/rules/full-document-io.ts` |
+| `context_bloat` | per-request | A session's input tokens grew ≥1.8× from that session's first event while under 25% of the growth was new content | `packages/shared/src/rules/context-bloat.ts` |
+| `frontier_share` | window aggregate | Frontier-tier models account for more than 80% of tokens in the trailing 7-day window; names the dominant frontier model's cheaper sibling | `packages/shared/src/rules/aggregate/frontier-share.ts` |
+| `cache_efficiency` | window aggregate | A model's cache-read tokens are under 50% of its input tokens for the window, and a cache breakdown was actually recorded | `packages/shared/src/rules/aggregate/cache-efficiency.ts` |
+
+Every hit is also subject to a materiality floor (`packages/shared/src/rules/materiality.ts`)
+— by default at least $0.01 estimated waste, or 5,000 tokens when cost is
+unknown — so cheap, noisy findings never reach the panel.
+
+### Why per-request rules don't fire for OTEL-only users
+
+`frontier_trivial`, `full_document_io`, and `context_bloat` read a single
+event's `features` — prompt chars, message count, paste/file-dump score, and
+(for `context_bloat`) that event's same-session history. An aggregate has
+none of that: it's a time-bucketed sum, not a request. `runRules` enforces
+this centrally by discarding every `grain: "aggregate"` event before any
+per-request rule runs (`packages/shared/src/rules/index.ts`), rather than
+trusting each rule to opt out on its own.
+
+Of TokenOps' capture paths, two produce per-request events and can trigger
+these three rules: the **OpenAI-compatible local proxy** and the **Claude
+Code JSONL adapter** (both build full `features` per call — see
+`apps/agent/src/adapters/claude-code.ts` and the proxy under
+`apps/agent/src/proxy/`). The **Claude Code OTEL metrics receiver**
+(`apps/agent/src/adapters/claude-otel.ts`) cannot: Claude Code's
+`claude_code.token.usage` counter carries only a token `type` and `model`,
+with no prompt or message to derive features from, so every event it emits
+is stamped `grain: "aggregate"` and is gated out.
+
+This means **a user whose only capture path is Claude Code OTEL will never
+see `frontier_trivial`, `full_document_io`, or `context_bloat` fire** — that
+is expected, not a bug. They still get `frontier_share` and
+`cache_efficiency`: those two rules run hourly against 7-day per-model token
+totals built from every ingested event regardless of grain or capture path
+(`apps/api/src/jobs/aggregate-rules.ts`), so OTEL-only usage still populates
+the Recommendations panel, just from the aggregate class only.
+
+### Cache token fields
+
+Usage events may carry `cacheReadTokens` / `cacheCreationTokens`
+(`packages/shared/src/schema/event.ts`), populated today by the Claude Code
+OTEL receiver. They are **additionally counted inside `inputTokens`, not on
+top of it** — `inputTokens` already includes cache-read and cache-creation
+tokens, matching what the provider actually billed. Ledger totals
+(`inputTokens + outputTokens`) are exactly the same whether or not an event
+reports a cache breakdown. **Do not add `cacheReadTokens` /
+`cacheCreationTokens` to `inputTokens` when computing spend or token
+totals** — that double-counts every Claude Code OTEL user's usage.
+
+`null` and `0` mean different things for these fields, and the distinction
+is load-bearing for `cache_efficiency`: `null` means no cache breakdown was
+ever recorded (no capture path had reported one yet when the event was
+written); `0` means a breakdown was recorded and reuse was genuinely zero.
+Summing a `null` as `0` would either wrongly silence a real "paying full
+price for context" finding, or wrongly manufacture a "low cache reuse" card
+on a window straddling the day cache reporting was added. See the doc
+comment on `packages/shared/src/rules/aggregate/cache-efficiency.ts` for how
+the rule preserves this distinction.
 
 ## Environment variables
 
