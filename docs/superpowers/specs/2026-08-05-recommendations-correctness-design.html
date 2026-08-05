@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recommendations correctness — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="recommendations-correctness-—-design">Recommendations correctness — design</h1>
+<p><strong>Date:</strong> 2026-08-05
+<strong>Status:</strong> Approved, not yet implemented</p>
+<h2 id="problem">Problem</h2>
+<p>The Recommendations panel shows 25 open cards. All are the same rule. Together
+they claim 1,910 tokens of waste, and <strong>not one carries a cost estimate</strong>:</p>
+<pre><code>frontier_trivial | claude-code | claude-opus-5[1m] | in=0  out=86  | usd=NULL
+frontier_trivial | claude-code | claude-opus-5[1m] | in=86 out=0   | usd=NULL
+frontier_trivial | claude-code | claude-opus-5[1m] | in=1  out=7   | usd=NULL
+</code></pre>
+<p><code>in=0, out=86</code> is not a request. It is one OTLP export window in which only the
+output counter moved. The same is true of <code>in=86, out=0</code>.</p>
+<p>Meanwhile the account&#39;s real usage is <strong>122,758,978 tokens on
+<code>claude-opus-5[1m]</code> across 261 events</strong>. Nothing about that is trivial. The
+panel is reporting on metric plumbing.</p>
+<p>Three defects stack, and only the first is fundamental.</p>
+<h3 id="the-otel-stream-contains-no-requests">The OTEL stream contains no requests</h3>
+<p><code>claude_code.token.usage</code> carries exactly two attributes — <code>type</code>
+(<code>input</code>/<code>output</code>/<code>cacheRead</code>/<code>cacheCreation</code>) and <code>model</code>
+(<code>apps/agent/src/adapters/claude-otel.ts:5</code>). There is no session id, no
+request id, nothing identifying a turn. The adapter buckets by model and sums
+the four types (<code>:163-200</code>), then emits one event per model per export window.</p>
+<p>So an OTEL-derived event is a <strong>time-bucketed aggregate by construction</strong>.
+&quot;Was this request small?&quot; is not a question the data can answer, and no amount
+of better bucketing changes that.</p>
+<h3 id="the-adapter-fabricates-the-features-rules-depend-on">The adapter fabricates the features rules depend on</h3>
+<p>Worse than absent data: the adapter <em>manufactures</em> it. <code>extractFeatures</code> is
+called with a synthetic message (<code>claude-otel.ts:~245</code>):</p>
+<pre><code class="language-ts">requestMessages: [
+  { role: &quot;user&quot;, content: `[otel] claude_code.token.usage model=${model}` },
+]
+</code></pre>
+<p>So <code>promptChars</code>, <code>messageCount</code>, and <code>largePasteScore</code> describe a placeholder
+string. <code>frontier_trivial</code> requires <code>messageCount &lt;= 2</code>, <code>largePasteScore &lt; 0.3</code>, and <code>totalTokens &lt;= 200</code> — the invented features satisfy the first two
+unconditionally, and a small export window satisfies the third. The rule is not
+misjudging usage; it is reading fiction.</p>
+<h3 id="nothing-is-priced-and-the-advice-is-cross-vendor">Nothing is priced, and the advice is cross-vendor</h3>
+<p><code>estimateCostUsd</code> returns null for <code>claude-opus-5[1m]</code> — <code>pricing.ts</code> has
+<code>claude-opus-4</code>, <code>claude-sonnet-4</code>, and <code>claude-haiku</code>. Hence &quot;—&quot; on every
+card. And <code>frontier-trivial.ts:26</code> computes savings against a hardcoded
+<code>gpt-4o-mini</code>, which a Claude Code user cannot switch an individual call to.</p>
+<h2 id="decision">Decision</h2>
+<p>Make provenance explicit, stop inventing features, preserve the cache
+breakdown, and add rules that are answerable from aggregates.</p>
+<h3 id="non-goals">Non-goals</h3>
+<ul>
+<li><strong>Aggregating recommendation cards.</strong> With the correctness fix the 25 bogus
+cards go to zero, and the new aggregate rules emit one card per window per
+model — so there is nothing left to group. Grouping is worth doing against
+real accumulated findings, not designed blind now.</li>
+<li><strong>Reconstructing requests from OTEL.</strong> The attributes do not exist. The
+per-request path for Claude Code is the JSONL adapter.</li>
+<li><strong>Backfilling history.</strong> Cache tokens were folded into input irreversibly at
+the agent; past events cannot be recovered.</li>
+</ul>
+<h2 id="design">Design</h2>
+<h3 id="1-provenance-on-every-event">1. Provenance on every event</h3>
+<p><code>UsageEvent</code> gains a discriminator:</p>
+<pre><code class="language-ts">/** How this event was derived. Rules must not assume request semantics for aggregates. */
+export type EventGrain = &quot;request&quot; | &quot;aggregate&quot;;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Grain</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OpenAI-compatible proxy</td>
+<td><code>request</code></td>
+</tr>
+<tr>
+<td>Claude Code JSONL adapter</td>
+<td><code>request</code></td>
+</tr>
+<tr>
+<td>Claude Code OTEL receiver</td>
+<td><code>aggregate</code></td>
+</tr>
+</tbody></table>
+<p>Defaulting: events without the field are treated as <code>request</code>, matching every
+pre-existing producer except OTEL. The OTEL adapter is the only one that must
+set it explicitly.</p>
+<h3 id="2-stop-fabricating-features">2. Stop fabricating features</h3>
+<p>The OTEL adapter no longer synthesises <code>requestMessages</code>. <code>promptChars</code>,
+<code>messageCount</code>, and <code>largePasteScore</code> become <strong>absent</strong> rather than invented,
+which requires making them optional in <code>EventFeatures</code>. <code>modelTier</code> stays — it
+is derived from the model name, which OTEL genuinely provides.</p>
+<p>Absent-and-honest beats present-and-wrong: a rule that reads a fabricated zero
+cannot tell it apart from a real one.</p>
+<h3 id="3-per-request-rules-refuse-aggregates">3. Per-request rules refuse aggregates</h3>
+<p><code>frontier_trivial</code>, <code>full_document_io</code>, and <code>context_bloat</code> all encode
+per-request assumptions. Each returns <code>null</code> for <code>grain === &quot;aggregate&quot;</code>.</p>
+<p>This is enforced once, in <code>runRules</code>, rather than repeated in each rule — a
+new per-request rule must opt out of aggregates by default, not remember to.</p>
+<h3 id="4-preserve-the-cache-breakdown">4. Preserve the cache breakdown</h3>
+<p><code>UsageEvent</code> gains <code>cacheReadTokens</code> and <code>cacheCreationTokens</code> (both optional,
+defaulting to 0). The OTEL adapter stops folding them into <code>inputTokens</code>
+(<code>claude-otel.ts:226-228</code>) and reports them separately.</p>
+<p><strong>Ledger totals must not change.</strong> Cost and token displays that previously
+summed folded input keep summing the same quantity — the breakdown is
+additional detail, not a re-definition. This is the highest-risk part of the
+change: getting it wrong silently alters every historical spend figure.</p>
+<h3 id="5-two-aggregate-rules">5. Two aggregate rules</h3>
+<p>Both evaluate over a window (default 7 days) per model, not per event, and emit
+at most one recommendation each per window.</p>
+<p><strong><code>frontier_share</code></strong> — what fraction of tokens went to frontier-tier models.
+For this account it would read roughly: 122M Opus against 44M Sonnet and 29K
+Haiku. Actionable in the way the current rule only pretends to be: route
+routine work to a smaller model in the same family.</p>
+<p><strong><code>cache_efficiency</code></strong> — ratio of cache reads to fresh input. For a Claude Code
+user this is the dominant cost lever, and today the information is discarded
+before it reaches the cloud. Only meaningful once §4 lands.</p>
+<h3 id="6-materiality-floor">6. Materiality floor</h3>
+<p>Rules emit nothing below a minimum. Expressed in estimated USD where a price
+exists, falling back to tokens where it does not. An 89-token finding never
+surfaces again.</p>
+<h3 id="7-real-pricing-in-vendor-comparison">7. Real pricing, in-vendor comparison</h3>
+<p>Add the Claude 5 family to <code>pricing.ts</code>. Savings compare against the <strong>cheapest
+model of the same vendor family</strong> rather than a hardcoded <code>gpt-4o-mini</code>:
+Opus → Sonnet or Haiku, GPT-4o → GPT-4o-mini. Cross-vendor advice is not
+actionable and should never be generated.</p>
+<h2 id="migration">Migration</h2>
+<ul>
+<li>The 25 existing <code>frontier_trivial</code> rows are wrong and must be deleted, not
+dismissed — dismissal implies the user judged them.</li>
+<li>Already-ingested events keep cache folded into input. Historical cache ratios
+are unrecoverable; <code>cache_efficiency</code> reports only on windows after deploy.</li>
+<li>Ledger totals must be identical before and after. Verify against production
+aggregates rather than assuming.</li>
+</ul>
+<h2 id="testing">Testing</h2>
+<ul>
+<li><strong>Grain</strong>: an aggregate event produces no hits from any per-request rule; a
+request event with identical numbers still does.</li>
+<li><strong>No fabrication</strong>: OTEL-derived events have absent, not zeroed,
+<code>promptChars</code>/<code>messageCount</code>/<code>largePasteScore</code>.</li>
+<li><strong>Ledger invariance</strong>: for a fixture OTLP payload, <code>inputTokens + outputTokens</code> after the change equals the total before it.</li>
+<li><strong>Floor</strong>: a finding below the threshold emits nothing; one above emits once.</li>
+<li><strong>Pricing</strong>: <code>claude-opus-5[1m]</code> prices; savings compare in-vendor; an unknown
+model yields null rather than a wrong number.</li>
+<li><strong>Aggregate rules</strong>: <code>frontier_share</code> fires on a skewed mix and stays silent
+on a balanced one; <code>cache_efficiency</code> fires on a poor ratio, and is silent
+when cache fields are absent (pre-migration events) rather than reporting 0%.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ul>
+<li><strong>Ledger drift</strong> from §4 is the one that would matter and be hard to notice.
+Pin it with a test, and verify against production totals.</li>
+<li><strong>An empty panel</strong> immediately after deploy is expected: the account&#39;s only
+capture path is OTEL, and the proxy has no upstream key. <code>frontier_share</code>
+should fill it within one window.</li>
+<li><strong>Optional features</strong> ripple into any code assuming those fields exist.</li>
+</ul>
+<h2 id="follow-ups">Follow-ups</h2>
+<ul>
+<li>Aggregating recommendation cards once real findings accumulate</li>
+<li>Pruning sent outbox rows, and an indexed timestamp column for <code>local-stats</code></li>
+<li>Per-request Claude Code capture via the JSONL adapter, for users who want the
+per-request rules back</li>
+</ul>
+</main>
+</body>
+</html>
