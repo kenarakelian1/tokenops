@@ -1,13 +1,74 @@
 import { app, BrowserWindow, dialog, type Tray } from "electron";
 import type { AgentHandle } from "@tokenops/agent";
 import { createMainWindow } from "./window.js";
-import { createTray } from "./tray.js";
+import { createTray, setTrayStatus } from "./tray.js";
 import { registerIpc } from "./ipc.js";
 import { getQuitPhase, beginStopping, markStopped } from "./quit-state.js";
 
 let agent: AgentHandle | null = null;
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
+
+/**
+ * Upper bound on how long before-quit waits for `agent.stop()` before
+ * quitting anyway. Without this, a hung close() (e.g. a socket that
+ * `closeAllConnections()` somehow missed, or a future regression that drops
+ * that call) blocks every subsequent quit forever: `canWindowClose()` never
+ * flips to "stopped", the window can't close, and Task Manager becomes the
+ * only way out -- the exact unquittable-app failure mode this constant
+ * exists to bound. 5s is generous for a local close (proxy/otel close plus
+ * a synchronous SQLite close) while still being short enough that a user
+ * clicking Quit does not read it as a hang.
+ */
+const STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * Awaits `handle.stop()`, but resolves after `timeoutMs` regardless -- the
+ * quit proceeds either way (see STOP_TIMEOUT_MS above). Logs exactly one of:
+ * success, timeout, or the rejection reason, so a silent failure (the
+ * previous behavior: a bare `try { await agent?.stop() } finally {}` with no
+ * catch) can no longer swallow a broken shutdown with nothing in the logs.
+ * `.catch()` is attached unconditionally so a late rejection after timeout
+ * fires never becomes an unhandled promise rejection.
+ */
+function stopWithTimeout(
+  handle: AgentHandle,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.error(
+        `[tokenops] agent.stop() did not finish within ${timeoutMs}ms; quitting anyway (outbox drain may be incomplete)`,
+      );
+      resolve();
+    }, timeoutMs);
+
+    handle
+      .stop()
+      .then(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // Proof this actually awaited stop() rather than racing it: this
+        // line must appear in the log before the process exits.
+        console.log("[tokenops] agent stopped cleanly");
+        resolve();
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        console.error(
+          "[tokenops] agent.stop() failed:",
+          err instanceof Error ? err.message : err,
+        );
+        resolve();
+      });
+  });
+}
 
 /**
  * `detach: true` suppresses the signal handlers the CLI installs. Lifecycle is
@@ -78,10 +139,16 @@ if (!gotSingleInstanceLock) {
     startDesktopAgent()
       .then((handle) => {
         agent = handle;
+        // Only now is "capturing" true. Before this resolves, the tray
+        // still shows createTray()'s neutral "starting…" tooltip -- not the
+        // old hardcoded "capturing" that lied for as long as startup took,
+        // and permanently if startup failed (the `catch` below).
+        if (tray) setTrayStatus(tray, "capturing");
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[tokenops] agent failed to start:", message);
+        if (tray) setTrayStatus(tray, "error");
         dialog.showErrorBox("TokenOps agent failed to start", message);
       });
   });
@@ -115,23 +182,37 @@ if (!gotSingleInstanceLock) {
   // `canWindowClose()`) and only allows the window to actually close once
   // phase is "stopped" -- i.e. strictly after agent.stop() has resolved --
   // for the same reason.
+  //
+  // stopWithTimeout (not a bare `await agent?.stop()`) closes two more gaps
+  // found in whole-branch review:
+  //   - unbounded wait: agent.stop() awaits otelServer.close() then
+  //     proxyServer.close(), neither of which used to force in-flight
+  //     sockets closed, and a mid-stream SSE completion could hold close()
+  //     open indefinitely -- an unquittable app with no recourse but Task
+  //     Manager. Bounded at STOP_TIMEOUT_MS; agent-main.ts's stop() also now
+  //     calls closeAllConnections() before close() as the root-cause fix
+  //     (belt-and-suspenders: the timeout here guards against any future
+  //     regression that drops that call, not just today's known cause).
+  //   - silent failure: the old `try { await agent?.stop() } finally {}` had
+  //     no `catch`, so a rejection (e.g. otelServer.close() erroring) skipped
+  //     the outbox.close() *and* the success log line, exited anyway via
+  //     `finally`, and logged nothing. stopWithTimeout always logs exactly
+  //     one of: success, timeout, or the rejection reason.
   app.on("before-quit", (event) => {
     const phase = getQuitPhase();
     if (phase === "stopped") return; // teardown genuinely done; let quit through
     event.preventDefault(); // hold the quit on every call while not yet stopped
     if (phase === "stopping") return; // already tearing down; don't restart it
     beginStopping();
+    if (tray) setTrayStatus(tray, "stopping");
     void (async () => {
-      try {
-        await agent?.stop();
-        // Proof this actually awaited stop() rather than racing it: this
-        // line must appear in the log before the process exits.
-        console.log("[tokenops] agent stopped cleanly");
-      } finally {
-        agent = null;
-        markStopped();
-        app.quit();
+      const current = agent;
+      if (current) {
+        await stopWithTimeout(current, STOP_TIMEOUT_MS);
       }
+      agent = null;
+      markStopped();
+      app.quit();
     })();
   });
 

@@ -189,13 +189,27 @@ export async function runAgent(
     clearInterval(timer);
     claudeClose?.();
     claudeClose = null;
+    // closeAllConnections() *before* close(): Node's Server#close() only
+    // stops accepting new connections and waits for every in-flight one to
+    // end on its own -- and server.timeout is 0 (never set), so a client
+    // mid-stream (the proxy's SSE completions, in particular) can hold
+    // close() open indefinitely. closeAllConnections() destroys every open
+    // socket immediately, so close()'s callback -- and therefore this
+    // await -- resolves promptly regardless of what upstream traffic was
+    // in flight when stop() was called. This is deliberate quit behavior,
+    // not a bug: whoever calls stop() (the CLI's SIGINT/SIGTERM handler, or
+    // the desktop app's before-quit handler) has already decided to shut
+    // down, and an in-flight completion losing its response is a strictly
+    // better outcome than a quit that never completes.
     if (otelServer) {
+      otelServer.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         otelServer!.close((err) => (err ? reject(err) : resolve()));
       });
       otelServer = null;
     }
     if (proxyServer) {
+      proxyServer.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         proxyServer!.close((err) => (err ? reject(err) : resolve()));
       });
