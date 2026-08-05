@@ -1,4 +1,8 @@
-import { runAggregateRules, type AggregateWindow } from "@tokenops/shared";
+import {
+  runAggregateRules,
+  AGGREGATE_RULE_IDS,
+  type AggregateWindow,
+} from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import { usageEvents } from "../db/schema.js";
 import type { EventsRepo } from "../services/events-repo.js";
@@ -57,6 +61,18 @@ export function aggregateWindowBounds(now: Date): {
  * card from a window that has since rolled off), so at most one live card
  * per aggregate rule exists at a time. Superseded rows are deleted, not
  * dismissed — a rolled-off window isn't a user judgement.
+ *
+ * That supersede call only runs for rules that DID produce a hit this run —
+ * `for (const hit of hits)` never executes at all for a rule with zero hits.
+ * So a rule that used to fire (card written) and then genuinely stops
+ * firing (e.g. frontier share drops back under threshold) left its card
+ * open forever: no expiry job, no TTL, and the UI renders every open row.
+ * After the hit loop below, walk every known aggregate rule id and
+ * supersede any rule that produced no hit this run too, using this run's
+ * window-derived key as the "keep" key — since no card was written under
+ * that exact key, the existing `ne(dedupeKey, keep)` predicate clears every
+ * open row for that rule, which is exactly the retirement a rule that
+ * stopped firing needs.
  */
 export async function runAggregateRulesForUser(
   repo: EventsRepo,
@@ -67,6 +83,7 @@ export async function runAggregateRulesForUser(
   const byModel = await repo.modelWindowTotals(userId, startIso, endIso);
   const window: AggregateWindow = { start: startIso, end: endIso, byModel };
   const hits = runAggregateRules(window, now);
+  const hitRuleIds = new Set(hits.map((hit) => hit.ruleId));
 
   for (const hit of hits) {
     const dedupeKey = `${hit.ruleId}|${startIso}`;
@@ -82,6 +99,15 @@ export async function runAggregateRulesForUser(
       dedupeKey,
     });
     await repo.supersedeOpenRecommendations(userId, hit.ruleId, dedupeKey);
+  }
+
+  // Retire cards for rules that didn't fire this run (see doc comment
+  // above) — a rule with no hit never enters the loop above, so without
+  // this it can never lose its most recent card.
+  for (const ruleId of AGGREGATE_RULE_IDS) {
+    if (hitRuleIds.has(ruleId)) continue;
+    const dedupeKey = `${ruleId}|${startIso}`;
+    await repo.supersedeOpenRecommendations(userId, ruleId, dedupeKey);
   }
 
   return hits.length;

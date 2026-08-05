@@ -41,6 +41,7 @@ export {
   runAggregateRules,
   FRONTIER_SHARE_THRESHOLD,
   CACHE_EFFICIENCY_MIN_READ_RATIO,
+  AGGREGATE_RULE_IDS,
   type ModelWindowTotals,
   type AggregateWindow,
 } from "./rules/aggregate/index.js";

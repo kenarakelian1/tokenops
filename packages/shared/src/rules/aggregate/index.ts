@@ -14,6 +14,15 @@ export {
 } from "./cache-efficiency.js";
 
 /**
+ * Every ruleId `runAggregateRules` can emit. Used by the aggregate-rules job
+ * to know which rules to retire a card for when a run produces no hit for
+ * them — otherwise a card latches forever once its rule stops firing, since
+ * `supersedeOpenRecommendations` is only ever called for rules that DID hit
+ * this run (see aggregate-rules.ts).
+ */
+export const AGGREGATE_RULE_IDS = ["frontier_share", "cache_efficiency"] as const;
+
+/**
  * Per-model totals over a time window. This is what OTEL-derived data
  * naturally produces: time-bucketed sums with no single request inside
  * them, so per-event rules (runRules, in ../index.ts) cannot evaluate it.

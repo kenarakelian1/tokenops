@@ -147,6 +147,33 @@ describe("runAggregateRulesForUser", () => {
     expect(recs.some((r) => r.ruleId === "frontier_share")).toBe(true);
   });
 
+  it("retires an aggregate card once its rule stops firing", async () => {
+    // Regression: supersedeOpenRecommendations was only ever called inside
+    // `for (const hit of hits)`, so a run with zero hits for a rule never
+    // called it for that rule — a card written while the rule fired stayed
+    // open forever, even after the user's behavior changed and the rule
+    // genuinely stopped firing.
+    const repo = createMemoryEventsRepo();
+    await seedSkewedUsage(repo, "user-a");
+
+    const day1 = new Date("2026-08-05T12:00:00Z");
+    await runAggregateRulesForUser(repo, "user-a", day1);
+
+    let recs = await repo.listRecommendations("user-a", "open");
+    expect(recs.some((r) => r.ruleId === "frontier_share")).toBe(true);
+
+    // 8 days later: seedSkewedUsage's events (timestamped 2026-08-01) have
+    // rolled out of the trailing 7-day window entirely, and no new events
+    // were recorded, so the window is empty and frontier_share can no
+    // longer fire.
+    const day2 = new Date("2026-08-13T12:00:00Z");
+    const hitCount = await runAggregateRulesForUser(repo, "user-a", day2);
+    expect(hitCount).toBe(0);
+
+    recs = await repo.listRecommendations("user-a", "open");
+    expect(recs.some((r) => r.ruleId === "frontier_share")).toBe(false);
+  });
+
   it("scopes the window to each user's own events", async () => {
     const repo = createMemoryEventsRepo();
     await seedSkewedUsage(repo, "user-a");
