@@ -85,6 +85,58 @@ describe("estimateCostUsd", () => {
     });
   });
 
+  describe("cache-aware pricing (cache reads/creates priced below/above the base input rate)", () => {
+    it("prices cache reads at 0.1x and cache creation at 1.25x the input rate instead of the full rate", () => {
+      // Real profile: 0.2M raw input, 20M cache-read, 1M cache-creation,
+      // 0.3M output on claude-opus-5[1m] ($5/$25 per 1M) over a week.
+      // inputTokens folds cache into the ledger total (21.2M) — see
+      // claude-otel.ts's doc comment — so the pre-fix full-price estimate
+      // priced all 21.2M at the $5/1M input rate: 21.2 * 5 + 0.3 * 25 =
+      // 113.5, 4.6x the real $24.75 bill.
+      const rawInput = 200_000;
+      const cacheReadTokens = 20_000_000;
+      const cacheCreationTokens = 1_000_000;
+      const inputTokens = rawInput + cacheReadTokens + cacheCreationTokens; // 21.2M
+      const outputTokens = 300_000;
+
+      const withoutBreakdown = estimateCostUsd(
+        "claude-opus-5[1m]",
+        inputTokens,
+        outputTokens,
+      );
+      expect(withoutBreakdown).toBeCloseTo(113.5, 5);
+
+      const withBreakdown = estimateCostUsd(
+        "claude-opus-5[1m]",
+        inputTokens,
+        outputTokens,
+        undefined,
+        undefined,
+        { cacheReadTokens, cacheCreationTokens },
+      );
+      // 0.2M*5 + 20M*5*0.1 + 1M*5*1.25 + 0.3M*25 = 1 + 10 + 6.25 + 7.5 = 24.75
+      expect(withBreakdown).toBeCloseTo(24.75, 5);
+    });
+
+    it("treats a null cache breakdown the same as an absent one (full input rate applies)", () => {
+      const cost = estimateCostUsd(
+        "claude-opus-5[1m]",
+        1_000_000,
+        0,
+        undefined,
+        undefined,
+        { cacheReadTokens: null, cacheCreationTokens: null },
+      );
+      expect(cost).toBeCloseTo(5, 5);
+    });
+
+    it("does not change behavior for callers that omit the cache breakdown entirely", () => {
+      // Every pre-existing call site (2-5 positional args) must keep
+      // working unchanged now that a 6th trailing options param exists.
+      const cost = estimateCostUsd("gpt-4o-mini", 1_000_000, 0);
+      expect(cost).toBeGreaterThan(0);
+    });
+  });
 });
 
 describe("cheaperSiblingModel", () => {

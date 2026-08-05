@@ -76,6 +76,20 @@ export function checkFrontierShare(
 
   // Priced against the dominant model's OWN tokens only — see the doc
   // comment above for why this must not sum other frontier models in.
+  //
+  // Both sides must price the SAME cache breakdown (the dominant model's
+  // own cacheReadTokens/cacheCreationTokens). Pricing only the dominant
+  // side's cache discount (or preferring its real, cache-discounted
+  // costUsd) while leaving the sibling at a full-price estimate makes the
+  // sibling look artificially more expensive — at realistic Claude Code
+  // cache-read ratios (85-95%) that inflated sibling estimate can exceed
+  // the dominant model's real cost, clamping the "savings" to 0 via
+  // Math.max(0, ...) below and silently dropping the only card an
+  // OTEL-only user would otherwise see.
+  const dominantCacheBreakdown = {
+    cacheReadTokens: dominant.cacheReadTokens,
+    cacheCreationTokens: dominant.cacheCreationTokens,
+  };
   const dominantCost =
     dominant.costUsd ??
     estimateCostUsd(
@@ -84,6 +98,7 @@ export function checkFrontierShare(
       dominant.outputTokens,
       undefined,
       now,
+      dominantCacheBreakdown,
     );
   const siblingCost = estimateCostUsd(
     suggestedModel,
@@ -91,6 +106,7 @@ export function checkFrontierShare(
     dominant.outputTokens,
     undefined,
     now,
+    dominantCacheBreakdown,
   );
 
   let estimatedWastedUsd: number | null = null;

@@ -70,12 +70,41 @@ function isSonnet5IntroActive(now: Date): boolean {
 }
 
 /**
+ * Anthropic bills cache reads and cache-creation writes at different
+ * multiples of a model's base input rate, not at the base rate itself.
+ * cacheReadTokens/cacheCreationTokens are subsets of inputTokens (Task 2
+ * deliberately keeps them folded into inputTokens for ledger totals — see
+ * claude-otel.ts), so pricing must carve them back out of the full-rate
+ * portion rather than charging for them twice.
+ */
+const CACHE_READ_PRICE_MULTIPLIER = 0.1;
+const CACHE_CREATION_PRICE_MULTIPLIER = 1.25;
+
+/**
+ * Optional cache-token breakdown for `estimateCostUsd`. Both fields are
+ * subsets of the `inputTokens` passed alongside them, `number | null`
+ * matching `ModelWindowTotals` — omit the whole object (or pass `null`
+ * fields) when no breakdown is available and the full input rate applies to
+ * every token, same as before this option existed.
+ */
+export type CacheTokenBreakdown = {
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+};
+
+/**
  * Estimate USD cost from token counts and a price table.
  * Returns null when the model cannot be priced.
  *
  * @param now Comparison instant for date-gated prices (e.g. the Claude
  *   Sonnet 5 introductory rate). Defaults to the real current time; tests
  *   pass a fixed Date to pin behavior on either side of a cutoff.
+ * @param cacheTokens Optional breakdown of `inputTokens` into cache-read and
+ *   cache-creation subsets, priced at 0.1x and 1.25x the model's base input
+ *   rate respectively instead of the full rate. Appended as a trailing
+ *   options object (rather than more positional args) so every existing
+ *   call site — which passes 2-5 positional args today — keeps working
+ *   unchanged.
  */
 export function estimateCostUsd(
   model: string,
@@ -83,6 +112,7 @@ export function estimateCostUsd(
   outputTokens: number,
   priceOverrides?: Record<string, PriceRow>,
   now: Date = new Date(),
+  cacheTokens?: CacheTokenBreakdown,
 ): number | null {
   const table = priceOverrides
     ? { ...DEFAULT_PRICES, ...priceOverrides }
@@ -107,8 +137,27 @@ export function estimateCostUsd(
     }
   }
   if (!row) return null;
+
+  // Cache reads/creates default to 0 (not just when omitted, but also when
+  // recorded as null — "no breakdown known" means "assume no discount",
+  // the same full-price behavior every caller had before this option
+  // existed) and are carved out of the full-rate portion so they're priced
+  // once, at their own multiplier, rather than twice.
+  const cacheReadTokens = cacheTokens?.cacheReadTokens ?? 0;
+  const cacheCreationTokens = cacheTokens?.cacheCreationTokens ?? 0;
+  const fullRateInputTokens = Math.max(
+    0,
+    inputTokens - cacheReadTokens - cacheCreationTokens,
+  );
+
   return (
-    (inputTokens / 1_000_000) * row.inputPerMTok +
+    (fullRateInputTokens / 1_000_000) * row.inputPerMTok +
+    (cacheReadTokens / 1_000_000) *
+      row.inputPerMTok *
+      CACHE_READ_PRICE_MULTIPLIER +
+    (cacheCreationTokens / 1_000_000) *
+      row.inputPerMTok *
+      CACHE_CREATION_PRICE_MULTIPLIER +
     (outputTokens / 1_000_000) * row.outputPerMTok
   );
 }

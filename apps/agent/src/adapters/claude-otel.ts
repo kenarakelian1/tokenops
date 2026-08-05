@@ -261,7 +261,14 @@ export class ClaudeOtelState {
 
       let costUsd = costDeltas.get(model) ?? null;
       if (costUsd == null) {
-        costUsd = estimateCostUsd(model, inputTokens, outputTokens);
+        // cacheReadTokens/cacheCreationTokens are already folded into
+        // inputTokens above (ledger totals); pass them again here so
+        // estimateCostUsd can price them at their own cache multipliers
+        // instead of the full input rate.
+        costUsd = estimateCostUsd(model, inputTokens, outputTokens, undefined, undefined, {
+          cacheReadTokens,
+          cacheCreationTokens,
+        });
       }
 
       const event: UsageEvent = {
