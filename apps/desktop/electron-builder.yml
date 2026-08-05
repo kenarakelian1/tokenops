@@ -1,0 +1,20 @@
+appId: com.tokenops.desktop
+productName: TokenOps
+directories:
+  buildResources: build
+  output: ../../dist
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  include: build/installer.nsh
+  # electron-builder's default NSIS artifact name is "${productName} Setup
+  # ${version}.exe" (spaces). CI's verification step and this task's own
+  # produced-artifact contract both expect the hyphenated
+  # TokenOps-Setup-<version>.exe -- without this override the glob in CI's
+  # "Verify installer was produced" step would never match, so a real
+  # success would still be reported as a missing installer.
+  artifactName: "${productName}-Setup-${version}.${ext}"

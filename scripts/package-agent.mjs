@@ -125,42 +125,9 @@ writeFileSync(
   `tokenops-agent 0.1.2\nbuilt ${new Date().toISOString()}\nnode target: >=22\n`,
 );
 
-// Optional: compile Inno Setup GUI installer → dist/TokenOps-Agent-Setup.exe
-const isccCandidates = [
-  process.env.ISCC,
-  "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe",
-  "C:\\Program Files\\Inno Setup 6\\ISCC.exe",
-].filter(Boolean);
-
-let iscc = isccCandidates.find((p) => p && existsSync(p));
-if (!iscc) {
-  try {
-    const where = execSync("where.exe ISCC 2>nul", {
-      encoding: "utf8",
-      shell: true,
-    }).trim();
-    if (where) iscc = where.split(/\r?\n/)[0];
-  } catch {
-    /* not on PATH */
-  }
-}
-
-if (iscc) {
-  console.log("Building TokenOps-Agent-Setup.exe with Inno Setup…");
-  const iss = join(root, "installer", "windows", "TokenOpsAgent.iss");
-  try {
-    run(`"${iscc}" "${iss}"`);
-    console.log(`Setup EXE: ${join(root, "dist", "TokenOps-Agent-Setup.exe")}`);
-  } catch (err) {
-    console.error("Inno Setup compile failed:", err instanceof Error ? err.message : err);
-    process.exitCode = 1;
-  }
-} else {
-  console.log(
-    "Inno Setup (ISCC) not found — skipped Setup.exe. Install from https://jrsoftware.org/isinfo.php or rely on CI.",
-  );
-}
-
+// The GUI installer is now apps/desktop, packaged separately with
+// electron-builder (see apps/desktop/electron-builder.yml and
+// `pnpm --filter @tokenops/desktop exec electron-builder --win`). This script
+// only produces the headless/portable payload below.
 console.log(`\nPackaged: ${out}`);
 console.log("  - Portable: zip the tokenops-agent-win folder, or run install.cmd inside it");
-console.log("  - Setup:    dist/TokenOps-Agent-Setup.exe (if Inno Setup was available)");
