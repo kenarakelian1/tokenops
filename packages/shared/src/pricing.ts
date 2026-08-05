@@ -16,6 +16,12 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
   "claude-sonnet-4": { inputPerMTok: 3, outputPerMTok: 15 },
   "claude-opus-4": { inputPerMTok: 15, outputPerMTok: 75 },
   "claude-haiku": { inputPerMTok: 0.8, outputPerMTok: 4 },
+  // Claude 5 family (published Anthropic list prices as of 2026-08).
+  // Prefix-matches "claude-opus-5[1m]" (bracketed context-window suffix)
+  // and "claude-haiku-4-5-20251001" (dated snapshot suffix) via resolvePrice().
+  "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25 },
+  "claude-sonnet-5": { inputPerMTok: 3, outputPerMTok: 15 },
+  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
   // xAI Grok (approximate public list prices — estimates only)
   "grok-4": { inputPerMTok: 3, outputPerMTok: 15 },
   "grok-3": { inputPerMTok: 3, outputPerMTok: 15 },
@@ -66,4 +72,32 @@ export function estimateCostUsd(
     (inputTokens / 1_000_000) * row.inputPerMTok +
     (outputTokens / 1_000_000) * row.outputPerMTok
   );
+}
+
+/**
+ * Suggest a cheaper model in the SAME vendor family as `model`, so the
+ * suggestion is something a user could actually switch a call to.
+ *
+ * Returns null when:
+ *  - the vendor/family is unrecognized, or
+ *  - `model` is already the cheapest tier in its family (no advice to give).
+ *
+ * Tier ordering (cheapest to most expensive):
+ *  - Anthropic: haiku < sonnet < opus
+ *  - OpenAI:    gpt-4o-mini < gpt-4o
+ */
+export function cheaperSiblingModel(model: string): string | null {
+  const m = model.toLowerCase();
+
+  // OpenAI GPT-4o family. Check "-mini" first: it's a substring of neither
+  // direction, but "gpt-4o-mini" also matches a naive "gpt-4o" check.
+  if (m.includes("gpt-4o-mini")) return null;
+  if (m.includes("gpt-4o")) return "gpt-4o-mini";
+
+  // Anthropic Claude family: opus > sonnet > haiku.
+  if (m.includes("opus")) return "claude-sonnet-5";
+  if (m.includes("sonnet")) return "claude-haiku-4-5";
+  if (m.includes("haiku")) return null;
+
+  return null;
 }

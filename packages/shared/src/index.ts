@@ -4,6 +4,7 @@ export { buildEventId } from "./event-id.js";
 export {
   DEFAULT_PRICES,
   estimateCostUsd,
+  cheaperSiblingModel,
   type PriceRow,
 } from "./pricing.js";
 export { getModelTier, type ModelTier } from "./model-tier.js";
