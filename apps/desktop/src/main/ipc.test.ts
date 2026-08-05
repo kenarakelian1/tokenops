@@ -19,10 +19,11 @@ vi.mock("@tokenops/agent", () => ({
     recent: [],
   })),
   defaultOutboxPath: vi.fn(() => "C:/fake/.tokenops/outbox.db"),
+  defaultTokenopsDir: vi.fn(() => "C:/fake/.tokenops"),
 }));
 
 import { ipcMain, shell } from "electron";
-import { readLocalStats, defaultOutboxPath } from "@tokenops/agent";
+import { readLocalStats, defaultOutboxPath, defaultTokenopsDir } from "@tokenops/agent";
 import { registerIpc } from "./ipc.js";
 
 type Handler = (...args: unknown[]) => unknown;
@@ -49,6 +50,7 @@ function fakeAgent(over?: {
   openaiProxy?: boolean;
   claudeCode?: boolean;
   otelListen?: string;
+  cloudUrl?: string;
 }): AgentHandle {
   return {
     outbox: {} as AgentHandle["outbox"],
@@ -57,7 +59,10 @@ function fakeAgent(over?: {
     stop: vi.fn(),
     tick: vi.fn(),
     config: {
-      cloud: { url: "https://cloud.example", ingestToken: over?.ingestToken ?? SECRET_PAT },
+      cloud: {
+        url: over?.cloudUrl ?? "https://cloud.example",
+        ingestToken: over?.ingestToken ?? SECRET_PAT,
+      },
       privacy: { contentMode: "local", contentTtlDays: 7 },
       proxy: { listen: "127.0.0.1:8787", upstream: "https://api.openai.com" },
       sources: {
@@ -113,6 +118,21 @@ describe("registerIpc", () => {
     expect(JSON.stringify(status)).not.toContain(SECRET_PAT);
   });
 
+  it("tokenops:status treats a whitespace-only upstream key as absent, matching the proxy's own resolver", async () => {
+    // apps/agent/src/proxy/handler.ts's resolveUpstreamApiKey trims before
+    // checking -- a whitespace-only env var is "none" to the proxy. If this
+    // handler disagreed (e.g. plain `Boolean(process.env.OPENAI_API_KEY)`),
+    // the window would report "healthy" while every proxied call fails auth.
+    process.env.OPENAI_API_KEY = "   ";
+    const agent = fakeAgent();
+    registerIpc(() => agent);
+
+    const status = (await handlerFor("tokenops:status")()) as {
+      upstreamKeyPresent: boolean;
+    };
+    expect(status.upstreamKeyPresent).toBe(false);
+  });
+
   it("tokenops:status nulls out proxy/otel listen addresses when their sources are disabled", async () => {
     const agent = fakeAgent({ openaiProxy: false, claudeCode: false });
     registerIpc(() => agent);
@@ -146,15 +166,45 @@ describe("registerIpc", () => {
     });
   });
 
-  it("tokenops:open-dashboard forwards the URL to shell.openExternal", () => {
-    registerIpc(() => null);
-    listenerFor("tokenops:open-dashboard")({}, "https://cloud.example");
+  it("tokenops:open-dashboard opens the agent's own cloud.url, not a renderer-supplied one", () => {
+    // The listener takes no arguments -- passing one here proves the
+    // renderer's argument (if any slipped through) is ignored; main resolves
+    // the URL itself from the live agent's config.
+    const agent = fakeAgent({ cloudUrl: "https://cloud.example" });
+    registerIpc(() => agent);
+
+    listenerFor("tokenops:open-dashboard")({}, "https://attacker.example");
+
     expect(shell.openExternal).toHaveBeenCalledWith("https://cloud.example");
+    expect(shell.openExternal).not.toHaveBeenCalledWith("https://attacker.example");
   });
 
-  it("tokenops:open-config opens the config folder via shell.openPath", () => {
+  it("tokenops:open-dashboard never forwards an unsafe cloud.url to the OS shell", () => {
+    // cloud.url comes from user-editable ~/.tokenops/config.toml. A file:
+    // URL (or a UNC path, or a registered custom protocol) must never reach
+    // shell.openExternal -- the exact attack path window.ts's
+    // isSafeExternalUrl already guards every other call site against.
+    const agent = fakeAgent({
+      cloudUrl: "file:///C:/Windows/System32/calc.exe",
+    });
+    registerIpc(() => agent);
+
+    listenerFor("tokenops:open-dashboard")({});
+
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("tokenops:open-dashboard does nothing when the agent has not started", () => {
+    registerIpc(() => null);
+    listenerFor("tokenops:open-dashboard")({});
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("tokenops:open-config opens the real tokenops dir via shell.openPath", async () => {
     registerIpc(() => null);
     listenerFor("tokenops:open-config")({});
-    expect(shell.openPath).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(shell.openPath).toHaveBeenCalledWith(defaultTokenopsDir());
+    });
   });
 });

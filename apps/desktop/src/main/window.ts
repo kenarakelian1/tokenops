@@ -2,22 +2,7 @@ import { BrowserWindow, shell } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { canWindowClose } from "./quit-state.js";
-
-const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
-
-/**
- * Only http(s) is ever handed to the OS shell. `shell.openExternal` with an
- * unvalidated URL is a known Windows attack path -- `file:`, UNC paths
- * (`\\host\share`), and registered custom protocol handlers can all launch
- * something other than a browser tab.
- */
-function isSafeExternalUrl(url: string): boolean {
-  try {
-    return ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(url).protocol);
-  } catch {
-    return false;
-  }
-}
+import { isSafeExternalUrl } from "./url-safety.js";
 
 export function createMainWindow(): BrowserWindow {
   const indexHtmlPath = join(__dirname, "../renderer/index.html");

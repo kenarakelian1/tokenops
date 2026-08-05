@@ -1,7 +1,6 @@
 import { ipcMain, shell } from "electron";
 import type { AgentHandle } from "@tokenops/agent";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { isSafeExternalUrl } from "./url-safety.js";
 
 /**
  * `@tokenops/agent` is ESM-only (see main/index.ts's comment on
@@ -46,8 +45,14 @@ export function registerIpc(getAgent: () => AgentHandle | null): void {
       machineName,
       cloudUrl: config.cloud.url,
       ingestTokenPresent: Boolean(config.cloud.ingestToken),
+      // .trim() matches apps/agent/src/proxy/handler.ts's resolveUpstreamApiKey,
+      // which is what the proxy actually authenticates with. Without it, a
+      // whitespace-only OPENAI_API_KEY reads as "present" here while the
+      // proxy treats it as absent ("none") -- exactly the silent
+      // healthy-looking-but-broken state this window exists to prevent.
       upstreamKeyPresent: Boolean(
-        process.env.OPENAI_API_KEY || process.env.XAI_API_KEY,
+        (process.env.OPENAI_API_KEY ?? "").trim() ||
+          (process.env.XAI_API_KEY ?? "").trim(),
       ),
       proxyListen: config.sources.openaiProxy ? config.proxy.listen : null,
       otelListen: config.sources.claudeCode
@@ -57,11 +62,23 @@ export function registerIpc(getAgent: () => AgentHandle | null): void {
     };
   });
 
-  ipcMain.on("tokenops:open-dashboard", (_e, url: string) => {
-    void shell.openExternal(url);
+  // Argument-less on purpose: the renderer never supplies the URL. Main
+  // already holds it (agent.config.cloud.url, from ~/.tokenops/config.toml)
+  // and validates it the same way window.ts validates every other URL
+  // handed to the OS shell -- http(s) only. Taking a renderer-supplied
+  // string here instead would let a hostile or malformed cloud.url (this
+  // file is user-editable) reach shell.openExternal unchecked, e.g.
+  // file:///... or a registered custom protocol.
+  ipcMain.on("tokenops:open-dashboard", () => {
+    const url = getAgent()?.config.cloud.url;
+    if (url && isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
   });
 
   ipcMain.on("tokenops:open-config", () => {
-    void shell.openPath(join(homedir(), ".tokenops"));
+    void loadAgentModule().then(({ defaultTokenopsDir }) => {
+      void shell.openPath(defaultTokenopsDir());
+    });
   });
 }

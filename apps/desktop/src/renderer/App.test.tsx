@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 
@@ -33,7 +33,11 @@ describe("App", () => {
   it("shows today's token totals", async () => {
     mockApi();
     render(<App />);
-    expect(await screen.findByText(/1,200/)).toBeInTheDocument();
+    // Scoped to the "Today" region: byApp/byModel below render the same
+    // comma-formatted counts (single-app/single-model fixture), so an
+    // unscoped findByText(/1,200/) would match more than one node.
+    const today = await screen.findByRole("region", { name: "Today" });
+    expect(within(today).getByText(/1,200/)).toBeInTheDocument();
   });
 
   it("warns when the proxy has no upstream key", async () => {
@@ -52,5 +56,24 @@ describe("App", () => {
     mockApi({}, { ...stats, queue: { pending: 4, lastError: "cloud unreachable" } });
     render(<App />);
     expect(await screen.findByText(/cloud unreachable/i)).toBeInTheDocument();
+  });
+
+  it("calls openDashboard with no arguments when its button is clicked", async () => {
+    mockApi();
+    render(<App />);
+    const button = await screen.findByRole("button", { name: /open dashboard/i });
+    fireEvent.click(button);
+    // No-argument call is the point: the URL is resolved and validated in
+    // main (main/ipc.ts), never supplied by the renderer.
+    expect(window.tokenops.openDashboard).toHaveBeenCalledWith();
+    expect(window.tokenops.openDashboard).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls openConfigFolder when its button is clicked", async () => {
+    mockApi();
+    render(<App />);
+    const button = await screen.findByRole("button", { name: /open config folder/i });
+    fireEvent.click(button);
+    expect(window.tokenops.openConfigFolder).toHaveBeenCalledTimes(1);
   });
 });

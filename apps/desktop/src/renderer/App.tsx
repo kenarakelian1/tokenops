@@ -16,7 +16,13 @@ export type AgentStatus = {
 export type DesktopApi = {
   getStats(): Promise<LocalStats>;
   getStatus(): Promise<AgentStatus>;
-  openDashboard(url: string): void;
+  /**
+   * No URL argument: main resolves and validates the real cloud.url itself
+   * (main/ipc.ts) rather than trusting whatever the renderer sends -- see
+   * that file's comment for why a renderer-supplied URL here would be a
+   * hole through the app's http(s)-only shell.openExternal guard.
+   */
+  openDashboard(): void;
   openConfigFolder(): void;
 };
 
@@ -143,14 +149,8 @@ export function App() {
         )}
       </section>
 
-      <section>
+      <section aria-label="Today">
         <h2>Today</h2>
-        {/* toLocaleString() is scoped to this summary only. The breakdown
-            tables and recent list below render the same underlying counts
-            unformatted on purpose: a single-app/single-model day makes a
-            table cell numerically identical to a Today total (both "1200"),
-            and comma-grouping both would make them textually identical too,
-            which is both a UI redundancy and untestable by exact text match. */}
         <dl>
           <dt>Input tokens</dt>
           <dd>{today.inputTokens.toLocaleString()}</dd>
@@ -180,8 +180,8 @@ export function App() {
               {byApp.map((row) => (
                 <tr key={row.app}>
                   <td>{row.app}</td>
-                  <td>{row.inputTokens}</td>
-                  <td>{row.outputTokens}</td>
+                  <td>{row.inputTokens.toLocaleString()}</td>
+                  <td>{row.outputTokens.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -206,8 +206,8 @@ export function App() {
               {byModel.map((row) => (
                 <tr key={row.model}>
                   <td>{row.model}</td>
-                  <td>{row.inputTokens}</td>
-                  <td>{row.outputTokens}</td>
+                  <td>{row.inputTokens.toLocaleString()}</td>
+                  <td>{row.outputTokens.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -229,7 +229,8 @@ export function App() {
           <ul>
             {recent.map((r, i) => (
               <li key={`${r.at}-${i}`}>
-                {r.at} — {r.app} / {r.model} — {r.inputTokens} in / {r.outputTokens} out
+                {r.at} — {r.app} / {r.model} — {r.inputTokens.toLocaleString()} in /{" "}
+                {r.outputTokens.toLocaleString()} out
               </li>
             ))}
           </ul>
@@ -237,7 +238,7 @@ export function App() {
       </section>
 
       <footer>
-        <button onClick={() => window.tokenops.openDashboard(status.cloudUrl)}>
+        <button onClick={() => window.tokenops.openDashboard()}>
           Open dashboard
         </button>
         <button onClick={() => window.tokenops.openConfigFolder()}>
