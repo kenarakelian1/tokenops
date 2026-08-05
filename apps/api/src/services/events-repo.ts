@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import type { UsageEvent, UsageFeatures } from "@tokenops/shared";
+import type { EventGrain, UsageEvent, UsageFeatures } from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import {
   dailyAggregates,
@@ -104,8 +104,11 @@ function rowToUsageEvent(row: UsageEventRow): UsageEvent {
     costUsd: row.costUsd != null ? Number(row.costUsd) : null,
     latencyMs: row.latencyMs ?? undefined,
     sessionId: row.sessionId ?? undefined,
+    grain: (row.grain as EventGrain | null) ?? undefined,
     features: row.features as UsageFeatures,
     hasContent: row.hasContent,
+    cacheReadTokens: row.cacheReadTokens ?? undefined,
+    cacheCreationTokens: row.cacheCreationTokens ?? undefined,
   };
 }
 
@@ -131,8 +134,11 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
             event.costUsd != null ? String(event.costUsd) : null,
           latencyMs: event.latencyMs ?? null,
           sessionId: event.sessionId ?? null,
+          grain: event.grain ?? null,
           features: event.features,
           hasContent: event.hasContent && event.content != null,
+          cacheReadTokens: event.cacheReadTokens ?? null,
+          cacheCreationTokens: event.cacheCreationTokens ?? null,
         })
         .onConflictDoNothing({ target: usageEvents.eventId })
         .returning({ eventId: usageEvents.eventId });
@@ -418,8 +424,11 @@ export function createMemoryEventsRepo(): EventsRepo {
         costUsd: event.costUsd != null ? String(event.costUsd) : null,
         latencyMs: event.latencyMs ?? null,
         sessionId: event.sessionId ?? null,
+        grain: event.grain ?? null,
         features: event.features,
         hasContent: Boolean(event.hasContent && event.content),
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
       };
       eventMap.set(event.eventId, row);
       return "accepted";

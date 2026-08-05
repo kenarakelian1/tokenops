@@ -170,14 +170,18 @@ describe("ClaudeOtelState", () => {
 describe("ClaudeOtelState feature/grain correctness", () => {
   it("marks OTEL-derived events as aggregate", () => {
     const events = emitFromFixture();
+    expect(events).toHaveLength(1); // a regression that stopped emitting would still pass `.every` on []
     expect(events.every((e) => e.grain === "aggregate")).toBe(true);
   });
 
   it("does not fabricate per-request features", () => {
     const [e] = emitFromFixture();
     expect(e!.features.promptChars).toBeUndefined();
+    expect(e!.features.responseChars).toBeUndefined();
     expect(e!.features.messageCount).toBeUndefined();
+    expect(e!.features.codeFenceCount).toBeUndefined();
     expect(e!.features.largePasteScore).toBeUndefined();
+    expect(e!.features.fileDumpScore).toBeUndefined(); // input to full_document_io; reviving it revives that bug class
     expect(e!.features.modelTier).toBeDefined(); // derivable from the model name
   });
 
@@ -202,6 +206,62 @@ describe("ClaudeOtelState feature/grain correctness", () => {
     });
     expect(e!.inputTokens).toBe(105); // 10 + 90 + 5, exactly as before
     expect(e!.inputTokens + e!.outputTokens).toBe(125);
+  });
+
+  it("keeps the cache ratio from exceeding 1 under fractional (asDouble) counters", () => {
+    // Theoretical today (Claude Code always emits integer deltas via asInt),
+    // but reachable via the asDouble decoding branch. Rounding inputTokens
+    // and the cache fields independently could let cacheRead+cacheCreation
+    // round up past a separately-rounded inputTokens.
+    const model = "claude-sonnet-4";
+    const state = new ClaudeOtelState("m1", "desktop");
+    const events = state.ingest({
+      resourceMetrics: [
+        {
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "claude_code.token.usage",
+                  sum: {
+                    dataPoints: [
+                      {
+                        asDouble: 0,
+                        attributes: [
+                          { key: "type", value: { stringValue: "input" } },
+                          { key: "model", value: { stringValue: model } },
+                        ],
+                      },
+                      {
+                        asDouble: 0.5,
+                        attributes: [
+                          { key: "type", value: { stringValue: "cacheRead" } },
+                          { key: "model", value: { stringValue: model } },
+                        ],
+                      },
+                      {
+                        asDouble: 0.5,
+                        attributes: [
+                          {
+                            key: "type",
+                            value: { stringValue: "cacheCreation" },
+                          },
+                          { key: "model", value: { stringValue: model } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const [e] = events;
+    expect(e!.cacheReadTokens! + e!.cacheCreationTokens!).toBeLessThanOrEqual(
+      e!.inputTokens,
+    );
   });
 });
 

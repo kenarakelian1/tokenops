@@ -12,10 +12,12 @@ export {
   UsageFeaturesSchema,
   IngestBatchSchema,
   ModelTierSchema,
+  EventGrainSchema,
   parseUsageEvent,
   type UsageEvent,
   type UsageFeatures,
   type IngestBatch,
+  type EventGrain,
 } from "./schema/event.js";
 export {
   extractFeatures,

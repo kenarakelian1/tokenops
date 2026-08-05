@@ -227,11 +227,18 @@ export class ClaudeOtelState {
       // reality) — this must never change, or every historical spend/token
       // total shifts silently. cacheReadTokens/cacheCreationTokens below are
       // additional detail, not a redefinition of inputTokens.
+      //
+      // Round each component first, then sum the rounded components for
+      // inputTokens (rather than rounding the raw-float sum independently).
+      // Otherwise fractional counters — unreachable today since Claude Code's
+      // token.usage deltas are always integers, but reachable in principle
+      // via the asDouble decoding branch — could round cacheRead+cacheCreation
+      // up past a separately-rounded inputTokens, letting a downstream
+      // cacheReadTokens / inputTokens ratio exceed 1.
+      const roundedInput = Math.round(bucket.input);
       const cacheReadTokens = Math.round(bucket.cacheRead);
       const cacheCreationTokens = Math.round(bucket.cacheCreation);
-      const inputTokens = Math.round(
-        bucket.input + bucket.cacheRead + bucket.cacheCreation,
-      );
+      const inputTokens = roundedInput + cacheReadTokens + cacheCreationTokens;
       const outputTokens = Math.round(bucket.output);
       if (inputTokens <= 0 && outputTokens <= 0 && !costDeltas.has(model)) {
         continue;
