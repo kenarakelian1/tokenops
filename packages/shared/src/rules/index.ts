@@ -2,6 +2,7 @@ import type { UsageEvent } from "../schema/event.js";
 import { checkContextBloat } from "./context-bloat.js";
 import { checkFrontierTrivial } from "./frontier-trivial.js";
 import { checkFullDocumentIo } from "./full-document-io.js";
+import { isMaterial } from "./materiality.js";
 import type { RuleHit } from "./types.js";
 
 export type { RuleHit, RuleId } from "./types.js";
@@ -20,6 +21,7 @@ export {
   BLOAT_MAX_NEW_CONTENT_RATIO,
   checkContextBloat,
 } from "./context-bloat.js";
+export { MIN_WASTED_USD, MIN_WASTED_TOKENS, isMaterial } from "./materiality.js";
 
 /** Aggregate events are time-bucketed sums, not requests. */
 export function isAggregate(event: UsageEvent): boolean {
@@ -50,5 +52,5 @@ export function runRules(
   const bloat = checkContextBloat(event, sessionContext);
   if (bloat) hits.push(bloat);
 
-  return hits;
+  return hits.filter(isMaterial);
 }
