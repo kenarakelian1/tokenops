@@ -29,16 +29,19 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          choco install innosetup -y --no-progress
-          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Package agent + Setup.exe
+      - name: Build desktop app (and its workspace dependencies)
+        # See ci.yml's identically-named step: @tokenops/desktop dynamically
+        # imports @tokenops/agent at runtime, so the trailing "..." (build
+        # dependencies too) is required, not optional.
+        run: pnpm --filter "@tokenops/desktop..." build
+
+      - name: Package portable agent payload
+        # Headless/CI installs still use this path (installer/windows/install.cmd
+        # against a system Node 22+). It no longer compiles an Inno Setup.exe --
+        # apps/desktop/electron-builder.yml + the step below own the GUI installer.
         run: pnpm package:agent
 
       - name: Zip portable package
@@ -46,6 +49,20 @@ jobs:
         run: |
           if (Test-Path dist/tokenops-agent-win.zip) { Remove-Item dist/tokenops-agent-win.zip -Force }
           Compress-Archive -Path dist/tokenops-agent-win/* -DestinationPath dist/tokenops-agent-win.zip -Force
+
+      - name: Package with electron-builder
+        run: pnpm --filter @tokenops/desktop exec electron-builder --win --publish never
+
+      - name: Verify installer was produced
+        # softprops/action-gh-release silently skips a `files:` glob that
+        # matches nothing, and upload-artifact defaults to warn-not-fail on a
+        # missing path -- both would let this job go green and publish (or
+        # upload) a release that advertises an asset it never attaches. Fail
+        # loudly here instead, before either of those steps can run.
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter "TokenOps-Setup-*.exe" -ErrorAction SilentlyContinue
+          if (-not $exe) { throw "electron-builder produced no installer" }
           Get-ChildItem dist -Filter "TokenOps*" | Format-Table Name, Length
 
       - name: Upload artifacts
@@ -54,32 +71,34 @@ jobs:
           name: tokenops-agent-windows
           path: |
             dist/tokenops-agent-win.zip
-            dist/TokenOps-Agent-Setup.exe
+            dist/TokenOps-Setup-*.exe
 
       - name: Create GitHub Release (tag push)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/TokenOps-Agent-Setup.exe
+            dist/TokenOps-Setup-*.exe
             dist/tokenops-agent-win.zip
           generate_release_notes: true
           body: |
             ## Windows desktop agent
 
-            ### Recommended: Setup wizard
-            1. Install [Node.js 22+](https://nodejs.org/)
-            2. Download **TokenOps-Agent-Setup.exe**
-            3. Run the setup (per-user, no admin)
-            4. Pick your AI tools, paste PAT, choose startup
-            5. Start Menu → **TokenOps Agent**
+            ### Recommended: TokenOps installer
+            1. Download **TokenOps-Setup-<version>.exe** (attached below)
+            2. Run the setup (per-user, no admin)
+            3. Start Menu → **TokenOps**
 
-            ### Portable zip
+            Electron bundles its own Node, so no separate Node.js install is
+            needed for this path.
+
+            ### Portable zip (headless / CI installs)
             Download **tokenops-agent-win.zip**, unzip, run **install.cmd**
+            (requires [Node.js 22+](https://nodejs.org/) already on PATH)
 
             Dashboard: https://tokenops-web-production.up.railway.app
 
-            > Setup is not Authenticode-signed yet. If Smart App Control / SmartScreen warns: More info → Run anyway, or Unblock the file.
+            > Not Authenticode-signed yet. If Smart App Control / SmartScreen warns: More info → Run anyway, or Unblock the file.
 
       - name: Create GitHub Release (manual)
         if: github.event_name == 'workflow_dispatch'
@@ -88,14 +107,13 @@ jobs:
           tag_name: ${{ inputs.tag != '' && inputs.tag || format('v0.1.{0}', github.run_number) }}
           name: ${{ inputs.tag != '' && inputs.tag || format('TokenOps Agent {0}', github.run_number) }}
           files: |
-            dist/TokenOps-Agent-Setup.exe
+            dist/TokenOps-Setup-*.exe
             dist/tokenops-agent-win.zip
           generate_release_notes: true
           body: |
             ## Windows desktop agent
 
-            1. Install [Node.js 22+](https://nodejs.org/)
-            2. Download **TokenOps-Agent-Setup.exe** and run it
-            3. Or use **tokenops-agent-win.zip** → install.cmd
+            1. Download **TokenOps-Setup-<version>.exe** (attached below) and run it
+            2. Or use **tokenops-agent-win.zip** → install.cmd (requires Node.js 22+)
 
             Dashboard: https://tokenops-web-production.up.railway.app

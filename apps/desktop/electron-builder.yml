@@ -10,6 +10,13 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  # oneClick:false + perMachine:false still shows the install-mode page
+  # ("just me" vs "anyone who uses this computer"). Without this, picking
+  # "anyone" elevates the installer: HKCU then refers to the *elevating*
+  # (often admin) account, not the user who is actually signing in day to
+  # day, so installer.nsh's PATH/registry cleanup would silently target the
+  # wrong hive. Force the per-user install this app is designed for.
+  allowElevation: false
   include: build/installer.nsh
   # electron-builder's default NSIS artifact name is "${productName} Setup
   # ${version}.exe" (spaces). CI's verification step and this task's own

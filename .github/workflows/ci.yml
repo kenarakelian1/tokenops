@@ -65,8 +65,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build desktop app
-        run: pnpm --filter @tokenops/desktop build
+      - name: Build desktop app (and its workspace dependencies)
+        # @tokenops/desktop imports @tokenops/agent at runtime (main/index.ts,
+        # ipc.ts, and the renderer's App.tsx all resolve types/values against
+        # apps/agent/dist, which is gitignored). `--filter @tokenops/desktop`
+        # alone only builds that one package -- on a fresh checkout with no
+        # prior dist/ on disk, tsc fails with TS2307 before vite even runs,
+        # and even a bypassed tsc would let electron-builder ship an .exe
+        # missing the agent it dynamically imports. The trailing "..." pulls
+        # in @tokenops/desktop's workspace dependencies (agent, shared) too,
+        # built in topological order.
+        run: pnpm --filter "@tokenops/desktop..." build
 
       - name: Package with electron-builder
         run: pnpm --filter @tokenops/desktop exec electron-builder --win --publish never
@@ -74,6 +83,13 @@ jobs:
       - name: Verify installer was produced
         shell: pwsh
         run: |
+          # Antivirus real-time scanning can race electron-builder's bulk
+          # win-unpacked.tmp -> win-unpacked rename on Windows (EPERM). That
+          # fails the step loudly (non-zero exit) before this check ever
+          # runs, so there is no silent-green path -- if CI hits it, the fix
+          # is `Add-MpPreference -ExclusionPath` for the workspace/dist dir
+          # on a self-hosted runner (not applicable/needed on GitHub-hosted
+          # windows-latest runners in practice).
           $exe = Get-ChildItem dist -Filter "TokenOps-Setup-*.exe" -ErrorAction SilentlyContinue
           if (-not $exe) { throw "electron-builder produced no installer" }
           Get-Item $exe.FullName | Format-List Name, Length
