@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recommendation evidence — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="recommendation-evidence-—-design">Recommendation evidence — design</h1>
+<p><strong>Date:</strong> 2026-08-05
+<strong>Status:</strong> Approved, not yet implemented</p>
+<h2 id="problem">Problem</h2>
+<p>The Recommendations panel now says true things, but not actionable ones. The
+single live card reads:</p>
+<blockquote>
+<p><strong>Frontier-heavy token mix</strong> — 80% of your tokens in this window went to a
+frontier-tier model (<code>claude-opus-5[1m]</code>). Consider <code>claude-sonnet-5</code> for
+routine work. — 257,083,982 tokens · $778.82</p>
+</blockquote>
+<p>That tells you <em>what</em>, never <em>which calls</em>. There is no way to act on it beyond
+a vague resolution to use Opus less.</p>
+<p>Showing the offending calls requires content, and there is none. Verified
+against production: <strong>712 events, <code>has_content = 0</code> on every one, and the
+<code>event_content</code> table empty.</strong></p>
+<p>Three independent causes, and the first is structural.</p>
+<h3 id="the-active-capture-path-contains-no-requests">The active capture path contains no requests</h3>
+<p><code>claude_code.token.usage</code> carries two attributes — <code>type</code> and <code>model</code>
+(<code>apps/agent/src/adapters/claude-otel.ts:5</code>). No prompts, no responses, no
+request boundary. Nothing exists to quote, and no UI change can conjure it.</p>
+<h3 id="the-features-are-still-fabricated-in-production">The features are still fabricated in production</h3>
+<p>The newest event in the ledger carries:</p>
+<pre><code class="language-json">{&quot;promptChars&quot;:54,&quot;messageCount&quot;:1,&quot;largePasteScore&quot;:0.00135,&quot;modelTier&quot;:&quot;frontier&quot;}
+</code></pre>
+<p><code>54</code> is the length of <code>[otel] claude_code.token.usage model=claude-opus-5[1m]</code>
+— the synthetic string the adapter measures. The fix for this is merged but the
+deployed agent predates it, so every event still describes a placeholder.</p>
+<h3 id="the-adapter-watches-a-file-nothing-writes">The adapter watches a file nothing writes</h3>
+<p><code>~/.tokenops/claude-code-usage.jsonl</code> does not exist and no process creates it.
+Meanwhile Claude Code writes <strong>1,455 session JSONL files</strong> under
+<code>~/.claude/projects/</code>, the newest 18 MB and updated minutes ago, each holding
+the full conversation: real prompts, real responses, real per-turn token counts.</p>
+<p>The data has been there all along; the agent was watching the wrong path.</p>
+<h2 id="decision">Decision</h2>
+<p><strong>Read Claude Code&#39;s own session JSONL.</strong> It supplies real requests, real
+features, and the text that evidence requires, in one change.</p>
+<p>Rejected: running JSONL alongside OTEL. The same usage would arrive twice, and
+deduplicating across two capture mechanisms risks the ledger invariant the
+previous branch spent seven tasks establishing. OTEL is replaced, not
+supplemented.</p>
+<h3 id="three-retention-tiers">Three retention tiers</h3>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Retention</th>
+<th>Contains</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Local outbox</td>
+<td>Full, on device</td>
+<td>Complete request and response text</td>
+</tr>
+<tr>
+<td>Cloud raw</td>
+<td><strong>2 hours</strong></td>
+<td>Text, for rendering fresh examples in the dashboard</td>
+</tr>
+<tr>
+<td>Recommendation summary</td>
+<td>Permanent</td>
+<td>Shape plus a redacted skeleton</td>
+</tr>
+</tbody></table>
+<p>Raw text is ephemeral evidence; the derived summary outlives it so a card stays
+meaningful after the content expires.</p>
+<p>The current <code>event_content</code> TTL is 7 days (<code>CONTENT_TTL_MS</code> in
+<code>apps/api/src/services/ingest.ts</code>). Two hours is not a constant swap: the expiry
+job runs hourly, so a 2-hour TTL means content can survive up to 3 hours. Either
+the job interval drops or the documented guarantee becomes &quot;at most 3 hours&quot;.
+State whichever is chosen; do not claim 2 and deliver 3.</p>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>Backfilling evidence</strong> for the 712 existing events. They are aggregates with
+no content and never will have any.</li>
+<li><strong>Capturing non-Claude-Code traffic.</strong> The proxy already handles that when an
+upstream key is set; it is idle for unrelated reasons.</li>
+<li><strong>Changing the default privacy mode.</strong> <code>local</code> stays the default. Cloud raw
+content requires explicit opt-in, as it does today.</li>
+</ul>
+<h2 id="architecture">Architecture</h2>
+<h3 id="capture">Capture</h3>
+<p>A new adapter reads <code>~/.claude/projects/**/*.jsonl</code>, tailing files as Claude
+Code appends. Each assistant turn becomes one <code>UsageEvent</code> with
+<code>grain: &quot;request&quot;</code>, features derived from the <strong>actual</strong> prompt and response,
+and content attached subject to the privacy gate.</p>
+<p>Practical constraints the implementation must handle:</p>
+<ul>
+<li><strong>Scale.</strong> 1,455 files, the largest 18 MB. Reading them whole on every poll is
+not viable; the adapter must track per-file offsets and resume.</li>
+<li><strong>Idempotence.</strong> <code>buildEventId</code> hashes <code>machineId | app | providerRequestId | fingerprint | timeBucketSec</code>. Session JSONL carries a stable per-turn
+identifier — use it, so re-reading a file cannot double-count.</li>
+<li><strong>Rotation and concurrent writes.</strong> Claude Code appends to the file that is
+currently open; a partial final line is normal and must be skipped, not
+parsed as corrupt.</li>
+</ul>
+<p><code>sources.claude_code_path</code> already accepts a file or a directory, so the config
+surface exists.</p>
+<h3 id="redaction">Redaction</h3>
+<p>The permanent summary carries <strong>shape plus a redacted skeleton</strong>:</p>
+<ul>
+<li><strong>Shape</strong> — turn count, prompt and response lengths, code-fence count,
+file-paste and file-dump indicators, model, timestamp. Copies no content.</li>
+<li><strong>Skeleton</strong> — the prompt with identifiers, string literals, numbers, emails,
+URLs and paths replaced by typed placeholders, preserving only structural
+tokens.</li>
+</ul>
+<p><strong>This is the highest-risk component in the design, and it must be treated as
+such.</strong> Redaction is heuristic. A heuristic that fails once has written PII into
+permanent storage under a field name asserting it is safe — worse than never
+claiming safety. Accordingly:</p>
+<ul>
+<li>It gets its own adversarial test suite: emails in unusual formats, secrets in
+code comments, base64 blobs, paths with usernames, JWTs, connection strings,
+names in prose.</li>
+<li>It fails <strong>closed</strong>. Anything the redactor cannot confidently classify is
+dropped, not passed through. An unhelpful skeleton is acceptable; a leaky one
+is not.</li>
+<li>It has a hard length ceiling, so a redaction miss cannot store an entire
+document.</li>
+<li>The skeleton is derived <strong>once, at recommendation time</strong>, from content that is
+still within its 2-hour window — never re-derived later from data that no
+longer exists.</li>
+</ul>
+<p>Prose is the case where redaction is weakest: &quot;summarise this email from
+Dr. Chen about the Aldridge matter&quot; has no syntax to key on. The ceiling and
+fail-closed rule are what keep that bounded.</p>
+<h3 id="evidence-on-the-card">Evidence on the card</h3>
+<p>A recommendation gains linked evidence: up to three example events, each showing
+shape always, and the raw text only while it remains within its window. The UI
+must distinguish &quot;content expired&quot; from &quot;no content captured&quot; — they mean
+different things, and conflating them repeats the absent-versus-zero mistake the
+previous branch existed to fix.</p>
+<h2 id="migration">Migration</h2>
+<p>The 712 OTEL-derived events <strong>stay</strong>. They are 318M tokens of real spend history
+and the ledger must remain continuous across the switch. Once the deployed agent
+carries the merged <code>grain</code> change they are marked <code>aggregate</code>, so per-request
+rules ignore them while aggregate rules continue to use them.</p>
+<p>Cutover order matters: update the agent first (so JSONL capture is verified
+working), then disable the OTEL receiver. A gap is recoverable; double-counting
+is not.</p>
+<h2 id="testing">Testing</h2>
+<ul>
+<li><strong>Adapter</strong>: a fixture session file produces one event per assistant turn with
+correct token counts; re-reading produces no duplicates; a truncated final
+line is skipped; offsets resume correctly across restarts.</li>
+<li><strong>Features are real</strong>: <code>promptChars</code> matches the actual prompt length, not a
+synthetic string. Pin this explicitly — it is the regression that started all
+of this.</li>
+<li><strong>Redaction</strong>: the adversarial suite above, each case asserting the secret does
+not appear in the output. Plus a property test: no substring of length ≥ 8
+from the input appears in the skeleton unless it is a structural token.</li>
+<li><strong>Retention</strong>: content is unreachable after its window; the summary is not.</li>
+<li><strong>Ledger invariance</strong>: switching capture must not change historical totals.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ul>
+<li><strong>Redaction leaking PII into permanent storage.</strong> The one that would matter and
+be hard to detect. Mitigated by fail-closed, a length ceiling, and adversarial
+tests — none of which prove correctness on unseen input.</li>
+<li><strong>Double-counting during cutover</strong> if both paths run. Mitigated by ordering.</li>
+<li><strong>Session files are large and numerous</strong>; a naive implementation could read
+hundreds of megabytes per poll.</li>
+<li><strong>Claude Code&#39;s JSONL format is not a published contract</strong> and may change. The
+adapter should tolerate unknown fields and skip unparseable turns rather than
+failing the whole file.</li>
+</ul>
+<h2 id="follow-ups">Follow-ups</h2>
+<ul>
+<li>Postgres test harness (<code>@electric-sql/pglite</code>) — the previous branch shipped
+repo-layer SQL that has never executed</li>
+<li>Outbox pruning and an indexed timestamp column</li>
+<li>Retiring the unused <code>~/.tokenops/claude-code-usage.jsonl</code> path once the new
+adapter lands</li>
+</ul>
+</main>
+</body>
+</html>
