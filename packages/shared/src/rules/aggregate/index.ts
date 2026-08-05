@@ -80,10 +80,21 @@ export function runAggregateRules(
   const frontier = checkFrontierShare(window, now);
   if (frontier) hits.push(frontier);
 
+  // checkCacheEfficiency can fire once per model, but its dedupeKey
+  // (ruleId + window start, built by the aggregate-rules job) carries no
+  // model — two hits in the same run collide on that key, and whichever
+  // survives the memory repo's has()/Drizzle's onConflictDoNothing depends
+  // on non-deterministic GROUP BY order. Keep only the worst-offending
+  // model (largest token gap) so the choice is deterministic instead.
+  let worstCache: RuleHit | null = null;
   for (const totals of window.byModel) {
     const cache = checkCacheEfficiency(totals);
-    if (cache) hits.push(cache);
+    if (!cache) continue;
+    if (!worstCache || cache.estimatedWastedTokens > worstCache.estimatedWastedTokens) {
+      worstCache = cache;
+    }
   }
+  if (worstCache) hits.push(worstCache);
 
   return hits.filter(isMaterial);
 }

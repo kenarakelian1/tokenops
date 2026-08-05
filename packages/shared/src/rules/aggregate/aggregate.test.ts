@@ -247,6 +247,44 @@ describe("runAggregateRules", () => {
     expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeDefined();
   });
 
+  it("keeps only the worst-offending model's cache_efficiency hit when multiple models qualify", () => {
+    // Regression for the multi-model collision: runAggregateRules used to
+    // emit one cache_efficiency hit per qualifying model, but the job's
+    // dedupeKey (ruleId + window start) carries no model, so two hits in
+    // the same run collided and whichever survived depended on
+    // non-deterministic GROUP BY order. Both models here are well under the
+    // 80% frontier-share threshold combined (105k/210k = 50%), so
+    // frontier_share stays silent and this test isolates the collision.
+    const hits = runAggregateRules(
+      window([
+        {
+          // readRatio 10%, target 50,000 -> gap 40,000 (worse).
+          model: "claude-opus-5[1m]",
+          modelTier: "frontier",
+          inputTokens: 100_000,
+          outputTokens: 5_000,
+          cacheReadTokens: 10_000,
+          cacheCreationTokens: 0,
+          costUsd: 1,
+        },
+        {
+          // readRatio 40%, target 50,000 -> gap 10,000 (better, but still a hit).
+          model: "claude-sonnet-5",
+          modelTier: "mid",
+          inputTokens: 100_000,
+          outputTokens: 5_000,
+          cacheReadTokens: 40_000,
+          cacheCreationTokens: 0,
+          costUsd: 1,
+        },
+      ]),
+    );
+    const cacheHits = hits.filter((h) => h.ruleId === "cache_efficiency");
+    expect(cacheHits).toHaveLength(1);
+    expect(cacheHits[0]!.detail).toMatch(/claude-opus-5\[1m\]/);
+    expect(cacheHits[0]!.estimatedWastedTokens).toBe(40_000);
+  });
+
   it("drops a cache-reuse gap that doesn't clear the materiality floor", () => {
     // readRatio = 5,500 / 12,000 ≈ 0.458 < 0.5, so checkCacheEfficiency
     // itself would produce a hit — but the gap to the target ratio is only
