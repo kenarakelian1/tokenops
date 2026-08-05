@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { runRules } from "./index.js";
+import { UsageEventSchema } from "../schema/event.js";
 import type { UsageEvent } from "../schema/event.js";
 
 function ev(
@@ -141,5 +142,39 @@ describe("runRules", () => {
       }),
     );
     expect(hits).toEqual([]);
+  });
+});
+
+describe("grain gating", () => {
+  const trivialFrontier = {
+    eventId: "e1", timestamp: "2026-08-05T12:00:00.000Z",
+    machineId: "m1", machineName: "desktop", app: "claude-code",
+    provider: "anthropic", model: "claude-opus-5[1m]",
+    inputTokens: 86, outputTokens: 0, costUsd: null, hasContent: false,
+    features: { modelTier: "frontier" as const, messageCount: 1, largePasteScore: 0,
+                promptChars: 0, responseChars: 0, codeFenceCount: 0, fileDumpScore: 0 },
+  };
+
+  it("runs per-request rules on a request event", () => {
+    const hits = runRules({ ...trivialFrontier, grain: "request" } as never);
+    expect(hits.map((h) => h.ruleId)).toContain("frontier_trivial");
+  });
+
+  it("treats a missing grain as request, for pre-existing producers", () => {
+    const hits = runRules(trivialFrontier as never);
+    expect(hits.map((h) => h.ruleId)).toContain("frontier_trivial");
+  });
+
+  it("runs NO per-request rule on an aggregate event with identical numbers", () => {
+    const hits = runRules({ ...trivialFrontier, grain: "aggregate" } as never);
+    expect(hits).toEqual([]);
+  });
+
+  it("accepts an event whose per-request features are absent", () => {
+    const { features, ...rest } = trivialFrontier;
+    const parsed = UsageEventSchema.safeParse({
+      ...rest, grain: "aggregate", features: { modelTier: "frontier" },
+    });
+    expect(parsed.success).toBe(true);
   });
 });

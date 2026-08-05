@@ -15,6 +15,8 @@ export function checkFrontierTrivial(event: UsageEvent): RuleHit | null {
 
   if (features.modelTier !== "frontier") return null;
   if (totalTokens > FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS) return null;
+  if (features.messageCount == null) return null;
+  if (features.largePasteScore == null) return null;
   if (features.messageCount > 2) return null;
   if (features.largePasteScore >= 0.3) return null;
 

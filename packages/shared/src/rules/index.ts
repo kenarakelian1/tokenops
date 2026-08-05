@@ -21,6 +21,11 @@ export {
   checkContextBloat,
 } from "./context-bloat.js";
 
+/** Aggregate events are time-bucketed sums, not requests. */
+export function isAggregate(event: UsageEvent): boolean {
+  return event.grain === "aggregate";
+}
+
 /**
  * Run all efficiency rules against an event (and optional same-session history).
  * Returns concatenated hits from frontier_trivial, full_document_io, and context_bloat.
@@ -29,6 +34,11 @@ export function runRules(
   event: UsageEvent,
   sessionContext?: UsageEvent[],
 ): RuleHit[] {
+  // Enforced HERE, not in each rule: a new per-request rule must opt in to
+  // aggregates deliberately rather than remember to opt out. Every existing
+  // rule reads features that an aggregate cannot have.
+  if (isAggregate(event)) return [];
+
   const hits: RuleHit[] = [];
 
   const frontier = checkFrontierTrivial(event);

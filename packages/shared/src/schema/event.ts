@@ -2,13 +2,16 @@ import { z } from "zod";
 
 export const ModelTierSchema = z.enum(["frontier", "mid", "small", "unknown"]);
 
+export const EventGrainSchema = z.enum(["request", "aggregate"]);
+export type EventGrain = z.infer<typeof EventGrainSchema>;
+
 export const UsageFeaturesSchema = z.object({
-  promptChars: z.number(),
-  responseChars: z.number(),
-  messageCount: z.number(),
-  codeFenceCount: z.number(),
-  largePasteScore: z.number(),
-  fileDumpScore: z.number(),
+  promptChars: z.number().optional(),
+  responseChars: z.number().optional(),
+  messageCount: z.number().optional(),
+  codeFenceCount: z.number().optional(),
+  largePasteScore: z.number().optional(),
+  fileDumpScore: z.number().optional(),
   modelTier: ModelTierSchema,
   newContentRatio: z.number().optional(),
 });
@@ -26,6 +29,11 @@ export const UsageEventSchema = z.object({
   costUsd: z.number().nullable(),
   latencyMs: z.number().optional(),
   sessionId: z.string().optional(),
+  /**
+   * How this event was derived. Absent means "request" — every producer except
+   * the OTEL receiver emits per-request records.
+   */
+  grain: EventGrainSchema.optional(),
   features: UsageFeaturesSchema,
   hasContent: z.boolean(),
   content: z
