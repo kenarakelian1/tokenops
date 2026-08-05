@@ -43,7 +43,13 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const force = args.includes("--force");
 
-const databaseUrl = process.env.DATABASE_URL;
+// Prefer the public URL: on Railway, DATABASE_URL points at
+// postgres.railway.internal, which does not resolve from an operator's laptop —
+// and a laptop is exactly where this script gets run. `railway run --service
+// Postgres` injects DATABASE_PUBLIC_URL, so preferring it makes the documented
+// invocation work as written.
+const databaseUrl =
+  process.env.DATABASE_PUBLIC_URL ?? process.env.DATABASE_URL;
 if (!databaseUrl) {
   console.error(
     "DATABASE_URL is required (set it in the environment or apps/api/.env).",
