@@ -6,7 +6,13 @@
 
 **Architecture:** A new `apps/desktop` Electron package. The main process runs the existing agent in-process by calling `runAgent()` from `@tokenops/agent` — no second runtime, no child process. A new pure module reads local rollups straight out of the agent's SQLite outbox. The renderer is React, receives plain data over a narrow `contextBridge`, and never touches Node, SQLite, or credentials.
 
-**Tech Stack:** Electron, electron-builder (NSIS), React 19 + Vite, better-sqlite3 (already a transitive dep of the agent's outbox), Vitest.
+**Tech Stack:** Electron, electron-builder (NSIS), React 19 + Vite, `node:sqlite`, Vitest.
+
+> **Correction (found during Task 1):** an earlier draft of this plan named
+> `better-sqlite3`. That package is not used anywhere in this repo. `outbox.ts`
+> imports `DatabaseSync` from Node's built-in **`node:sqlite`**, deliberately, to
+> avoid requiring native build tooling. Any new SQLite code must use
+> `node:sqlite` and must not add a dependency.
 
 **Spec:** `docs/superpowers/specs/2026-08-04-desktop-app-design.md`
 
@@ -439,7 +445,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Run:
 
 ```bash
-pnpm --filter @tokenops/desktop add -D electron electron-builder vite @vitejs/plugin-react typescript
+pnpm --filter @tokenops/desktop add -D electron electron-builder vite @vitejs/plugin-react typescript vitest
 pnpm --filter @tokenops/desktop add react react-dom @tokenops/agent@workspace:^
 ```
 
@@ -470,11 +476,46 @@ app.whenReady().then(async () => {
   win = createMainWindow();
 });
 
-app.on("before-quit", async () => {
-  await agent?.stop();
-  agent = null;
+// Electron invokes before-quit listeners SYNCHRONOUSLY and ignores their
+// return value, so an `async` listener's promise is discarded and the process
+// exits while stop() is still running. The only way to hold up a quit is
+// preventDefault(), then quit again once teardown finishes. This matters
+// because stop() closes the OTEL server, then the proxy (both wait for
+// in-flight connections to drain), and only then the SQLite outbox.
+// Three states, not two. `if (quitting) return` is WRONG: a second quit
+// (the tray survives, and nothing visibly happens while stop() drains, so a
+// user clicks it again) re-fires before-quit, takes that early return WITHOUT
+// calling preventDefault(), and Electron proceeds to exit — while the first
+// quit's teardown is still in flight. That silently drops capture data: the
+// exact bug this app exists to fix, one level down.
+type QuitPhase = "running" | "stopping" | "stopped";
+let phase: QuitPhase = "running";
+
+app.on("before-quit", (event) => {
+  if (phase === "stopped") return; // teardown finished; let this quit through
+
+  event.preventDefault(); // hold the quit while stopping, on EVERY call
+  if (phase === "stopping") return; // teardown already running; do not restart it
+
+  phase = "stopping";
+  void (async () => {
+    try {
+      await agent?.stop();
+      console.log("[tokenops] agent stopped cleanly");
+    } finally {
+      agent = null;
+      phase = "stopped";
+      app.quit();
+    }
+  })();
 });
 ```
+
+> **Do not verify this with "is port 8787 free after exit?"** The OS reclaims
+> listening sockets on process termination whether or not `close()` ever ran, so
+> that check reads identically whether shutdown worked or never happened. Prove
+> it by observing that teardown completed — e.g. a log line emitted after
+> `stop()` resolves appears before the process exits.
 
 - [ ] **Step 3: Create the window with hardened defaults**
 

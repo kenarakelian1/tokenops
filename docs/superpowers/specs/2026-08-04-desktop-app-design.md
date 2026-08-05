@@ -214,3 +214,29 @@ No new test runner. Everything stays on Vitest.
 - Code signing for the installer
 - macOS build
 - Cloud data in the window, if the browser hand-off proves insufficient
+- **Cut during implementation (whole-branch review, finding M1):** three
+  items in this design were dropped without being recorded until now. Listed
+  here so the gap is a decision, not a silent gap:
+  - **State-reflecting tray icon.** This spec's Tray section says "the icon
+    reflects state: idle, capturing, error." The shipped tray has one static
+    icon; only the tooltip text changes (`apps/desktop/src/main/tray.ts`'s
+    `TrayStatus`/`setTrayStatus`). Needs idle/capturing/error glyph assets
+    plus wiring from agent lifecycle + proxy/outbox health into tray icon
+    updates, not just tooltip updates.
+  - **"Restart the agent" tray action.** This spec's Window section lists it
+    under Actions. Not implemented — Quit-and-relaunch is the only recovery
+    path. Blocked on the same null-`AgentHandle` lifecycle complexity noted
+    above for "Pause capture": restart needs the tray, window, and IPC layer
+    to all cope with the agent being torn down and rebuilt without quitting
+    the app.
+  - **`queue.lastFlushAt` in `LocalStats`.** This spec's local-statistics
+    sketch includes it (`queue: { pending, lastError, lastFlushAt }`); the
+    shipped type (`apps/agent/src/local-stats.ts`) and window UI only carry
+    `pending`/`lastError`. Needs a last-successful-flush timestamp recorded
+    somewhere flush-side (outbox or a small sidecar) and threaded through to
+    the window.
+  - What *did* ship instead, so a failed agent start is never reported as
+    healthy: the tray tooltip starts as "TokenOps — starting…", flips to
+    "TokenOps — capturing" only once `startDesktopAgent()` resolves, to
+    "TokenOps — agent failed to start" if it rejects, and to "TokenOps —
+    shutting down…" while a quit is draining (`index.ts`).

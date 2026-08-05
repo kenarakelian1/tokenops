@@ -303,6 +303,34 @@ agent lives in main precisely for this reason, and the window is disposable.</li
 <li>Code signing for the installer</li>
 <li>macOS build</li>
 <li>Cloud data in the window, if the browser hand-off proves insufficient</li>
+<li><strong>Cut during implementation (whole-branch review, finding M1):</strong> three
+items in this design were dropped without being recorded until now. Listed
+here so the gap is a decision, not a silent gap:
+<ul>
+<li><strong>State-reflecting tray icon.</strong> This spec's Tray section says &quot;the icon
+reflects state: idle, capturing, error.&quot; The shipped tray has one static
+icon; only the tooltip text changes (<code>apps/desktop/src/main/tray.ts</code>'s
+<code>TrayStatus</code>/<code>setTrayStatus</code>). Needs idle/capturing/error glyph assets
+plus wiring from agent lifecycle + proxy/outbox health into tray icon
+updates, not just tooltip updates.</li>
+<li><strong>&quot;Restart the agent&quot; tray action.</strong> This spec's Window section lists it
+under Actions. Not implemented — Quit-and-relaunch is the only recovery
+path. Blocked on the same null-<code>AgentHandle</code> lifecycle complexity noted
+above for &quot;Pause capture&quot;: restart needs the tray, window, and IPC layer
+to all cope with the agent being torn down and rebuilt without quitting
+the app.</li>
+<li><strong><code>queue.lastFlushAt</code> in <code>LocalStats</code>.</strong> This spec's local-statistics
+sketch includes it (<code>queue: { pending, lastError, lastFlushAt }</code>); the
+shipped type (<code>apps/agent/src/local-stats.ts</code>) and window UI only carry
+<code>pending</code>/<code>lastError</code>. Needs a last-successful-flush timestamp recorded
+somewhere flush-side (outbox or a small sidecar) and threaded through to
+the window.</li>
+</ul>
+What <em>did</em> ship instead, so a failed agent start is never reported as
+healthy: the tray tooltip starts as &quot;TokenOps — starting…&quot;, flips to
+&quot;TokenOps — capturing&quot; only once <code>startDesktopAgent()</code> resolves, to
+&quot;TokenOps — agent failed to start&quot; if it rejects, and to &quot;TokenOps —
+shutting down…&quot; while a quit is draining (<code>index.ts</code>).</li>
 </ul>
 </main>
 </body>

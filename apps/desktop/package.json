@@ -1,0 +1,29 @@
+{
+  "name": "@tokenops/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc && vite build",
+    "test": "vitest run --passWithNoTests",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "@tokenops/agent": "workspace:^",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

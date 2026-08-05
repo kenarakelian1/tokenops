@@ -486,38 +486,87 @@ correct), delete the erroneous second row, and re-authenticate.
   composite. No data is lost — the agent's local outbox keeps the affected
   rows pending and retries until the new container is serving.
 
-## Desktop agent installer (Windows)
+## Desktop agent (Windows)
 
-### Download from GitHub Releases (easiest)
+The desktop app is the primary way to run the agent: a tray app, not a
+console window you have to keep open.
 
-1. Open **[Releases](https://github.com/kenarakelian1/tokenops/releases)**  
-2. Install [Node.js 22+](https://nodejs.org/) if needed  
-3. Download **`TokenOps-Agent-Setup.exe`** (recommended) **or** `tokenops-agent-win.zip`  
-4. Run the Setup wizard (per-user, no admin) — pick AI tools, PAT, startup  
-5. Start Menu → **TokenOps Agent** (or `tokenops agent run`)
+### Download from GitHub Releases (recommended)
 
-Portable: unzip `tokenops-agent-win.zip` → `install.cmd`.
+1. Open **[Releases](https://github.com/kenarakelian1/tokenops/releases)**
+2. Download **`TokenOps-Setup-<version>.exe`**
+3. Run the Setup wizard (per-user, no admin)
+4. Start Menu → **TokenOps**
 
-> The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control warns: **More info → Run anyway**, or right‑click → Properties → **Unblock**.
+**Node.js is not required for this path.** Electron bundles its own Node
+runtime, so nothing needs to be installed first.
+
+> The Setup is not Authenticode-signed yet. If SmartScreen/Smart App Control
+> warns: **More info → Run anyway**, or right‑click → Properties → **Unblock**.
+
+#### Tray behaviour
+
+Closing the window does **not** stop the agent — it hides the window to the
+system tray and capture keeps running underneath, exactly like the console
+window it replaces never had to stay open. Click the tray icon (or **Show
+TokenOps** from its context menu) to bring the window back. **Quit** (from the
+tray menu) is the only action that actually stops capture; it waits for the
+outbox and proxy to shut down cleanly before the process exits.
+
+The window itself shows **local-only** data — today's tokens/estimated cost,
+capture status, and recent activity read straight from the machine's own
+outbox. It does not show cloud history or recommendations; an **Open
+dashboard** button opens the hosted/self-hosted dashboard in your default
+browser for that.
+
+### Portable ZIP (headless / server installs, no GUI)
+
+For machines where you don't want a tray icon — servers, CI runners, remote
+sessions — the original console-style install is still available:
+
+1. Download **`tokenops-agent-win.zip`** from Releases
+2. Unzip, double-click `install.cmd` (or `install.cmd -Quiet` for CI)
+3. Start Menu → **TokenOps Agent** (or `tokenops agent run`)
+
+**This path still requires [Node.js 22+](https://nodejs.org/)** on `PATH` —
+it runs the CLI directly with your system Node, unlike the Setup above.
+
+Uninstall: `uninstall.cmd` (portable) or **Apps & features** (Setup app).
+Quiet portable: `install.cmd -Quiet` / `-NoStartup`.
+
+### Migrating from an older install
+
+If a previous Inno-based install left a `TokenOpsAgent` Task Scheduler entry
+or a `%LOCALAPPDATA%\TokenOps\bin` PATH entry behind, installing the new
+Setup removes both automatically (see `apps/desktop/build/installer.nsh`) so
+the old console-mode agent and the new tray app don't both try to bind
+`127.0.0.1:8787`. `~/.tokenops/config.toml` and `machine.json` are left
+untouched, so the machine keeps its identity, PAT, and history across the
+switch.
 
 ### Build from source
 
 ```bat
 pnpm.cmd install
+pnpm.cmd --filter "@tokenops/desktop..." build
+pnpm.cmd --filter @tokenops/desktop exec electron-builder --win --publish never
+```
+
+Outputs `dist\TokenOps-Setup-<version>.exe`. For the portable ZIP payload
+instead:
+
+```bat
 pnpm.cmd package:agent
 ```
 
-Outputs:
+Outputs `dist\tokenops-agent-win\` — portable folder + `install.cmd`.
 
-- `dist\tokenops-agent-win\` — portable folder + `install.cmd`  
-- `dist\TokenOps-Agent-Setup.exe` — if [Inno Setup 6](https://jrsoftware.org/isinfo.php) is installed  
+Wizard options (portable installer): AI tools (Claude Code, Cursor, Grok/xAI,
+OpenAI), PAT, optional API keys, start at Windows sign-in.
 
-Wizard options: AI tools (Claude Code, Cursor, Grok/xAI, OpenAI), PAT, optional API keys, start at Windows sign-in.
+New release: tag `v*` and push, or run workflow **Release desktop agent**.
 
-Uninstall: **Apps & features** (Setup) or `uninstall.cmd` (portable).  
-Quiet portable: `install.cmd -Quiet` / `-NoStartup`.
-
-New release: tag `v*` and push, or run workflow **Release desktop agent**.## Development
+## Development
 
 ```bash
 pnpm install

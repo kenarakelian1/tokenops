@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./dist/agent-main.js",
+  "types": "./dist/agent-main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/agent-main.d.ts",
+      "import": "./dist/agent-main.js"
+    }
+  },
   "bin": {
     "tokenops": "./dist/cli.js"
   },

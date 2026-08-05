@@ -24,8 +24,19 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build shared
-        run: pnpm --filter @tokenops/shared build
+      - name: Build agent (and its workspace deps)
+        # apps/desktop/src/main/ipc.test.ts imports @tokenops/agent, whose
+        # "exports" map resolves to ./dist/agent-main.js (gitignored).
+        # Building only @tokenops/shared left that dist/ missing on a fresh
+        # checkout: vitest still has to resolve the real module path to
+        # install a vi.mock() over it, so "pnpm test" failed here with
+        # "Failed to resolve entry for package '@tokenops/agent'" even
+        # though the test never runs the real module. The trailing "..."
+        # pulls in @tokenops/agent's own workspace dependency
+        # (@tokenops/shared) too, built in topological order -- same fix as
+        # the installer-windows job below already applies to
+        # @tokenops/desktop.
+        run: pnpm --filter "@tokenops/agent..." build
 
       - name: Test
         run: pnpm test
@@ -45,10 +56,9 @@ jobs:
           pnpm --filter @tokenops/agent build
           pnpm --filter @tokenops/web build
 
-  # The installer only ever breaks at release time otherwise: ISCC is not on the
-  # Linux job, so compile errors in TokenOpsAgent.iss reach users unreviewed.
-  # Runtime errors in its Pascal script (e.g. indexing a page's Edits array past
-  # its Add() count) are caught by the Vitest guard in the `test` job above.
+  # The installer only ever breaks at release time otherwise: this job compiles
+  # the real electron-builder NSIS installer on windows-latest so a build that
+  # silently fails or skips packaging is caught here, not by a user.
   installer-windows:
     runs-on: windows-latest
     steps:
@@ -63,24 +73,34 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: |
-          choco install innosetup -y --no-progress
-          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Package agent + compile Setup.exe
-        run: pnpm package:agent
+      - name: Build desktop app (and its workspace dependencies)
+        # @tokenops/desktop imports @tokenops/agent at runtime (main/index.ts,
+        # ipc.ts, and the renderer's App.tsx all resolve types/values against
+        # apps/agent/dist, which is gitignored). `--filter @tokenops/desktop`
+        # alone only builds that one package -- on a fresh checkout with no
+        # prior dist/ on disk, tsc fails with TS2307 before vite even runs,
+        # and even a bypassed tsc would let electron-builder ship an .exe
+        # missing the agent it dynamically imports. The trailing "..." pulls
+        # in @tokenops/desktop's workspace dependencies (agent, shared) too,
+        # built in topological order.
+        run: pnpm --filter "@tokenops/desktop..." build
 
-      - name: Verify Setup.exe was produced
+      - name: Package with electron-builder
+        run: pnpm --filter @tokenops/desktop exec electron-builder --win --publish never
+
+      - name: Verify installer was produced
         shell: pwsh
         run: |
-          # package:agent skips ISCC silently when it is not found, so assert the
-          # artifact exists rather than trusting a zero exit code.
-          if (-not (Test-Path dist/TokenOps-Agent-Setup.exe)) {
-            throw "TokenOps-Agent-Setup.exe was not produced - Inno Setup compile was skipped or failed"
-          }
-          Get-Item dist/TokenOps-Agent-Setup.exe | Format-List Name, Length
+          # Antivirus real-time scanning can race electron-builder's bulk
+          # win-unpacked.tmp -> win-unpacked rename on Windows (EPERM). That
+          # fails the step loudly (non-zero exit) before this check ever
+          # runs, so there is no silent-green path -- if CI hits it, the fix
+          # is `Add-MpPreference -ExclusionPath` for the workspace/dist dir
+          # on a self-hosted runner (not applicable/needed on GitHub-hosted
+          # windows-latest runners in practice).
+          $exe = Get-ChildItem dist -Filter "TokenOps-Setup-*.exe" -ErrorAction SilentlyContinue
+          if (-not $exe) { throw "electron-builder produced no installer" }
+          Get-Item $exe.FullName | Format-List Name, Length
