@@ -103,4 +103,55 @@ describe("events-repo", () => {
     expect(totals[0]!.cacheReadTokens).toBeNull();
     expect(totals[0]!.cacheCreationTokens).toBeNull();
   });
+
+  it("modelWindowTotals: sums real cache and cost data straight through when every row has it", async () => {
+    // The null-propagation test above only ever pins the null side of the
+    // three CASE expressions (cacheReadTokens, cacheCreationTokens,
+    // costUsd). An implementation that returned null unconditionally for
+    // all three would pass that test too — this asserts the positive case:
+    // when no row in the group is missing a value, the real sum comes
+    // through, not null.
+    const repo = createMemoryEventsRepo();
+    const base = {
+      machineId: "machine-1",
+      machineName: "ci-runner",
+      app: "claude-code",
+      provider: "anthropic",
+      model: "claude-opus-5[1m]",
+      features: { modelTier: "unknown" as const },
+      hasContent: false,
+    };
+    await repo.insertEventIfNew("user-a", {
+      ...base,
+      eventId: "evt-full-1",
+      timestamp: "2026-08-01T00:00:00.000Z",
+      inputTokens: 1_000,
+      outputTokens: 100,
+      costUsd: 0.5,
+      cacheReadTokens: 400,
+      cacheCreationTokens: 50,
+    });
+    await repo.insertEventIfNew("user-a", {
+      ...base,
+      eventId: "evt-full-2",
+      timestamp: "2026-08-02T00:00:00.000Z",
+      inputTokens: 2_000,
+      outputTokens: 200,
+      costUsd: 1.25,
+      cacheReadTokens: 600,
+      cacheCreationTokens: 75,
+    });
+
+    const totals = await repo.modelWindowTotals(
+      "user-a",
+      "2026-07-29T00:00:00.000Z",
+      "2026-08-05T00:00:00.000Z",
+    );
+    expect(totals).toHaveLength(1);
+    expect(totals[0]!.inputTokens).toBe(3_000);
+    expect(totals[0]!.outputTokens).toBe(300);
+    expect(totals[0]!.cacheReadTokens).toBe(1_000);
+    expect(totals[0]!.cacheCreationTokens).toBe(125);
+    expect(totals[0]!.costUsd).toBeCloseTo(1.75, 8);
+  });
 });

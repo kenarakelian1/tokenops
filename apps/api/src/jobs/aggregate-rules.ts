@@ -15,20 +15,26 @@ function truncateToUtcDay(date: Date): Date {
 }
 
 /**
- * Window bounds for a given instant: 7 days ending "now", truncated to the
- * day. Truncating keeps `startIso` (and therefore the dedupe key built from
- * it) stable across every run within the same UTC day, so re-running the
- * job hourly doesn't mint a new window — and a new card — each time.
+ * Window bounds for a given instant: 7 days ending "now". Only the START is
+ * truncated to the UTC day — that's what keeps `startIso` (and therefore
+ * the dedupe key built from it) stable across every run within the same
+ * day, so re-running the job hourly doesn't mint a new window each time.
+ * The END is `now` itself, NOT truncated: truncating the end to the start
+ * of today would exclude every event timestamped today, which is exactly
+ * wrong for a brand-new OTEL-only user whose recommendations come
+ * exclusively from these aggregate rules (runRules gates aggregates away) —
+ * their first day of usage would otherwise show an empty panel for up to
+ * 24 hours.
  */
 export function aggregateWindowBounds(now: Date): {
   startIso: string;
   endIso: string;
 } {
-  const end = truncateToUtcDay(now);
   const start = new Date(
-    end.getTime() - AGGREGATE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    truncateToUtcDay(now).getTime() -
+      AGGREGATE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
   );
-  return { startIso: start.toISOString(), endIso: end.toISOString() };
+  return { startIso: start.toISOString(), endIso: now.toISOString() };
 }
 
 /**
@@ -42,6 +48,15 @@ export function aggregateWindowBounds(now: Date): {
  * in production. Keying on the rule + the window's start date instead means
  * running this job any number of times within the same window produces
  * exactly one open card per rule.
+ *
+ * That alone isn't sufficient, though: the window's start date advances
+ * daily, so left unchecked this still mints one new row per rule per day,
+ * forever — the same pile-of-near-identical-cards problem at 1/day instead
+ * of 25. So after upserting each hit, supersede: delete any other still-open
+ * card for that ruleId whose dedupeKey doesn't match this run's (i.e. every
+ * card from a window that has since rolled off), so at most one live card
+ * per aggregate rule exists at a time. Superseded rows are deleted, not
+ * dismissed — a rolled-off window isn't a user judgement.
  */
 export async function runAggregateRulesForUser(
   repo: EventsRepo,
@@ -54,6 +69,7 @@ export async function runAggregateRulesForUser(
   const hits = runAggregateRules(window, now);
 
   for (const hit of hits) {
+    const dedupeKey = `${hit.ruleId}|${startIso}`;
     await repo.upsertRecommendation({
       userId,
       ruleId: hit.ruleId,
@@ -63,8 +79,9 @@ export async function runAggregateRulesForUser(
       estimatedWastedTokens: hit.estimatedWastedTokens,
       estimatedWastedUsd: hit.estimatedWastedUsd,
       eventIds: hit.eventIds,
-      dedupeKey: `${hit.ruleId}|${startIso}`,
+      dedupeKey,
     });
+    await repo.supersedeOpenRecommendations(userId, hit.ruleId, dedupeKey);
   }
 
   return hits.length;
@@ -79,8 +96,11 @@ async function distinctUserIds(db: Db): Promise<string[]> {
 }
 
 /**
- * Run aggregate rules once for every user. Swallows errors so the interval
- * stays alive, same as runExpireContentOnce.
+ * Run aggregate rules once for every user. Swallows errors per-user so one
+ * bad user (e.g. a transient query failure) doesn't skip every user after
+ * them until the next hour — the try/catch is scoped inside the loop, not
+ * around it. Listing user ids itself can still fail the whole run; that's
+ * caught separately since there's nothing left to iterate over.
  */
 export async function runAggregateRulesOnce(
   db: Db,
@@ -88,18 +108,25 @@ export async function runAggregateRulesOnce(
   log: Pick<Console, "info" | "error"> = console,
   now: Date = new Date(),
 ): Promise<void> {
+  let userIds: string[];
   try {
-    const userIds = await distinctUserIds(db);
-    let hitCount = 0;
-    for (const userId of userIds) {
-      hitCount += await runAggregateRulesForUser(repo, userId, now);
-    }
-    log.info(
-      `aggregate-rules: usersProcessed=${userIds.length} hits=${hitCount}`,
-    );
+    userIds = await distinctUserIds(db);
   } catch (err) {
-    log.error("aggregate-rules job failed", err);
+    log.error("aggregate-rules job failed to list users", err);
+    return;
   }
+
+  let hitCount = 0;
+  for (const userId of userIds) {
+    try {
+      hitCount += await runAggregateRulesForUser(repo, userId, now);
+    } catch (err) {
+      log.error(`aggregate-rules job failed for user ${userId}`, err);
+    }
+  }
+  log.info(
+    `aggregate-rules: usersProcessed=${userIds.length} hits=${hitCount}`,
+  );
 }
 
 /**

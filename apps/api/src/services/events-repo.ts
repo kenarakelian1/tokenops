@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, lte, ne, sql } from "drizzle-orm";
 import {
   getModelTier,
   type EventGrain,
@@ -97,6 +97,22 @@ export type EventsRepo = {
     untilIso: string,
   ): Promise<ModelWindowTotals[]>;
   upsertRecommendation(rec: RecommendationInsert): Promise<void>;
+  /**
+   * Delete every OPEN recommendation for (userId, ruleId) whose dedupeKey
+   * is not `keepDedupeKey` — i.e. every stale card left over from a window
+   * that has since rolled off. Used by the aggregate-rules job so at most
+   * one live card per aggregate rule exists at a time, instead of
+   * accumulating one new row per day forever.
+   *
+   * Delete, not dismiss: a superseded window isn't a user judgement, same
+   * reasoning as clear-stale-recommendations.mjs. Returns the number of
+   * rows removed.
+   */
+  supersedeOpenRecommendations(
+    userId: string,
+    ruleId: string,
+    keepDedupeKey: string,
+  ): Promise<number>;
   listRecommendations(
     userId: string,
     status?: RecommendationStatus,
@@ -348,6 +364,21 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
           status: "open",
         })
         .onConflictDoNothing();
+    },
+
+    async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
+      const deleted = await db
+        .delete(recommendations)
+        .where(
+          and(
+            eq(recommendations.userId, userId),
+            eq(recommendations.ruleId, ruleId),
+            eq(recommendations.status, "open"),
+            ne(recommendations.dedupeKey, keepDedupeKey),
+          ),
+        )
+        .returning({ id: recommendations.id });
+      return deleted.length;
     },
 
     async listRecommendations(userId, status) {
@@ -669,6 +700,22 @@ export function createMemoryEventsRepo(): EventsRepo {
         status: "open",
         createdAt: new Date(),
       });
+    },
+
+    async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
+      let deleted = 0;
+      for (const [key, rec] of recMap.entries()) {
+        if (
+          rec.userId === userId &&
+          rec.ruleId === ruleId &&
+          rec.status === "open" &&
+          rec.dedupeKey !== keepDedupeKey
+        ) {
+          recMap.delete(key);
+          deleted += 1;
+        }
+      }
+      return deleted;
     },
 
     async listRecommendations(userId, status) {
