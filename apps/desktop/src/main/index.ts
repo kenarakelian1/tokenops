@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, type Tray } from "electron";
 import type { AgentHandle } from "@tokenops/agent";
 import { createMainWindow } from "./window.js";
 import { createTray } from "./tray.js";
+import { registerIpc } from "./ipc.js";
 import { getQuitPhase, beginStopping, markStopped } from "./quit-state.js";
 
 let agent: AgentHandle | null = null;
@@ -41,6 +42,13 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    // Registered once, before the window loads the renderer bundle that will
+    // call these -- getAgent() is a closure so it always sees the current
+    // value of the module-level `agent` variable, including the moment it
+    // flips from null to a real handle once startDesktopAgent() resolves
+    // below.
+    registerIpc(() => agent);
+
     // The window is created unconditionally, before the agent start is even
     // awaited. Previously both lived in the same `await` chain, so a
     // `runAgent` rejection (e.g. another tokenops process already holding
