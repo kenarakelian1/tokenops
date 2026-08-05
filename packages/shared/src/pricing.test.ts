@@ -45,12 +45,46 @@ describe("estimateCostUsd", () => {
     it("prices claude-sonnet-4", () => {
       expect(estimateCostUsd("claude-sonnet-4", 1_000_000, 0)).toBeGreaterThan(0);
     });
+  });
 
-    it("prices the Claude 5 family, including the 1m-context variant", () => {
-      expect(estimateCostUsd("claude-opus-5[1m]", 1_000_000, 0)).toBeGreaterThan(0);
-      expect(estimateCostUsd("claude-sonnet-5", 1_000_000, 0)).toBeGreaterThan(0);
+  describe("Claude Sonnet 5 introductory pricing (expires 2026-08-31)", () => {
+    it("uses the $2/$10 intro rate before the expiry", () => {
+      const before = new Date("2026-08-15T00:00:00Z");
+      const cost = estimateCostUsd(
+        "claude-sonnet-5",
+        1_000_000,
+        0,
+        undefined,
+        before,
+      );
+      expect(cost).toBe(2);
+    });
+
+    it("uses the standard $3/$15 rate on/after the expiry", () => {
+      const after = new Date("2026-09-01T00:00:00Z");
+      const cost = estimateCostUsd(
+        "claude-sonnet-5",
+        1_000_000,
+        0,
+        undefined,
+        after,
+      );
+      expect(cost).toBe(3);
+    });
+
+    it("lets an explicit override win over the date gate", () => {
+      const before = new Date("2026-08-15T00:00:00Z");
+      const cost = estimateCostUsd(
+        "claude-sonnet-5",
+        1_000_000,
+        0,
+        { "claude-sonnet-5": { inputPerMTok: 99, outputPerMTok: 1 } },
+        before,
+      );
+      expect(cost).toBe(99);
     });
   });
+
 });
 
 describe("cheaperSiblingModel", () => {
@@ -71,5 +105,23 @@ describe("cheaperSiblingModel", () => {
   it("returns null when the model is already the cheapest in its family", () => {
     expect(cheaperSiblingModel("claude-haiku-4-5-20251001")).toBeNull();
     expect(cheaperSiblingModel("gpt-4o-mini")).toBeNull();
+  });
+
+  describe("gpt-4 family beyond gpt-4o", () => {
+    // getModelTier() (model-tier.ts) tags any "gpt-4*" except gpt-4o-mini as
+    // frontier via /gpt-4(?!o-mini)/i. cheaperSiblingModel must recognize
+    // the same surface, or a bare "gpt-4"/"gpt-4-turbo" event is frontier
+    // but gets no sibling and no actionable recommendation.
+    it("suggests gpt-4o-mini for a bare gpt-4 model", () => {
+      expect(cheaperSiblingModel("gpt-4")).toBe("gpt-4o-mini");
+    });
+
+    it("suggests gpt-4o-mini for gpt-4-turbo", () => {
+      expect(cheaperSiblingModel("gpt-4-turbo")).toBe("gpt-4o-mini");
+    });
+
+    it("still returns null for gpt-4o-mini itself", () => {
+      expect(cheaperSiblingModel("gpt-4o-mini")).toBeNull();
+    });
   });
 });

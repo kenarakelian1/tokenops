@@ -20,6 +20,11 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
   // Prefix-matches "claude-opus-5[1m]" (bracketed context-window suffix)
   // and "claude-haiku-4-5-20251001" (dated snapshot suffix) via resolvePrice().
   "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25 },
+  // Standard/durable rate. Anthropic also offers an introductory rate that
+  // expires 2026-08-31 — see SONNET_5_INTRO_PRICE / isSonnet5IntroActive()
+  // below, which override this row in estimateCostUsd() while the intro is
+  // active. This entry is what applies once the intro expires (and is what
+  // any direct reader of DEFAULT_PRICES sees).
   "claude-sonnet-5": { inputPerMTok: 3, outputPerMTok: 15 },
   "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5 },
   // xAI Grok (approximate public list prices — estimates only)
@@ -33,8 +38,8 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
 function resolvePrice(
   model: string,
   table: Record<string, PriceRow>,
-): PriceRow | null {
-  if (table[model]) return table[model];
+): { key: string; row: PriceRow } | null {
+  if (table[model]) return { key: model, row: table[model] };
 
   // Longest prefix match for versioned / dated model ids
   let best: { key: string; row: PriceRow } | null = null;
@@ -46,27 +51,61 @@ function resolvePrice(
       }
     }
   }
-  return best?.row ?? null;
+  return best;
+}
+
+// Claude Sonnet 5 introductory pricing. Anthropic priced Sonnet 5 at $2/$10
+// per 1M tokens (in/out) through 2026-08-31, reverting to the standard
+// $3/$15 list price ("claude-sonnet-5" in DEFAULT_PRICES, above) after that.
+// isSonnet5IntroActive() takes `now` as a parameter so tests can pin both
+// sides of the cutoff without depending on the real clock. Once the current
+// date is past 2026-08-31 everywhere this runs, this branch is permanently
+// dead — safe to delete SONNET_5_INTRO_PRICE and this function, and rely on
+// the DEFAULT_PRICES "claude-sonnet-5" row alone.
+const SONNET_5_INTRO_PRICE: PriceRow = { inputPerMTok: 2, outputPerMTok: 10 };
+const SONNET_5_INTRO_EXPIRY_UTC = new Date("2026-08-31T00:00:00Z");
+
+function isSonnet5IntroActive(now: Date): boolean {
+  return now.getTime() < SONNET_5_INTRO_EXPIRY_UTC.getTime();
 }
 
 /**
  * Estimate USD cost from token counts and a price table.
  * Returns null when the model cannot be priced.
+ *
+ * @param now Comparison instant for date-gated prices (e.g. the Claude
+ *   Sonnet 5 introductory rate). Defaults to the real current time; tests
+ *   pass a fixed Date to pin behavior on either side of a cutoff.
  */
 export function estimateCostUsd(
   model: string,
   inputTokens: number,
   outputTokens: number,
   priceOverrides?: Record<string, PriceRow>,
+  now: Date = new Date(),
 ): number | null {
   const table = priceOverrides
     ? { ...DEFAULT_PRICES, ...priceOverrides }
     : DEFAULT_PRICES;
-  // Overrides-only custom models: also search overrides alone for exact match
-  // (already merged). Prefix match runs over merged table.
-  const row =
-    (priceOverrides && priceOverrides[model]) ||
-    resolvePrice(model, table);
+
+  let row: PriceRow | null = null;
+  if (priceOverrides && priceOverrides[model]) {
+    // An explicit user override always wins, even over date-gated pricing.
+    row = priceOverrides[model];
+  } else {
+    const resolved = resolvePrice(model, table);
+    if (resolved) {
+      const sonnet5Overridden = Boolean(
+        priceOverrides && priceOverrides["claude-sonnet-5"],
+      );
+      row =
+        resolved.key === "claude-sonnet-5" &&
+        !sonnet5Overridden &&
+        isSonnet5IntroActive(now)
+          ? SONNET_5_INTRO_PRICE
+          : resolved.row;
+    }
+  }
   if (!row) return null;
   return (
     (inputTokens / 1_000_000) * row.inputPerMTok +
@@ -84,15 +123,17 @@ export function estimateCostUsd(
  *
  * Tier ordering (cheapest to most expensive):
  *  - Anthropic: haiku < sonnet < opus
- *  - OpenAI:    gpt-4o-mini < gpt-4o
+ *  - OpenAI:    gpt-4o-mini < {gpt-4o, gpt-4, gpt-4-turbo, gpt-4.x, ...}
  */
 export function cheaperSiblingModel(model: string): string | null {
   const m = model.toLowerCase();
 
-  // OpenAI GPT-4o family. Check "-mini" first: it's a substring of neither
-  // direction, but "gpt-4o-mini" also matches a naive "gpt-4o" check.
+  // OpenAI GPT-4 family. Matches the same surface getModelTier() (in
+  // model-tier.ts) considers frontier via /gpt-4(?!o-mini)/i — i.e. any
+  // "gpt-4*" variant (gpt-4o, gpt-4, gpt-4-turbo, ...) except gpt-4o-mini,
+  // which is already the cheapest tier and has no advice to give.
   if (m.includes("gpt-4o-mini")) return null;
-  if (m.includes("gpt-4o")) return "gpt-4o-mini";
+  if (m.includes("gpt-4")) return "gpt-4o-mini";
 
   // Anthropic Claude family: opus > sonnet > haiku.
   if (m.includes("opus")) return "claude-sonnet-5";
