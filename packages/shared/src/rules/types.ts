@@ -1,7 +1,9 @@
 export type RuleId =
   | "frontier_trivial"
   | "full_document_io"
-  | "context_bloat";
+  | "context_bloat"
+  | "frontier_share"
+  | "cache_efficiency";
 
 export interface RuleHit {
   ruleId: RuleId;
