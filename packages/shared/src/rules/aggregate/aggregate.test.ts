@@ -117,6 +117,48 @@ describe("runAggregateRules", () => {
     expect(hit!.estimatedWastedUsd).toBeCloseTo(48.2, 5);
   });
 
+  it("still fires with a positive saving at a realistic (90%) cache-read ratio with a real costUsd present", () => {
+    // Regression for the silently-vanishing card: dominant.costUsd is real
+    // and already cache-discounted, but before the fix siblingCost was
+    // always a full-price estimate. At Claude Code's typical 85-95%
+    // cache-read ratio, that inflated sibling estimate exceeded the
+    // dominant's real (discounted) cost, clamping estimatedWastedUsd to 0
+    // via Math.max(0, ...) and dropping the only card an OTEL-only user
+    // would otherwise see.
+    const after = new Date("2026-09-01T00:00:00Z"); // Sonnet 5 intro expired: $3/$15
+    const inputTokens = 1_000_000;
+    const cacheReadTokens = 900_000; // 90% — realistic Claude Code ratio
+    const outputTokens = 0;
+
+    // Real (cache-discounted) opus cost: (100k full-rate + 900k*0.1)/1e6 * 5
+    // = (100,000 + 90,000)/1e6 * 5 = 0.95.
+    const realDominantCost = 0.95;
+
+    const hits = runAggregateRules(
+      window([
+        {
+          model: "claude-opus-5[1m]",
+          modelTier: "frontier",
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens: 0,
+          costUsd: realDominantCost,
+        },
+      ]),
+      after,
+    );
+    const hit = hits.find((h) => h.ruleId === "frontier_share");
+    expect(hit).toBeDefined();
+    // Sibling (claude-sonnet-5, standard $3/$15) priced with the SAME 90%
+    // cache-read ratio: (100,000 + 90,000)/1e6 * 3 = 0.57. Saving = 0.95 -
+    // 0.57 = 0.38 — small, but positive, and well above the $0.01
+    // materiality floor. Before the fix, siblingCost priced the full 1M
+    // tokens at $3/1M = 3, which exceeds 0.95 and clamps the saving to 0.
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(0.38, 5);
+    expect(hit!.estimatedWastedUsd).toBeGreaterThan(0);
+  });
+
   describe("Sonnet 5 introductory pricing threaded through via `now`", () => {
     const singleOpusWindow = window([
       {
