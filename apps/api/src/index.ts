@@ -3,7 +3,9 @@ import { createApp } from "./app.js";
 import { createDb } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import { loadEnv } from "./env.js";
+import { startAggregateRulesJob } from "./jobs/aggregate-rules.js";
 import { startExpireContentJob } from "./jobs/expire-content.js";
+import { createDrizzleEventsRepo } from "./services/events-repo.js";
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -16,6 +18,7 @@ async function main(): Promise<void> {
   });
 
   startExpireContentJob(db);
+  startAggregateRulesJob(db, createDrizzleEventsRepo(db));
 
   serve(
     {

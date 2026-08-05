@@ -40,7 +40,10 @@ function frontierTrivial(eventId: string): UsageEvent {
     model: "gpt-4o",
     inputTokens: 20,
     outputTokens: 10,
-    costUsd: 0.01,
+    // Above MIN_WASTED_USD once the cheaper-sibling (gpt-4o-mini) saving is
+    // netted out ($0.05 − $0.000009 ≈ $0.049991), so the finding clears the
+    // materiality floor introduced in Task 4.
+    costUsd: 0.05,
     features: {
       promptChars: 40,
       responseChars: 20,

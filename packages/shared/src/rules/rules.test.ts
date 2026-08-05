@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { runRules } from "./index.js";
+import { UsageEventSchema } from "../schema/event.js";
 import type { UsageEvent } from "../schema/event.js";
 
 function ev(
@@ -29,6 +30,9 @@ describe("runRules", () => {
         model: "gpt-4o",
         inputTokens: 20,
         outputTokens: 10,
+        // Above MIN_WASTED_USD once the cheaper-sibling saving is netted out,
+        // so the finding clears the materiality floor.
+        costUsd: 0.05,
         features: {
           promptChars: 40,
           responseChars: 20,
@@ -50,6 +54,9 @@ describe("runRules", () => {
         model: "gpt-4o-mini",
         inputTokens: 12_000,
         outputTokens: 100,
+        // Above MIN_WASTED_USD once the wasted-token share of cost is taken,
+        // so the finding clears the materiality floor.
+        costUsd: 0.05,
         features: {
           promptChars: 40_000,
           responseChars: 200,
@@ -107,6 +114,9 @@ describe("runRules", () => {
       inputTokens: 3000,
       outputTokens: 50,
       sessionId: "S",
+      // Above MIN_WASTED_USD once the wasted-token share of cost is taken,
+      // so the finding clears the materiality floor.
+      costUsd: 0.05,
       features: {
         promptChars: 3000,
         responseChars: 50,
@@ -141,5 +151,41 @@ describe("runRules", () => {
       }),
     );
     expect(hits).toEqual([]);
+  });
+});
+
+describe("grain gating", () => {
+  const trivialFrontier = {
+    eventId: "e1", timestamp: "2026-08-05T12:00:00.000Z",
+    machineId: "m1", machineName: "desktop", app: "claude-code",
+    provider: "anthropic", model: "claude-opus-5[1m]",
+    // costUsd is set (not null) and well above MIN_WASTED_USD so the
+    // resulting finding clears the materiality floor imposed by runRules.
+    inputTokens: 86, outputTokens: 0, costUsd: 5, hasContent: false,
+    features: { modelTier: "frontier" as const, messageCount: 1, largePasteScore: 0,
+                promptChars: 0, responseChars: 0, codeFenceCount: 0, fileDumpScore: 0 },
+  };
+
+  it("runs per-request rules on a request event", () => {
+    const hits = runRules({ ...trivialFrontier, grain: "request" } as never);
+    expect(hits.map((h) => h.ruleId)).toContain("frontier_trivial");
+  });
+
+  it("treats a missing grain as request, for pre-existing producers", () => {
+    const hits = runRules(trivialFrontier as never);
+    expect(hits.map((h) => h.ruleId)).toContain("frontier_trivial");
+  });
+
+  it("runs NO per-request rule on an aggregate event with identical numbers", () => {
+    const hits = runRules({ ...trivialFrontier, grain: "aggregate" } as never);
+    expect(hits).toEqual([]);
+  });
+
+  it("accepts an event whose per-request features are absent", () => {
+    const { features, ...rest } = trivialFrontier;
+    const parsed = UsageEventSchema.safeParse({
+      ...rest, grain: "aggregate", features: { modelTier: "frontier" },
+    });
+    expect(parsed.success).toBe(true);
   });
 });

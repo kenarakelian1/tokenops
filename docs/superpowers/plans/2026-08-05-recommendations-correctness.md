@@ -440,7 +440,7 @@ window per model, not per event.
   export type ModelWindowTotals = {
     model: string; modelTier: ModelTier;
     inputTokens: number; outputTokens: number;
-    cacheReadTokens: number; cacheCreationTokens: number;
+    cacheReadTokens: number | null; cacheCreationTokens: number | null;  // null = never recorded
     costUsd: number | null;
   };
   export type AggregateWindow = { start: string; end: string; byModel: ModelWindowTotals[] };

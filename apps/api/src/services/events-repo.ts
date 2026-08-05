@@ -1,5 +1,11 @@
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import type { UsageEvent, UsageFeatures } from "@tokenops/shared";
+import { and, desc, eq, gte, lt, lte, ne, sql } from "drizzle-orm";
+import {
+  getModelTier,
+  type EventGrain,
+  type ModelWindowTotals,
+  type UsageEvent,
+  type UsageFeatures,
+} from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import {
   dailyAggregates,
@@ -73,7 +79,40 @@ export type EventsRepo = {
     userId: string,
     filters: AggregateListFilters,
   ): Promise<DailyAggregate[]>;
+  /**
+   * Per-model totals over [sinceIso, untilIso) for the aggregate rules
+   * (see @tokenops/shared runAggregateRules). inputTokens/outputTokens are
+   * plain sums (the columns are NOT NULL). cacheReadTokens,
+   * cacheCreationTokens, and costUsd are nullable columns where NULL means
+   * "never recorded" (pre cache-tracking / pre grain migration) and 0 means
+   * "recorded as genuinely zero" — collapsing that distinction with
+   * COALESCE(...,0) would silently understate a window that straddles the
+   * migration and produce a confidently wrong finding. So each of those
+   * three totals is `null` whenever ANY row contributing to the model's
+   * group has a null value in that column, and otherwise is the real sum.
+   */
+  modelWindowTotals(
+    userId: string,
+    sinceIso: string,
+    untilIso: string,
+  ): Promise<ModelWindowTotals[]>;
   upsertRecommendation(rec: RecommendationInsert): Promise<void>;
+  /**
+   * Delete every OPEN recommendation for (userId, ruleId) whose dedupeKey
+   * is not `keepDedupeKey` — i.e. every stale card left over from a window
+   * that has since rolled off. Used by the aggregate-rules job so at most
+   * one live card per aggregate rule exists at a time, instead of
+   * accumulating one new row per day forever.
+   *
+   * Delete, not dismiss: a superseded window isn't a user judgement, same
+   * reasoning as clear-stale-recommendations.mjs. Returns the number of
+   * rows removed.
+   */
+  supersedeOpenRecommendations(
+    userId: string,
+    ruleId: string,
+    keepDedupeKey: string,
+  ): Promise<number>;
   listRecommendations(
     userId: string,
     status?: RecommendationStatus,
@@ -104,8 +143,11 @@ function rowToUsageEvent(row: UsageEventRow): UsageEvent {
     costUsd: row.costUsd != null ? Number(row.costUsd) : null,
     latencyMs: row.latencyMs ?? undefined,
     sessionId: row.sessionId ?? undefined,
+    grain: (row.grain as EventGrain | null) ?? undefined,
     features: row.features as UsageFeatures,
     hasContent: row.hasContent,
+    cacheReadTokens: row.cacheReadTokens ?? undefined,
+    cacheCreationTokens: row.cacheCreationTokens ?? undefined,
   };
 }
 
@@ -131,8 +173,11 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
             event.costUsd != null ? String(event.costUsd) : null,
           latencyMs: event.latencyMs ?? null,
           sessionId: event.sessionId ?? null,
+          grain: event.grain ?? null,
           features: event.features,
           hasContent: event.hasContent && event.content != null,
+          cacheReadTokens: event.cacheReadTokens ?? null,
+          cacheCreationTokens: event.cacheCreationTokens ?? null,
         })
         .onConflictDoNothing({ target: usageEvents.eventId })
         .returning({ eventId: usageEvents.eventId });
@@ -263,6 +308,43 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .orderBy(desc(dailyAggregates.day));
     },
 
+    async modelWindowTotals(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+      const rows = await db
+        .select({
+          model: usageEvents.model,
+          inputTokens: sql<string>`SUM(${usageEvents.inputTokens})`,
+          outputTokens: sql<string>`SUM(${usageEvents.outputTokens})`,
+          // NULL whenever any row in the group has a NULL cache/cost value —
+          // see the doc comment on EventsRepo.modelWindowTotals for why a
+          // COALESCE-to-0 sum is wrong here.
+          cacheReadTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheReadTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheReadTokens}) END`,
+          cacheCreationTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheCreationTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheCreationTokens}) END`,
+          costUsd: sql<string | null>`CASE WHEN bool_or(${usageEvents.costUsd} IS NULL) THEN NULL ELSE SUM(${usageEvents.costUsd}) END`,
+        })
+        .from(usageEvents)
+        .where(
+          and(
+            eq(usageEvents.userId, userId),
+            gte(usageEvents.timestamp, since),
+            lt(usageEvents.timestamp, until),
+          ),
+        )
+        .groupBy(usageEvents.model);
+
+      return rows.map((r) => ({
+        model: r.model,
+        modelTier: getModelTier(r.model),
+        inputTokens: Number(r.inputTokens),
+        outputTokens: Number(r.outputTokens),
+        cacheReadTokens: r.cacheReadTokens == null ? null : Number(r.cacheReadTokens),
+        cacheCreationTokens:
+          r.cacheCreationTokens == null ? null : Number(r.cacheCreationTokens),
+        costUsd: r.costUsd == null ? null : Number(r.costUsd),
+      }));
+    },
+
     async upsertRecommendation(rec) {
       await db
         .insert(recommendations)
@@ -282,6 +364,21 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
           status: "open",
         })
         .onConflictDoNothing();
+    },
+
+    async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
+      const deleted = await db
+        .delete(recommendations)
+        .where(
+          and(
+            eq(recommendations.userId, userId),
+            eq(recommendations.ruleId, ruleId),
+            eq(recommendations.status, "open"),
+            ne(recommendations.dedupeKey, keepDedupeKey),
+          ),
+        )
+        .returning({ id: recommendations.id });
+      return deleted.length;
     },
 
     async listRecommendations(userId, status) {
@@ -418,8 +515,11 @@ export function createMemoryEventsRepo(): EventsRepo {
         costUsd: event.costUsd != null ? String(event.costUsd) : null,
         latencyMs: event.latencyMs ?? null,
         sessionId: event.sessionId ?? null,
+        grain: event.grain ?? null,
         features: event.features,
         hasContent: Boolean(event.hasContent && event.content),
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
       };
       eventMap.set(event.eventId, row);
       return "accepted";
@@ -517,6 +617,67 @@ export function createMemoryEventsRepo(): EventsRepo {
         .sort((a, b) => b.day.localeCompare(a.day));
     },
 
+    async modelWindowTotals(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+
+      type Acc = {
+        model: string;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadSum: number;
+        cacheReadAnyNull: boolean;
+        cacheCreationSum: number;
+        cacheCreationAnyNull: boolean;
+        costSum: number;
+        costAnyNull: boolean;
+      };
+      const byModel = new Map<string, Acc>();
+
+      for (const e of eventMap.values()) {
+        if (e.userId !== userId) continue;
+        if (e.timestamp < since || e.timestamp >= until) continue;
+
+        let acc = byModel.get(e.model);
+        if (!acc) {
+          acc = {
+            model: e.model,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadSum: 0,
+            cacheReadAnyNull: false,
+            cacheCreationSum: 0,
+            cacheCreationAnyNull: false,
+            costSum: 0,
+            costAnyNull: false,
+          };
+          byModel.set(e.model, acc);
+        }
+
+        acc.inputTokens += e.inputTokens;
+        acc.outputTokens += e.outputTokens;
+
+        if (e.cacheReadTokens == null) acc.cacheReadAnyNull = true;
+        else acc.cacheReadSum += e.cacheReadTokens;
+
+        if (e.cacheCreationTokens == null) acc.cacheCreationAnyNull = true;
+        else acc.cacheCreationSum += e.cacheCreationTokens;
+
+        if (e.costUsd == null) acc.costAnyNull = true;
+        else acc.costSum += Number(e.costUsd);
+      }
+
+      return [...byModel.values()].map((acc) => ({
+        model: acc.model,
+        modelTier: getModelTier(acc.model),
+        inputTokens: acc.inputTokens,
+        outputTokens: acc.outputTokens,
+        cacheReadTokens: acc.cacheReadAnyNull ? null : acc.cacheReadSum,
+        cacheCreationTokens: acc.cacheCreationAnyNull ? null : acc.cacheCreationSum,
+        costUsd: acc.costAnyNull ? null : acc.costSum,
+      }));
+    },
+
     async upsertRecommendation(rec) {
       const key = recDedupeKey(rec.userId, rec.ruleId, rec.dedupeKey);
       if (recMap.has(key)) return;
@@ -539,6 +700,22 @@ export function createMemoryEventsRepo(): EventsRepo {
         status: "open",
         createdAt: new Date(),
       });
+    },
+
+    async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
+      let deleted = 0;
+      for (const [key, rec] of recMap.entries()) {
+        if (
+          rec.userId === userId &&
+          rec.ruleId === ruleId &&
+          rec.status === "open" &&
+          rec.dedupeKey !== keepDedupeKey
+        ) {
+          recMap.delete(key);
+          deleted += 1;
+        }
+      }
+      return deleted;
     },
 
     async listRecommendations(userId, status) {

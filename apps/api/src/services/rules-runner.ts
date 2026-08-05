@@ -18,8 +18,11 @@ export function enrichEventForRules(
 ): UsageEvent {
   if (event.features.newContentRatio !== undefined) return event;
   if (sessionContext.length === 0) return event;
+  if (event.features.promptChars == null) return event;
 
   const prior = sessionContext[sessionContext.length - 1]!;
+  if (prior.features.promptChars == null) return event;
+
   const newContentRatio = deriveNewContentRatio(
     event.features.promptChars,
     prior.features.promptChars,

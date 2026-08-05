@@ -4,6 +4,7 @@ export { buildEventId } from "./event-id.js";
 export {
   DEFAULT_PRICES,
   estimateCostUsd,
+  cheaperSiblingModel,
   type PriceRow,
 } from "./pricing.js";
 export { getModelTier, type ModelTier } from "./model-tier.js";
@@ -12,10 +13,12 @@ export {
   UsageFeaturesSchema,
   IngestBatchSchema,
   ModelTierSchema,
+  EventGrainSchema,
   parseUsageEvent,
   type UsageEvent,
   type UsageFeatures,
   type IngestBatch,
+  type EventGrain,
 } from "./schema/event.js";
 export {
   extractFeatures,
@@ -34,3 +37,11 @@ export {
   type RuleHit,
   type RuleId,
 } from "./rules/index.js";
+export {
+  runAggregateRules,
+  FRONTIER_SHARE_THRESHOLD,
+  CACHE_EFFICIENCY_MIN_READ_RATIO,
+  AGGREGATE_RULE_IDS,
+  type ModelWindowTotals,
+  type AggregateWindow,
+} from "./rules/aggregate/index.js";

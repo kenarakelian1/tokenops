@@ -15,6 +15,8 @@ export const FULL_DOC_MIN_DUMP_SCORE = 0.55;
 export function checkFullDocumentIo(event: UsageEvent): RuleHit | null {
   const { features, inputTokens, outputTokens } = event;
 
+  if (features.promptChars == null) return null;
+  if (features.fileDumpScore == null) return null;
   if (features.promptChars < FULL_DOC_MIN_PROMPT_CHARS) return null;
   if (features.fileDumpScore < FULL_DOC_MIN_DUMP_SCORE) return null;
 

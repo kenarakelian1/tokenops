@@ -74,6 +74,19 @@ export const usageEvents = pgTable("usage_events", {
   sessionId: text("session_id"),
   features: jsonb("features").notNull(),
   hasContent: boolean("has_content").notNull().default(false),
+  /**
+   * How this event was derived. Null means "request" — every producer except
+   * the OTEL receiver emits per-request records. Nullable (not a false
+   * default) because existing rows genuinely have no recorded value.
+   */
+  grain: text("grain"),
+  /**
+   * Cache tokens, reported separately. Still counted inside inputTokens.
+   * Nullable rather than defaulting to 0 — "no breakdown recorded" must stay
+   * distinguishable from "no cache used".
+   */
+  cacheReadTokens: integer("cache_read_tokens"),
+  cacheCreationTokens: integer("cache_creation_tokens"),
 });
 
 export const eventContent = pgTable("event_content", {

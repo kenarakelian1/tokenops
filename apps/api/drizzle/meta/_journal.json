@@ -22,6 +22,13 @@
       "when": 1785674492708,
       "tag": "0002_clever_the_hood",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785937081237,
+      "tag": "0003_wet_madrox",
+      "breakpoints": true
     }
   ]
 }

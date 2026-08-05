@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import {
   buildEventId,
   estimateCostUsd,
-  extractFeatures,
+  getModelTier,
   type UsageEvent,
 } from "@tokenops/shared";
 
@@ -223,10 +223,22 @@ export class ClaudeOtelState {
         cacheRead: 0,
         cacheCreation: 0,
       };
-      // Fold cache into input for ledger totals (matches spend reality roughly)
-      const inputTokens = Math.round(
-        bucket.input + bucket.cacheRead + bucket.cacheCreation,
-      );
+      // Cache is still folded into input for ledger totals (matches spend
+      // reality) — this must never change, or every historical spend/token
+      // total shifts silently. cacheReadTokens/cacheCreationTokens below are
+      // additional detail, not a redefinition of inputTokens.
+      //
+      // Round each component first, then sum the rounded components for
+      // inputTokens (rather than rounding the raw-float sum independently).
+      // Otherwise fractional counters — unreachable today since Claude Code's
+      // token.usage deltas are always integers, but reachable in principle
+      // via the asDouble decoding branch — could round cacheRead+cacheCreation
+      // up past a separately-rounded inputTokens, letting a downstream
+      // cacheReadTokens / inputTokens ratio exceed 1.
+      const roundedInput = Math.round(bucket.input);
+      const cacheReadTokens = Math.round(bucket.cacheRead);
+      const cacheCreationTokens = Math.round(bucket.cacheCreation);
+      const inputTokens = roundedInput + cacheReadTokens + cacheCreationTokens;
       const outputTokens = Math.round(bucket.output);
       if (inputTokens <= 0 && outputTokens <= 0 && !costDeltas.has(model)) {
         continue;
@@ -241,20 +253,22 @@ export class ClaudeOtelState {
         .digest("hex")
         .slice(0, 32);
 
-      const features = extractFeatures({
-        model,
-        requestMessages: [
-          {
-            role: "user",
-            content: `[otel] claude_code.token.usage model=${model}`,
-          },
-        ],
-        responseText: "",
-      });
+      // No requestMessages: OTEL gives token counters, not prompts. Deriving
+      // promptChars/messageCount/largePasteScore from a placeholder string is
+      // what made frontier_trivial fire on export windows. modelTier is real —
+      // it comes from the model name.
+      const features = { modelTier: getModelTier(model) };
 
       let costUsd = costDeltas.get(model) ?? null;
       if (costUsd == null) {
-        costUsd = estimateCostUsd(model, inputTokens, outputTokens);
+        // cacheReadTokens/cacheCreationTokens are already folded into
+        // inputTokens above (ledger totals); pass them again here so
+        // estimateCostUsd can price them at their own cache multipliers
+        // instead of the full input rate.
+        costUsd = estimateCostUsd(model, inputTokens, outputTokens, undefined, undefined, {
+          cacheReadTokens,
+          cacheCreationTokens,
+        });
       }
 
       const event: UsageEvent = {
@@ -272,7 +286,10 @@ export class ClaudeOtelState {
         model,
         inputTokens,
         outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
         costUsd,
+        grain: "aggregate",
         features,
         hasContent: false,
       };
