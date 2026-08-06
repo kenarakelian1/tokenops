@@ -1,7 +1,9 @@
 import type { ModelTier } from "../../model-tier.js";
+import type { RuleContext } from "../contract.js";
+import { priceFinding } from "../index.js";
 import { isMaterial } from "../materiality.js";
 import type { RuleHit } from "../types.js";
-import { checkCacheEfficiency } from "./cache-efficiency.js";
+import { cacheEfficiencyRule } from "./cache-efficiency.js";
 import { checkFrontierShare } from "./frontier-share.js";
 
 export {
@@ -10,7 +12,7 @@ export {
 } from "./frontier-share.js";
 export {
   CACHE_EFFICIENCY_MIN_READ_RATIO,
-  checkCacheEfficiency,
+  cacheEfficiencyRule,
 } from "./cache-efficiency.js";
 
 /**
@@ -36,7 +38,7 @@ export const AGGREGATE_RULE_IDS = ["frontier_share", "cache_efficiency"] as cons
  * `undefined`/`null` as `0` collapses "don't know" into "we checked and it's
  * zero", which produces a confidently wrong finding either way (silence
  * when a real zero-cache-usage card is owed, or a false low-reuse card on a
- * window straddling the migration). See checkCacheEfficiency for how this
+ * window straddling the migration). See cacheEfficiencyRule for how this
  * module acts on the distinction.
  */
 export type ModelWindowTotals = {
@@ -71,6 +73,20 @@ export type AggregateWindow = {
  *   Defaults to the real current time; tests pass a fixed Date to pin
  *   behavior on either side of a cutoff.
  */
+/**
+ * Is `candidate` a worse (more wasteful) cache_efficiency hit than
+ * `current`? Ranks by highest estimatedWastedUsd — the same currency every
+ * other rule ranks on — falling back to estimatedWastedTokens only when
+ * BOTH sides are unpriced (USD null on both). A null USD never beats a real
+ * one: a model this pricer can't price shouldn't outrank one it can.
+ */
+function isWorseCacheHit(candidate: RuleHit, current: RuleHit): boolean {
+  if (candidate.estimatedWastedUsd == null && current.estimatedWastedUsd == null) {
+    return candidate.estimatedWastedTokens > current.estimatedWastedTokens;
+  }
+  return (candidate.estimatedWastedUsd ?? -Infinity) > (current.estimatedWastedUsd ?? -Infinity);
+}
+
 export function runAggregateRules(
   window: AggregateWindow,
   now: Date = new Date(),
@@ -80,18 +96,27 @@ export function runAggregateRules(
   const frontier = checkFrontierShare(window, now);
   if (frontier) hits.push(frontier);
 
-  // checkCacheEfficiency can fire once per model, but its dedupeKey
-  // (ruleId + window start, built by the aggregate-rules job) carries no
-  // model — two hits in the same run collide on that key, and whichever
-  // survives the memory repo's has()/Drizzle's onConflictDoNothing depends
-  // on non-deterministic GROUP BY order. Keep only the worst-offending
-  // model (largest token gap) so the choice is deterministic instead.
+  // cacheEfficiencyRule can fire once per model, but its dedupeKey (ruleId +
+  // window start, built by the aggregate-rules job) carries no model — two
+  // hits in the same run collide on that key, and whichever survives the
+  // memory repo's has()/Drizzle's onConflictDoNothing depends on
+  // non-deterministic GROUP BY order. Keep only the worst-offending model
+  // (see isWorseCacheHit) so the choice is deterministic instead.
+  const ctx: RuleContext = { now };
   let worstCache: RuleHit | null = null;
   for (const totals of window.byModel) {
-    const cache = checkCacheEfficiency(totals);
-    if (!cache) continue;
-    if (!worstCache || cache.estimatedWastedTokens > worstCache.estimatedWastedTokens) {
-      worstCache = cache;
+    const finding = cacheEfficiencyRule.evaluate(totals, ctx);
+    if (!finding) continue;
+    const actual = {
+      model: totals.model,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      cacheReadTokens: totals.cacheReadTokens,
+      cacheCreationTokens: totals.cacheCreationTokens,
+    };
+    const hit = priceFinding(cacheEfficiencyRule, finding, actual, ctx);
+    if (!worstCache || isWorseCacheHit(hit, worstCache)) {
+      worstCache = hit;
     }
   }
   if (worstCache) hits.push(worstCache);

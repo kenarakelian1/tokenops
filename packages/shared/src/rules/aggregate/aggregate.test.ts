@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { runAggregateRules, checkFrontierShare } from "./index.js";
+import {
+  runAggregateRules,
+  checkFrontierShare,
+  cacheEfficiencyRule,
+  CACHE_EFFICIENCY_MIN_READ_RATIO,
+} from "./index.js";
 import type { AggregateWindow, ModelWindowTotals } from "./index.js";
+import { MIN_WASTED_USD } from "../materiality.js";
 
 const window = (byModel: ModelWindowTotals[]): AggregateWindow => ({
   start: "2026-07-29T00:00:00.000Z",
@@ -305,5 +311,64 @@ describe("runAggregateRules", () => {
       ]),
     );
     expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeUndefined();
+  });
+});
+
+const NOW = new Date("2026-09-15T00:00:00Z");
+
+describe("cache_efficiency counterfactual", () => {
+  const totals = (over: Partial<ModelWindowTotals> = {}): ModelWindowTotals => ({
+    model: "claude-opus-5",
+    modelTier: "frontier",
+    inputTokens: 10_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: null,
+    ...over,
+  });
+
+  it("targets the minimum healthy read ratio", () => {
+    const finding = cacheEfficiencyRule.evaluate(totals(), { now: NOW });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual.cacheReadTokens).toBe(
+      10_000_000 * CACHE_EFFICIENCY_MIN_READ_RATIO,
+    );
+    expect(finding!.counterfactual.model).toBe("claude-opus-5");
+  });
+
+  it("now quotes USD instead of null", () => {
+    // opus-5 in = $5/MTok. Actual: 10M at full rate = $50.
+    // Counterfactual: 5M full ($25) + 5M at 0.1x ($2.50) = $27.50. Saves $22.50.
+    const hits = runAggregateRules(window([totals()]), NOW);
+    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(22.5, 4);
+  });
+
+  it("stays silent when no cache breakdown was ever recorded", () => {
+    const finding = cacheEfficiencyRule.evaluate(
+      totals({ cacheReadTokens: null }),
+      { now: NOW },
+    );
+    expect(finding).toBeNull();
+  });
+
+  it("drops a finding worth under a cent, which the token floor used to pass", () => {
+    // haiku in = $1/MTok. 20k input, 0 reads -> counterfactual moves 10k to
+    // 0.1x: saves 10k * $1/1M * 0.9 = $0.009, under MIN_WASTED_USD.
+    // The old token fallback (MIN_WASTED_TOKENS = 5_000) passed this at 10k.
+    const hits = runAggregateRules(
+      window([
+        totals({
+          model: "claude-haiku-4-5",
+          modelTier: "small",
+          inputTokens: 20_000,
+        }),
+      ]),
+      NOW,
+    );
+    expect(hits.some((h) => h.ruleId === "cache_efficiency")).toBe(false);
+    expect(MIN_WASTED_USD).toBe(0.01); // pins the floor this depends on
   });
 });
