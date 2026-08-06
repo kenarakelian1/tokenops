@@ -132,7 +132,18 @@ export type EventsRepo = {
   listMachines(userId: string): Promise<Machine[]>;
 };
 
-function rowToUsageEvent(row: UsageEventRow): UsageEvent {
+/**
+ * Map a stored row to the shape rules consume. Carries `grain` through
+ * unchanged — `runRules`' aggregate gate (see @tokenops/shared `isAggregate`)
+ * keys off it, and dropping it here would let request-grain rules evaluate
+ * aggregate rows (whose features are fabricated placeholders) and manufacture
+ * findings from garbage. Also carries `sessionId`, `cacheReadTokens`,
+ * `cacheCreationTokens`, and `features` through unchanged for the same reason
+ * — each feeds a rule or the pricer directly. Exported so callers that need
+ * the same mapping (e.g. the recommendations backtest route) reuse this
+ * instead of writing a second one.
+ */
+export function rowToUsageEvent(row: UsageEventRow): UsageEvent {
   return {
     eventId: row.eventId,
     timestamp: row.timestamp.toISOString(),
