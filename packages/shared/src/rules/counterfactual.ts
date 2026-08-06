@@ -51,6 +51,58 @@ export type PricedSavings = {
 };
 
 /**
+ * Trims a cache-token breakdown to fit a shrunken counterfactual
+ * `inputTokens`, for rules (full_document_io, context_bloat) whose advice is
+ * "send less input" rather than "switch model".
+ *
+ * Trimming removes UNCACHED content first — that is what the advice those
+ * rules give actually means: a cached system prompt stays cached when you
+ * send an excerpt instead of a whole document, or hold context flat instead
+ * of letting it grow. Only when the removal exceeds the uncached (full-rate)
+ * portion does cached content shrink too, and then cacheCreationTokens
+ * (billed at 1.25x the base input rate) is shed before cacheReadTokens
+ * (billed at 0.1x) — the expensive part goes first.
+ *
+ * A component that was `null` on the actual side (no breakdown recorded)
+ * stays `null` and contributes 0 to the trim — this never materializes a
+ * number where the event recorded none, preserving the null-vs-zero
+ * distinction documented on Counterfactual.
+ *
+ * Post-condition: (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0) on the
+ * returned breakdown is always <= counterfactualInputTokens.
+ */
+export function trimCacheTokens(
+  actual: Pick<
+    Actual,
+    "inputTokens" | "cacheReadTokens" | "cacheCreationTokens"
+  >,
+  counterfactualInputTokens: number,
+): { cacheReadTokens: number | null; cacheCreationTokens: number | null } {
+  const read = actual.cacheReadTokens ?? 0;
+  const creation = actual.cacheCreationTokens ?? 0;
+  const cached = read + creation;
+  const fullRate = Math.max(0, actual.inputTokens - cached);
+  const removed = actual.inputTokens - counterfactualInputTokens;
+  const fromCached = Math.max(0, removed - fullRate);
+
+  if (fromCached === 0) {
+    return {
+      cacheReadTokens: actual.cacheReadTokens,
+      cacheCreationTokens: actual.cacheCreationTokens,
+    };
+  }
+
+  const creationTrim = Math.min(creation, fromCached);
+  const readTrim = Math.min(read, fromCached - creationTrim);
+
+  return {
+    cacheCreationTokens:
+      actual.cacheCreationTokens === null ? null : creation - creationTrim,
+    cacheReadTokens: actual.cacheReadTokens === null ? null : read - readTrim,
+  };
+}
+
+/**
  * Savings = cost(actual) − cost(counterfactual), with BOTH sides estimated
  * through the same price table at the same instant.
  *

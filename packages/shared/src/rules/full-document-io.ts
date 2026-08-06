@@ -1,5 +1,6 @@
 import type { UsageEvent } from "../schema/event.js";
 import type { Rule, RuleContext, RuleFinding } from "./contract.js";
+import { trimCacheTokens } from "./counterfactual.js";
 
 /** Minimum prompt size (chars) to consider full-document I/O. */
 export const FULL_DOC_MIN_PROMPT_CHARS = 20_000;
@@ -40,6 +41,20 @@ export const fullDocumentIoRule: Rule<UsageEvent> = {
     );
     if (removedTokens <= 0) return null;
 
+    const counterfactualInputTokens = Math.max(0, inputTokens - removedTokens);
+    // Excerpting trims uncached content first — a cached system prompt
+    // stays cached when you send less of the rest of the prompt. See
+    // trimCacheTokens for why cache tokens only shrink once the removal
+    // exceeds the uncached portion.
+    const trimmedCache = trimCacheTokens(
+      {
+        inputTokens,
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
+      },
+      counterfactualInputTokens,
+    );
+
     return {
       title: "Full-document I/O",
       detail:
@@ -49,10 +64,10 @@ export const fullDocumentIoRule: Rule<UsageEvent> = {
       implicatedTokens: removedTokens,
       counterfactual: {
         model: event.model,
-        inputTokens: Math.max(0, inputTokens - removedTokens),
+        inputTokens: counterfactualInputTokens,
         outputTokens,
-        cacheReadTokens: event.cacheReadTokens ?? null,
-        cacheCreationTokens: event.cacheCreationTokens ?? null,
+        cacheReadTokens: trimmedCache.cacheReadTokens,
+        cacheCreationTokens: trimmedCache.cacheCreationTokens,
       },
       assumption:
         "Assumes excerpting removes half the dumped content, leaving the rest of the prompt unchanged",

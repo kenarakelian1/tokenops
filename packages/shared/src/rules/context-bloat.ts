@@ -1,5 +1,6 @@
 import type { UsageEvent } from "../schema/event.js";
 import type { Rule, RuleContext, RuleFinding } from "./contract.js";
+import { trimCacheTokens } from "./counterfactual.js";
 
 /** Minimum events in session (including current) before bloat is evaluated. */
 export const BLOAT_MIN_EVENTS = 3;
@@ -42,6 +43,19 @@ export const contextBloatRule: Rule<UsageEvent> = {
     const excessTokens = Math.max(0, event.inputTokens - first.inputTokens);
     if (excessTokens === 0) return null;
 
+    // Holding context flat trims uncached content first — a cached system
+    // prompt stays cached whether or not history grew around it. See
+    // trimCacheTokens for why cache tokens only shrink once the removal
+    // exceeds the uncached portion.
+    const trimmedCache = trimCacheTokens(
+      {
+        inputTokens: event.inputTokens,
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
+      },
+      first.inputTokens,
+    );
+
     return {
       title: "Context bloat",
       detail:
@@ -53,8 +67,8 @@ export const contextBloatRule: Rule<UsageEvent> = {
         model: event.model,
         inputTokens: first.inputTokens,
         outputTokens: event.outputTokens,
-        cacheReadTokens: event.cacheReadTokens ?? null,
-        cacheCreationTokens: event.cacheCreationTokens ?? null,
+        cacheReadTokens: trimmedCache.cacheReadTokens,
+        cacheCreationTokens: trimmedCache.cacheCreationTokens,
       },
       assumption:
         "Assumes context could have stayed at the size of the session's first request",

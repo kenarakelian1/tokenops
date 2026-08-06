@@ -5,6 +5,7 @@ import type { UsageEvent } from "../schema/event.js";
 import { frontierTrivialRule } from "./frontier-trivial.js";
 import { fullDocumentIoRule, FULL_DOC_EXCERPT_FRACTION } from "./full-document-io.js";
 import { contextBloatRule } from "./context-bloat.js";
+import { priceCounterfactual } from "./counterfactual.js";
 
 const CTX = { now: new Date("2026-09-15T00:00:00Z") };
 
@@ -269,6 +270,83 @@ describe("full_document_io counterfactual", () => {
     expect(finding!.implicatedTokens).toBe(removed);
     expect(finding!.assumption).toMatch(/half/i);
   });
+
+  it("trims uncached content first so cache tokens don't outlive the shrunken input", () => {
+    // 12,000 input, 8,000 already cached -> only 4,000 uncached. Excerpting
+    // removes floor(12,000 * 0.8 * 0.5) = 4,800 tokens, more than the 4,000
+    // uncached tokens available, so the counterfactual's cacheReadTokens
+    // must shrink too: 8,000 - (4,800 - 4,000) = 7,200.
+    const event = ev({
+      eventId: "fd-2",
+      model: "claude-haiku-4-5",
+      inputTokens: 12_000,
+      outputTokens: 0,
+      cacheReadTokens: 8_000,
+      costUsd: null,
+      features: {
+        promptChars: 40_000,
+        responseChars: 0,
+        messageCount: 1,
+        codeFenceCount: 3,
+        largePasteScore: 0.9,
+        fileDumpScore: 0.8,
+        modelTier: "mid",
+      },
+    });
+    const finding = fullDocumentIoRule.evaluate(event, CTX);
+    expect(finding).not.toBeNull();
+    const cf = finding!.counterfactual;
+    expect(finding!.implicatedTokens).toBe(4_800);
+    expect(cf.inputTokens).toBe(7_200);
+
+    // Post-condition: cache tokens never outlive the shrunken input.
+    expect((cf.cacheReadTokens ?? 0) + (cf.cacheCreationTokens ?? 0)).toBeLessThanOrEqual(
+      cf.inputTokens,
+    );
+    expect(cf.cacheReadTokens).toBe(7_200);
+    expect(cf.cacheCreationTokens).toBeNull();
+
+    // Savings must reflect the full 4,800-token removal. A stale, unclamped
+    // cacheReadTokens: 8_000 on the counterfactual (the pre-fix bug) would
+    // clamp the counterfactual's full-rate portion to 0 and understate the
+    // saving relative to the fixed, correctly-trimmed counterfactual.
+    const actual = {
+      model: event.model,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      cacheReadTokens: 8_000,
+      cacheCreationTokens: null,
+    };
+    const fixed = priceCounterfactual(actual, cf, CTX);
+    const buggy = priceCounterfactual(actual, { ...cf, cacheReadTokens: 8_000 }, CTX);
+    expect(fixed.estimatedWastedUsd).toBeGreaterThan(buggy.estimatedWastedUsd!);
+  });
+
+  it("leaves a null cache breakdown null when nothing needs to be trimmed from it", () => {
+    // Same shape as the first test in this block: no cache breakdown was
+    // ever recorded on the event, so nothing on the counterfactual should
+    // ever turn that "unknown" into a materialized zero.
+    const event = ev({
+      eventId: "fd-3",
+      model: "claude-sonnet-5",
+      inputTokens: 10_000,
+      outputTokens: 200,
+      costUsd: null,
+      features: {
+        promptChars: 40_000,
+        responseChars: 400,
+        messageCount: 1,
+        codeFenceCount: 3,
+        largePasteScore: 0.9,
+        fileDumpScore: 0.8,
+        modelTier: "mid",
+      },
+    });
+    const finding = fullDocumentIoRule.evaluate(event, CTX);
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual.cacheReadTokens).toBeNull();
+    expect(finding!.counterfactual.cacheCreationTokens).toBeNull();
+  });
 });
 
 describe("context_bloat counterfactual", () => {
@@ -307,6 +385,110 @@ describe("context_bloat counterfactual", () => {
     expect(finding!.implicatedTokens).toBe(35_000);
     expect(finding!.eventIds).toEqual(["b1", "b2", "b3"]);
     expect(finding!.assumption).toMatch(/first request/i);
+  });
+
+  it("trims uncached content first so cache tokens don't outlive the shrunken input", () => {
+    // First request: 5,000 input. Current: 40,000 input, 30,000 already
+    // cached (10,000 uncached). Holding input flat at the first request
+    // removes 35,000 tokens, more than the 10,000 uncached tokens
+    // available, so the counterfactual's cacheReadTokens must shrink too:
+    // 30,000 - (35,000 - 10,000) = 5,000. Routine on real coding-agent
+    // traffic, and the case this fix matters most for.
+    const base = {
+      model: "claude-haiku-4-5",
+      costUsd: null,
+      sessionId: "s1",
+      features: {
+        promptChars: 1_000,
+        responseChars: 100,
+        messageCount: 4,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: "mid" as const,
+        newContentRatio: 0.05,
+      },
+    };
+    const prior = [
+      ev({ ...base, eventId: "c1", inputTokens: 5_000, outputTokens: 100 }),
+      ev({ ...base, eventId: "c2", inputTokens: 20_000, outputTokens: 100 }),
+    ];
+    const current = ev({
+      ...base,
+      eventId: "c3",
+      inputTokens: 40_000,
+      outputTokens: 100,
+      cacheReadTokens: 30_000,
+    });
+    const finding = contextBloatRule.evaluate(current, {
+      ...CTX,
+      sessionContext: prior,
+    });
+    expect(finding).not.toBeNull();
+    const cf = finding!.counterfactual;
+    expect(finding!.implicatedTokens).toBe(35_000);
+    expect(cf.inputTokens).toBe(5_000);
+
+    // Post-condition: cache tokens never outlive the shrunken input.
+    expect((cf.cacheReadTokens ?? 0) + (cf.cacheCreationTokens ?? 0)).toBeLessThanOrEqual(
+      cf.inputTokens,
+    );
+    expect(cf.cacheReadTokens).toBe(5_000);
+    expect(cf.cacheCreationTokens).toBeNull();
+
+    // Savings must reflect the full 35,000-token removal. A stale,
+    // unclamped cacheReadTokens: 30_000 on the counterfactual (the pre-fix
+    // bug) would clamp the counterfactual's full-rate portion to 0 and
+    // understate the saving relative to the fixed, correctly-trimmed
+    // counterfactual.
+    const actual = {
+      model: current.model,
+      inputTokens: current.inputTokens,
+      outputTokens: current.outputTokens,
+      cacheReadTokens: 30_000,
+      cacheCreationTokens: null,
+    };
+    const fixed = priceCounterfactual(actual, cf, CTX);
+    const buggy = priceCounterfactual(actual, { ...cf, cacheReadTokens: 30_000 }, CTX);
+    expect(fixed.estimatedWastedUsd).toBeGreaterThan(buggy.estimatedWastedUsd!);
+  });
+
+  it("leaves a null cache breakdown null when nothing needs to be trimmed from it", () => {
+    // Same shape as the first test in this block: no cache breakdown was
+    // ever recorded on any event, so nothing on the counterfactual should
+    // ever turn that "unknown" into a materialized zero.
+    const base = {
+      model: "claude-sonnet-5",
+      costUsd: null,
+      sessionId: "s1",
+      features: {
+        promptChars: 1_000,
+        responseChars: 100,
+        messageCount: 4,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: "mid" as const,
+        newContentRatio: 0.05,
+      },
+    };
+    const prior = [
+      ev({ ...base, eventId: "d1", inputTokens: 5_000, outputTokens: 100 }),
+      ev({ ...base, eventId: "d2", inputTokens: 9_000, outputTokens: 100 }),
+    ];
+    const current = ev({
+      ...base,
+      eventId: "d3",
+      inputTokens: 40_000,
+      outputTokens: 100,
+    });
+    const finding = contextBloatRule.evaluate(current, {
+      ...CTX,
+      sessionContext: prior,
+    });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual.cacheReadTokens).toBeNull();
+    expect(finding!.counterfactual.cacheCreationTokens).toBeNull();
   });
 });
 
