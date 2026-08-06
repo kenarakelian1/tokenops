@@ -375,6 +375,11 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
             recommendations.dedupeKey,
           ],
           set: {
+            estimatedWastedTokens: rec.estimatedWastedTokens,
+            estimatedWastedUsd:
+              rec.estimatedWastedUsd != null
+                ? String(rec.estimatedWastedUsd)
+                : null,
             counterfactual: rec.counterfactual,
             assumption: rec.assumption,
           },
@@ -697,6 +702,9 @@ export function createMemoryEventsRepo(): EventsRepo {
       const key = recDedupeKey(rec.userId, rec.ruleId, rec.dedupeKey);
       const existing = recMap.get(key);
       if (existing) {
+        existing.estimatedWastedTokens = rec.estimatedWastedTokens;
+        existing.estimatedWastedUsd =
+          rec.estimatedWastedUsd != null ? String(rec.estimatedWastedUsd) : null;
         existing.counterfactual = rec.counterfactual;
         existing.assumption = rec.assumption;
         return;

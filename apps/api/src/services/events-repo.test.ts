@@ -186,4 +186,79 @@ describe("events-repo", () => {
     });
     expect(row!.assumption).toBe("claude-sonnet-5 handles small requests as well");
   });
+
+  it("refreshes evidence and priced savings on a second upsert with the same dedupe key, instead of keeping the first insert's stale values", async () => {
+    // A re-fired rule must overwrite, not merely coexist with, the prior
+    // card's evidence — this is the onConflictDoUpdate (Drizzle) /
+    // update-in-place (in-memory) path Task 8 added specifically so a
+    // dedupe-key collision refreshes rather than goes stale. Nothing else
+    // in the suite reaches this branch: the other round-trip test upserts
+    // once, and ingest.test.ts's dedupe test never re-runs rules for an
+    // already-seen eventId. The two counterfactuals below deliberately
+    // differ in every field a partial `set` clause could silently drop:
+    // model, both token counts, and — to pin that the null-vs-zero cache
+    // distinction survives an UPDATE and not just an INSERT —
+    // cacheReadTokens going from null (first upsert) to a real number
+    // (second upsert).
+    const repo = createMemoryEventsRepo();
+    const base = {
+      userId: "u1",
+      ruleId: "frontier_trivial",
+      severity: "info",
+      title: "t",
+      detail: "d",
+      eventIds: ["e1"],
+      dedupeKey: "e1",
+    };
+
+    await repo.upsertRecommendation({
+      ...base,
+      estimatedWastedTokens: 160,
+      estimatedWastedUsd: 0.02,
+      counterfactual: {
+        model: "claude-sonnet-5",
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheReadTokens: null,
+        cacheCreationTokens: null,
+      },
+      assumption: "claude-sonnet-5 handles small requests as well",
+    });
+
+    await repo.upsertRecommendation({
+      ...base,
+      estimatedWastedTokens: 999,
+      estimatedWastedUsd: 0.09,
+      counterfactual: {
+        model: "claude-haiku-4-5",
+        inputTokens: 300,
+        outputTokens: 75,
+        cacheReadTokens: 50,
+        cacheCreationTokens: 10,
+      },
+      assumption: "claude-haiku-4-5 handles requests at this size just as well",
+    });
+
+    const rows = await repo.listRecommendations("u1", "open");
+    // Still exactly one card for this dedupe key — a re-fire updates the
+    // existing row, it does not insert a sibling.
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+
+    expect(row!.counterfactual).toEqual({
+      model: "claude-haiku-4-5",
+      inputTokens: 300,
+      outputTokens: 75,
+      cacheReadTokens: 50,
+      cacheCreationTokens: 10,
+    });
+    expect(row!.assumption).toBe(
+      "claude-haiku-4-5 handles requests at this size just as well",
+    );
+    // The priced savings that go with the new counterfactual must refresh
+    // too — a card showing fresh evidence next to the OLD dollar figure
+    // would misrepresent what that evidence actually prices out to.
+    expect(row!.estimatedWastedTokens).toBe(999);
+    expect(Number(row!.estimatedWastedUsd)).toBeCloseTo(0.09, 8);
+  });
 });
