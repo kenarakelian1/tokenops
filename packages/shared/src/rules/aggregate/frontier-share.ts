@@ -129,5 +129,8 @@ export function checkFrontierShare(
     estimatedWastedTokens: frontierTokens,
     estimatedWastedUsd,
     eventIds: [],
+    // Aggregate-grain rule — migrates to the Rule<TInput> contract in Task 6.
+    counterfactual: null,
+    assumption: null,
   };
 }

@@ -60,5 +60,8 @@ export function checkCacheEfficiency(
     estimatedWastedTokens,
     estimatedWastedUsd: null,
     eventIds: [],
+    // Aggregate-grain rule — migrates to the Rule<TInput> contract in Task 5.
+    counterfactual: null,
+    assumption: null,
   };
 }
