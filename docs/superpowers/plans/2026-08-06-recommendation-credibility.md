@@ -18,6 +18,14 @@
 - **No new rules.** Five rules exist; five rules remain.
 - **ESM imports use explicit `.js` extensions**, matching every existing file in `packages/shared/src`.
 - **Test command:** `pnpm --filter @tokenops/shared test` (shared), `pnpm --filter @tokenops/api test` (api). Single file: `pnpm --filter @tokenops/shared exec vitest run <path>`.
+- **Every commit compiles and every commit's tests pass.** No task may end on a knowingly broken build or leave scaffolding for a later task to delete.
+
+## Amendments (2026-08-06, pre-execution)
+
+Two decisions taken before Task 1 was dispatched:
+
+1. **Original Tasks 2, 3 and 4 are merged into a single Task 2.** As split, Task 2 ended with `tsc` failing in seven files by design and Task 3 ended with throwaway scaffolding Task 4 deleted — both violate the constraint above, and both would be flagged by a task-scoped reviewer that has no way to know the debt was intentional. **Task numbers 3 and 4 are retired. The plan runs 1, 2, 5, 6, 7, 8, 9, 10, 11, 12 — ten tasks.**
+2. **`Rule` gains an optional `resolveActual(input, finding)`.** A rule that reasons over a collection and singles out one member (only `frontier_share`) must tell the runner which member its counterfactual is priced against. The alternative — inferring the choice by matching token counts back against the collection — is ambiguous whenever two members share the same totals.
 
 ## File Structure
 
@@ -289,21 +297,174 @@ git commit -m "feat(shared): one pricer for rule savings, both sides estimated"
 
 ---
 
-### Task 2: Rule contract types
+### Task 2: Rule contract and all three request-grain rules
+
+> **Amended 2026-08-06.** This task merges what the plan originally split across Tasks 2, 3 and 4. Those splits each ended on a state that does not stand on its own — the contract task left `tsc` failing in seven files by design, and the first rule migration left throwaway scaffolding for the next task to delete. Merged, every commit compiles and no discarded code is ever written. **Task numbers 3 and 4 are retired; the plan continues at Task 5.**
 
 **Files:**
 - Create: `packages/shared/src/rules/contract.ts`
 - Modify: `packages/shared/src/rules/types.ts`
+- Modify: `packages/shared/src/rules/frontier-trivial.ts`
+- Modify: `packages/shared/src/rules/full-document-io.ts`
+- Modify: `packages/shared/src/rules/context-bloat.ts`
+- Modify: `packages/shared/src/rules/index.ts`
+- Test: `packages/shared/src/rules/rules.test.ts` (existing — extend, keep passing)
 
 **Interfaces:**
-- Consumes: `Counterfactual` from Task 1.
-- Produces: `Severity`, `RuleFinding`, `RuleContext`, `Rule<TInput>`. Tasks 3–6 implement `Rule`; Task 7 consumes `RuleFinding.assumption`.
+- Consumes: `Counterfactual`, `Actual`, `priceCounterfactual`, `PricingContext` from Task 1.
+- Produces: `Severity`, `Rule<TInput>`, `RuleFinding`, `RuleContext`; `frontierTrivialRule`, `fullDocumentIoRule`, `contextBloatRule`, all `Rule<UsageEvent>`; `REQUEST_RULES`; `priceFinding()`; `FULL_DOC_EXCERPT_FRACTION`. `RuleHit` gains `counterfactual` and `assumption`. Tasks 5, 6, 7 and 8 all depend on these exact names.
 
-No test of its own — types are exercised by Tasks 3–6. This task is a compile gate.
+- [ ] **Step 1: Write the failing tests**
 
-- [ ] **Step 1: Extract `Severity` in `types.ts`**
+Append to `packages/shared/src/rules/rules.test.ts` (it already defines an `ev()` helper — reuse it, do not redefine it):
 
-In `packages/shared/src/rules/types.ts`, replace the inline union on `RuleHit`:
+```ts
+import { frontierTrivialRule } from "./frontier-trivial.js";
+import { fullDocumentIoRule, FULL_DOC_EXCERPT_FRACTION } from "./full-document-io.js";
+import { contextBloatRule } from "./context-bloat.js";
+
+const CTX = { now: new Date("2026-09-15T00:00:00Z") };
+
+describe("frontier_trivial counterfactual", () => {
+  it("declares the cheaper in-vendor sibling at unchanged token counts", () => {
+    const event = ev({
+      eventId: "cf-1",
+      model: "claude-opus-5",
+      inputTokens: 120,
+      outputTokens: 40,
+      costUsd: null,
+      features: {
+        promptChars: 40,
+        responseChars: 20,
+        messageCount: 1,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: "frontier",
+      },
+    });
+    const finding = frontierTrivialRule.evaluate(event, CTX);
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual).toEqual({
+      model: "claude-sonnet-5",
+      inputTokens: 120,
+      outputTokens: 40,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+    });
+    expect(finding!.implicatedTokens).toBe(160);
+  });
+
+  it("is declared info severity — its findings are worth cents", () => {
+    expect(frontierTrivialRule.defaultSeverity).toBe("info");
+  });
+});
+
+describe("full_document_io counterfactual", () => {
+  it("removes the excerptable share of input and states the assumption", () => {
+    const event = ev({
+      eventId: "fd-1",
+      model: "claude-sonnet-5",
+      inputTokens: 10_000,
+      outputTokens: 200,
+      costUsd: null,
+      features: {
+        promptChars: 40_000,
+        responseChars: 400,
+        messageCount: 1,
+        codeFenceCount: 3,
+        largePasteScore: 0.9,
+        fileDumpScore: 0.8,
+        modelTier: "mid",
+      },
+    });
+    const finding = fullDocumentIoRule.evaluate(event, CTX);
+    expect(finding).not.toBeNull();
+    const removed = Math.floor(10_000 * 0.8 * FULL_DOC_EXCERPT_FRACTION);
+    expect(finding!.counterfactual.inputTokens).toBe(10_000 - removed);
+    expect(finding!.counterfactual.model).toBe("claude-sonnet-5");
+    expect(finding!.implicatedTokens).toBe(removed);
+    expect(finding!.assumption).toMatch(/half/i);
+  });
+});
+
+describe("context_bloat counterfactual", () => {
+  it("holds input flat at the session's first request", () => {
+    const base = {
+      model: "claude-sonnet-5",
+      costUsd: null,
+      sessionId: "s1",
+      features: {
+        promptChars: 1_000,
+        responseChars: 100,
+        messageCount: 4,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: "mid" as const,
+        newContentRatio: 0.05,
+      },
+    };
+    const prior = [
+      ev({ ...base, eventId: "b1", inputTokens: 5_000, outputTokens: 100 }),
+      ev({ ...base, eventId: "b2", inputTokens: 9_000, outputTokens: 100 }),
+    ];
+    const current = ev({
+      ...base,
+      eventId: "b3",
+      inputTokens: 40_000,
+      outputTokens: 100,
+    });
+    const finding = contextBloatRule.evaluate(current, {
+      ...CTX,
+      sessionContext: prior,
+    });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual.inputTokens).toBe(5_000);
+    expect(finding!.implicatedTokens).toBe(35_000);
+    expect(finding!.eventIds).toEqual(["b1", "b2", "b3"]);
+    expect(finding!.assumption).toMatch(/first request/i);
+  });
+});
+
+describe("runRules pricing", () => {
+  it("prices a hit from the counterfactual and carries the evidence", () => {
+    const hits = runRules(
+      ev({
+        eventId: "priced",
+        model: "claude-opus-5",
+        inputTokens: 180,
+        outputTokens: 20,
+        costUsd: null,
+        features: {
+          promptChars: 40,
+          responseChars: 20,
+          messageCount: 1,
+          codeFenceCount: 0,
+          largePasteScore: 0,
+          fileDumpScore: 0,
+          modelTier: "frontier",
+        },
+      }),
+    );
+    const hit = hits.find((h) => h.ruleId === "frontier_trivial");
+    expect(hit).toBeDefined();
+    expect(hit!.severity).toBe("info");
+    expect(hit!.counterfactual).not.toBeNull();
+    expect(hit!.assumption).toContain("claude-sonnet-5");
+    expect(hit!.estimatedWastedUsd).toBeGreaterThan(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `pnpm --filter @tokenops/shared exec vitest run src/rules/rules.test.ts`
+Expected: FAIL — `frontierTrivialRule` / `fullDocumentIoRule` / `contextBloatRule` are not exported.
+
+- [ ] **Step 3: Extract `Severity` and extend `RuleHit` in `types.ts`**
+
+Replace `packages/shared/src/rules/types.ts` entirely:
 
 ```ts
 import type { Counterfactual } from "./counterfactual.js";
@@ -339,14 +500,14 @@ export interface RuleHit {
 }
 ```
 
-- [ ] **Step 2: Create the contract**
+- [ ] **Step 4: Create the contract**
 
 Create `packages/shared/src/rules/contract.ts`:
 
 ```ts
 import type { PriceRow } from "../pricing.js";
 import type { UsageEvent } from "../schema/event.js";
-import type { Counterfactual } from "./counterfactual.js";
+import type { Actual, Counterfactual } from "./counterfactual.js";
 import type { RuleId, Severity } from "./types.js";
 
 /**
@@ -395,89 +556,25 @@ export interface Rule<TInput> {
   readonly grain: "request" | "aggregate";
   readonly defaultSeverity: Severity;
   evaluate(input: TInput, ctx: RuleContext): RuleFinding | null;
+  /**
+   * Which slice of the input the counterfactual should be priced against.
+   *
+   * Most rules compare against the whole input and omit this — the runner
+   * then builds the Actual from the input itself. A rule that reasons over a
+   * COLLECTION and singles out one member (frontier_share picks the dominant
+   * model out of a window) must implement this, because only the rule knows
+   * which member it chose. Without it the runner would have to infer the
+   * choice by matching token counts back against the collection, which is
+   * ambiguous whenever two members share the same totals.
+   *
+   * Return null to withdraw the finding — if a rule cannot say what its
+   * counterfactual is measured against, there is nothing to price.
+   */
+  resolveActual?(input: TInput, finding: RuleFinding): Actual | null;
 }
 ```
 
-- [ ] **Step 3: Verify it compiles**
-
-Run: `pnpm --filter @tokenops/shared exec tsc --noEmit`
-Expected: errors ONLY in the five rule files and the two runners (they still return the old `RuleHit` shape without `counterfactual`/`assumption`). No errors in `contract.ts`, `types.ts`, or `counterfactual.ts`. Tasks 3–6 clear the rest.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add packages/shared/src/rules/contract.ts packages/shared/src/rules/types.ts
-git commit -m "feat(shared): publishable rule contract, named Severity"
-```
-
----
-
-### Task 3: Migrate `frontier_trivial` and the request-grain runner
-
-First rule through the contract, so it carries the runner change with it. After this task `runRules` prices findings and the other two request rules are temporarily adapted in place.
-
-**Files:**
-- Modify: `packages/shared/src/rules/frontier-trivial.ts`
-- Modify: `packages/shared/src/rules/index.ts`
-- Test: `packages/shared/src/rules/rules.test.ts` (existing — must keep passing)
-
-**Interfaces:**
-- Consumes: `Rule`, `RuleFinding`, `RuleContext` (Task 2); `priceCounterfactual` (Task 1).
-- Produces: `frontierTrivialRule: Rule<UsageEvent>`, and `runRules(event, sessionContext?, ctx?)` returning `RuleHit[]` with `counterfactual` populated. Tasks 4–6 follow this exact shape.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `packages/shared/src/rules/rules.test.ts`:
-
-```ts
-import { frontierTrivialRule } from "./frontier-trivial.js";
-
-describe("frontier_trivial counterfactual", () => {
-  it("declares the cheaper in-vendor sibling at unchanged token counts", () => {
-    const event = ev({
-      eventId: "cf-1",
-      model: "claude-opus-5",
-      inputTokens: 120,
-      outputTokens: 40,
-      costUsd: null,
-      features: {
-        promptChars: 40,
-        responseChars: 20,
-        messageCount: 1,
-        codeFenceCount: 0,
-        largePasteScore: 0,
-        fileDumpScore: 0,
-        modelTier: "frontier",
-      },
-    });
-    const finding = frontierTrivialRule.evaluate(event, {
-      now: new Date("2026-09-15T00:00:00Z"),
-    });
-    expect(finding).not.toBeNull();
-    expect(finding!.counterfactual).toEqual({
-      model: "claude-sonnet-5",
-      inputTokens: 120,
-      outputTokens: 40,
-      cacheReadTokens: null,
-      cacheCreationTokens: null,
-    });
-    expect(finding!.implicatedTokens).toBe(160);
-  });
-
-  it("is declared info severity — its findings are worth cents", () => {
-    expect(frontierTrivialRule.defaultSeverity).toBe("info");
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm --filter @tokenops/shared exec vitest run src/rules/rules.test.ts`
-Expected: FAIL — `frontierTrivialRule` is not exported.
-
-- [ ] **Step 3: Rewrite the rule**
-
-Replace the body of `packages/shared/src/rules/frontier-trivial.ts`:
+- [ ] **Step 5: Rewrite `frontier-trivial.ts`**
 
 ```ts
 import { cheaperSiblingModel } from "../pricing.js";
@@ -537,262 +634,7 @@ export const frontierTrivialRule: Rule<UsageEvent> = {
 };
 ```
 
-- [ ] **Step 4: Teach the runner to price findings**
-
-Replace `runRules` in `packages/shared/src/rules/index.ts`:
-
-```ts
-import type { UsageEvent } from "../schema/event.js";
-import { checkContextBloat } from "./context-bloat.js";
-import type { Rule, RuleContext, RuleFinding } from "./contract.js";
-import { priceCounterfactual } from "./counterfactual.js";
-import { frontierTrivialRule } from "./frontier-trivial.js";
-import { checkFullDocumentIo } from "./full-document-io.js";
-import { isMaterial } from "./materiality.js";
-import type { RuleHit } from "./types.js";
-
-export type { RuleHit, RuleId, Severity } from "./types.js";
-export type { Rule, RuleContext, RuleFinding } from "./contract.js";
-export type {
-  Counterfactual,
-  Actual,
-  PricedSavings,
-  PricingContext,
-} from "./counterfactual.js";
-export { priceCounterfactual } from "./counterfactual.js";
-export {
-  FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS,
-  frontierTrivialRule,
-} from "./frontier-trivial.js";
-export {
-  FULL_DOC_MIN_PROMPT_CHARS,
-  FULL_DOC_MIN_DUMP_SCORE,
-  checkFullDocumentIo,
-} from "./full-document-io.js";
-export {
-  BLOAT_MIN_EVENTS,
-  BLOAT_INPUT_GROWTH_RATIO,
-  BLOAT_MAX_NEW_CONTENT_RATIO,
-  checkContextBloat,
-} from "./context-bloat.js";
-export { MIN_WASTED_USD, MIN_WASTED_TOKENS, isMaterial } from "./materiality.js";
-
-/** Aggregate events are time-bucketed sums, not requests. */
-export function isAggregate(event: UsageEvent): boolean {
-  return event.grain === "aggregate";
-}
-
-/** Every request-grain rule, in the order their cards were historically emitted. */
-export const REQUEST_RULES: Rule<UsageEvent>[] = [frontierTrivialRule];
-
-/**
- * Turn a rule's finding into a priced hit. The single place per-request
- * savings are computed — rules no longer do money at all.
- */
-export function priceFinding(
-  rule: Rule<unknown>,
-  finding: RuleFinding,
-  actualModel: string,
-  actualInputTokens: number,
-  actualOutputTokens: number,
-  actualCacheRead: number | null,
-  actualCacheCreation: number | null,
-  ctx: RuleContext,
-): RuleHit {
-  const priced = priceCounterfactual(
-    {
-      model: actualModel,
-      inputTokens: actualInputTokens,
-      outputTokens: actualOutputTokens,
-      cacheReadTokens: actualCacheRead,
-      cacheCreationTokens: actualCacheCreation,
-    },
-    finding.counterfactual,
-    {
-      now: ctx.now,
-      priceOverrides: ctx.priceOverrides,
-      implicatedTokens: finding.implicatedTokens,
-    },
-  );
-
-  return {
-    ruleId: rule.id,
-    severity: rule.defaultSeverity,
-    title: finding.title,
-    detail: finding.detail,
-    estimatedWastedTokens: priced.estimatedWastedTokens,
-    estimatedWastedUsd: priced.estimatedWastedUsd,
-    eventIds: finding.eventIds,
-    counterfactual: finding.counterfactual,
-    assumption: finding.assumption ?? null,
-  };
-}
-
-/**
- * Run all efficiency rules against an event (and optional same-session history).
- *
- * Aggregates are gated here, not in each rule: a new per-request rule must opt
- * in to aggregates deliberately rather than remember to opt out. Every
- * request-grain rule reads features an aggregate cannot have.
- */
-export function runRules(
-  event: UsageEvent,
-  sessionContext?: UsageEvent[],
-  ctx?: Partial<RuleContext>,
-): RuleHit[] {
-  if (isAggregate(event)) return [];
-
-  const fullCtx: RuleContext = {
-    now: ctx?.now ?? new Date(event.timestamp),
-    priceOverrides: ctx?.priceOverrides,
-    sessionContext,
-  };
-
-  const hits: RuleHit[] = [];
-
-  for (const rule of REQUEST_RULES) {
-    const finding = rule.evaluate(event, fullCtx);
-    if (!finding) continue;
-    hits.push(
-      priceFinding(
-        rule,
-        finding,
-        event.model,
-        event.inputTokens,
-        event.outputTokens,
-        event.cacheReadTokens ?? null,
-        event.cacheCreationTokens ?? null,
-        fullCtx,
-      ),
-    );
-  }
-
-  // Not yet migrated — Task 4 moves these into REQUEST_RULES.
-  const fullDoc = checkFullDocumentIo(event);
-  if (fullDoc) hits.push(fullDoc);
-
-  const bloat = checkContextBloat(event, sessionContext);
-  if (bloat) hits.push(bloat);
-
-  return hits.filter(isMaterial);
-}
-```
-
-Then add `counterfactual: null, assumption: null` to the object literals returned by `full-document-io.ts` and `context-bloat.ts` so they satisfy the updated `RuleHit`. Task 4 removes both.
-
-- [ ] **Step 5: Run the full shared suite**
-
-Run: `pnpm --filter @tokenops/shared test`
-Expected: PASS. The existing `runRules` tests still pass — `frontier_trivial` prices the same way, now via the shared pricer.
-
-If the first `runRules` test fails on materiality: it uses `costUsd: 0.05` with `gpt-4o`, and savings no longer read `costUsd`. `gpt-4o` (in $2.50) vs `gpt-4o-mini` (in $0.15) on 20 in / 10 out is well under `MIN_WASTED_USD`, so this finding now correctly drops below the floor. Update that test to use token counts that clear $0.01 — e.g. `inputTokens: 180, outputTokens: 20` on `claude-opus-5` — and add a comment saying savings come from the rate delta, not from `costUsd`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add packages/shared/src/rules/
-git commit -m "feat(shared): frontier_trivial declares a counterfactual, runner prices it"
-```
-
----
-
-### Task 4: Migrate `full_document_io` and `context_bloat`
-
-**Files:**
-- Modify: `packages/shared/src/rules/full-document-io.ts`
-- Modify: `packages/shared/src/rules/context-bloat.ts`
-- Modify: `packages/shared/src/rules/index.ts`
-- Test: `packages/shared/src/rules/rules.test.ts`
-
-**Interfaces:**
-- Consumes: `Rule`, `RuleFinding`, `RuleContext`, `priceFinding`, `REQUEST_RULES`.
-- Produces: `fullDocumentIoRule`, `contextBloatRule`, both `Rule<UsageEvent>`. `FULL_DOC_EXCERPT_FRACTION` becomes an exported, named constant.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `packages/shared/src/rules/rules.test.ts`:
-
-```ts
-import { fullDocumentIoRule, FULL_DOC_EXCERPT_FRACTION } from "./full-document-io.js";
-import { contextBloatRule } from "./context-bloat.js";
-
-describe("full_document_io counterfactual", () => {
-  it("removes the excerptable share of input and states the assumption", () => {
-    const event = ev({
-      eventId: "fd-1",
-      model: "claude-sonnet-5",
-      inputTokens: 10_000,
-      outputTokens: 200,
-      costUsd: null,
-      features: {
-        promptChars: 40_000,
-        responseChars: 400,
-        messageCount: 1,
-        codeFenceCount: 3,
-        largePasteScore: 0.9,
-        fileDumpScore: 0.8,
-        modelTier: "mid",
-      },
-    });
-    const finding = fullDocumentIoRule.evaluate(event, {
-      now: new Date("2026-09-15T00:00:00Z"),
-    });
-    expect(finding).not.toBeNull();
-    // 10_000 * 0.8 * 0.5 = 4_000 excerptable
-    const removed = Math.floor(10_000 * 0.8 * FULL_DOC_EXCERPT_FRACTION);
-    expect(finding!.counterfactual.inputTokens).toBe(10_000 - removed);
-    expect(finding!.counterfactual.model).toBe("claude-sonnet-5");
-    expect(finding!.implicatedTokens).toBe(removed);
-    expect(finding!.assumption).toMatch(/half/i);
-  });
-});
-
-describe("context_bloat counterfactual", () => {
-  it("holds input flat at the session's first request", () => {
-    const base = {
-      model: "claude-sonnet-5",
-      costUsd: null,
-      sessionId: "s1",
-      features: {
-        promptChars: 1_000,
-        responseChars: 100,
-        messageCount: 4,
-        codeFenceCount: 0,
-        largePasteScore: 0,
-        fileDumpScore: 0,
-        modelTier: "mid" as const,
-        newContentRatio: 0.05,
-      },
-    };
-    const prior = [
-      ev({ ...base, eventId: "b1", inputTokens: 5_000, outputTokens: 100 }),
-      ev({ ...base, eventId: "b2", inputTokens: 9_000, outputTokens: 100 }),
-    ];
-    const current = ev({
-      ...base,
-      eventId: "b3",
-      inputTokens: 40_000,
-      outputTokens: 100,
-    });
-    const finding = contextBloatRule.evaluate(current, {
-      now: new Date("2026-09-15T00:00:00Z"),
-      sessionContext: prior,
-    });
-    expect(finding).not.toBeNull();
-    expect(finding!.counterfactual.inputTokens).toBe(5_000);
-    expect(finding!.implicatedTokens).toBe(35_000);
-    expect(finding!.eventIds).toEqual(["b1", "b2", "b3"]);
-    expect(finding!.assumption).toMatch(/first request/i);
-  });
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm --filter @tokenops/shared exec vitest run src/rules/rules.test.ts`
-Expected: FAIL — `fullDocumentIoRule` / `contextBloatRule` not exported.
-
-- [ ] **Step 3: Rewrite `full-document-io.ts`**
+- [ ] **Step 6: Rewrite `full-document-io.ts`**
 
 ```ts
 import type { UsageEvent } from "../schema/event.js";
@@ -858,7 +700,7 @@ export const fullDocumentIoRule: Rule<UsageEvent> = {
 };
 ```
 
-- [ ] **Step 4: Rewrite `context-bloat.ts`**
+- [ ] **Step 7: Rewrite `context-bloat.ts`**
 
 ```ts
 import type { UsageEvent } from "../schema/event.js";
@@ -926,34 +768,175 @@ export const contextBloatRule: Rule<UsageEvent> = {
 };
 ```
 
-- [ ] **Step 5: Finish the runner**
+- [ ] **Step 8: Rewrite the runner**
 
-In `packages/shared/src/rules/index.ts`: add both rules to `REQUEST_RULES`, delete the two temporary `checkFullDocumentIo` / `checkContextBloat` calls at the bottom of `runRules`, and update the re-exports to name `fullDocumentIoRule`, `contextBloatRule`, and `FULL_DOC_EXCERPT_FRACTION` instead of the removed `check*` functions.
+Replace `packages/shared/src/rules/index.ts` entirely:
 
 ```ts
+import type { UsageEvent } from "../schema/event.js";
+import { contextBloatRule } from "./context-bloat.js";
+import type { Rule, RuleContext, RuleFinding } from "./contract.js";
+import { priceCounterfactual, type Actual } from "./counterfactual.js";
+import { frontierTrivialRule } from "./frontier-trivial.js";
+import { fullDocumentIoRule } from "./full-document-io.js";
+import { isMaterial } from "./materiality.js";
+import type { RuleHit } from "./types.js";
+
+export type { RuleHit, RuleId, Severity } from "./types.js";
+export type { Rule, RuleContext, RuleFinding } from "./contract.js";
+export type {
+  Counterfactual,
+  Actual,
+  PricedSavings,
+  PricingContext,
+} from "./counterfactual.js";
+export { priceCounterfactual } from "./counterfactual.js";
+export {
+  FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS,
+  frontierTrivialRule,
+} from "./frontier-trivial.js";
+export {
+  FULL_DOC_MIN_PROMPT_CHARS,
+  FULL_DOC_MIN_DUMP_SCORE,
+  FULL_DOC_EXCERPT_FRACTION,
+  fullDocumentIoRule,
+} from "./full-document-io.js";
+export {
+  BLOAT_MIN_EVENTS,
+  BLOAT_INPUT_GROWTH_RATIO,
+  BLOAT_MAX_NEW_CONTENT_RATIO,
+  contextBloatRule,
+} from "./context-bloat.js";
+export { MIN_WASTED_USD, MIN_WASTED_TOKENS, isMaterial } from "./materiality.js";
+
+/** Aggregate events are time-bucketed sums, not requests. */
+export function isAggregate(event: UsageEvent): boolean {
+  return event.grain === "aggregate";
+}
+
+/** Every request-grain rule, in the order their cards were historically emitted. */
 export const REQUEST_RULES: Rule<UsageEvent>[] = [
   frontierTrivialRule,
   fullDocumentIoRule,
   contextBloatRule,
 ];
+
+/**
+ * Turn a rule's finding into a priced hit — the single place savings are
+ * assembled, for request-grain and aggregate-grain rules alike.
+ *
+ * `actual` is what the counterfactual is compared against. The caller passes
+ * it explicitly rather than deriving it here, because only a rule that
+ * singles out one member of a collection knows which member it chose (see
+ * Rule.resolveActual).
+ */
+export function priceFinding<TInput>(
+  rule: Rule<TInput>,
+  finding: RuleFinding,
+  actual: Actual,
+  ctx: RuleContext,
+): RuleHit {
+  const priced = priceCounterfactual(actual, finding.counterfactual, {
+    now: ctx.now,
+    priceOverrides: ctx.priceOverrides,
+    implicatedTokens: finding.implicatedTokens,
+  });
+
+  return {
+    ruleId: rule.id,
+    severity: rule.defaultSeverity,
+    title: finding.title,
+    detail: finding.detail,
+    estimatedWastedTokens: priced.estimatedWastedTokens,
+    estimatedWastedUsd: priced.estimatedWastedUsd,
+    eventIds: finding.eventIds,
+    counterfactual: finding.counterfactual,
+    assumption: finding.assumption ?? null,
+  };
+}
+
+/** The whole event, as the default thing a request-grain counterfactual is measured against. */
+function eventAsActual(event: UsageEvent): Actual {
+  return {
+    model: event.model,
+    inputTokens: event.inputTokens,
+    outputTokens: event.outputTokens,
+    cacheReadTokens: event.cacheReadTokens ?? null,
+    cacheCreationTokens: event.cacheCreationTokens ?? null,
+  };
+}
+
+/**
+ * Run all efficiency rules against an event (and optional same-session history).
+ *
+ * Aggregates are gated here, not in each rule: a new per-request rule must opt
+ * in to aggregates deliberately rather than remember to opt out. Every
+ * request-grain rule reads features an aggregate cannot have.
+ */
+export function runRules(
+  event: UsageEvent,
+  sessionContext?: UsageEvent[],
+  ctx?: Partial<RuleContext>,
+): RuleHit[] {
+  if (isAggregate(event)) return [];
+
+  const fullCtx: RuleContext = {
+    now: ctx?.now ?? new Date(event.timestamp),
+    priceOverrides: ctx?.priceOverrides,
+    sessionContext,
+  };
+
+  const hits: RuleHit[] = [];
+
+  for (const rule of REQUEST_RULES) {
+    const finding = rule.evaluate(event, fullCtx);
+    if (!finding) continue;
+    const actual = rule.resolveActual
+      ? rule.resolveActual(event, finding)
+      : eventAsActual(event);
+    if (!actual) continue;
+    hits.push(priceFinding(rule, finding, actual, fullCtx));
+  }
+
+  return hits.filter(isMaterial);
+}
 ```
 
-- [ ] **Step 6: Run the full shared suite**
+- [ ] **Step 9: Run the full shared suite**
 
 Run: `pnpm --filter @tokenops/shared test`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+**One pre-existing test will need updating, and this is expected.** `rules.test.ts`'s original "flags frontier for trivial" case uses `gpt-4o` with `costUsd: 0.05`. Savings no longer read `costUsd` at all — they come from the `gpt-4o` ($2.50/MTok in) vs `gpt-4o-mini` ($0.15/MTok in) rate delta, which on 20 in / 10 out is far below `MIN_WASTED_USD` and correctly drops below the materiality floor.
+
+Fix it by giving the case token counts that clear a cent — `model: "claude-opus-5"`, `inputTokens: 180`, `outputTokens: 20` — and add a comment stating that savings come from the rate delta, not from `costUsd`. Do **not** lower `MIN_WASTED_USD`, and do **not** delete the assertion: the finding is genuinely immaterial at the old numbers, and the floor is what the spec relies on.
+
+Apply the same treatment to any other pre-existing case that fails for this reason, and say which ones in your report.
+
+- [ ] **Step 10: Verify the build is clean**
+
+Run: `pnpm --filter @tokenops/shared exec tsc --noEmit`
+Expected: errors ONLY in `rules/aggregate/*` — those two rules still return the old shape and are migrated in Tasks 5 and 6. No errors anywhere else.
+
+If `aggregate/index.ts` fails to compile because `RuleHit` now requires `counterfactual` and `assumption`, add `counterfactual: null, assumption: null` to the two hit literals it builds. That is a real, shippable intermediate state — the aggregate rules genuinely have no counterfactual yet — not scaffolding, and Tasks 5 and 6 replace it.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add packages/shared/src/rules/
-git commit -m "feat(shared): full_document_io and context_bloat declare counterfactuals
+git commit -m "feat(shared): rule contract, and all three request rules declare counterfactuals
 
-The bare * 0.5 becomes FULL_DOC_EXCERPT_FRACTION feeding a counterfactual,
-with the assumption stated on the card instead of hidden in a dollar figure."
+Rules no longer compute money — they state what would have happened instead
+and the runner prices it. The bare * 0.5 in full_document_io becomes
+FULL_DOC_EXCERPT_FRACTION feeding a counterfactual, with the assumption
+stated on the card rather than hidden inside a dollar figure.
+
+frontier_trivial drops to info severity: capped at 200 tokens, it can never
+save more than a fraction of a cent on one call."
 ```
 
 ---
+
 
 ### Task 5: Migrate `cache_efficiency` — the headline change
 
@@ -1287,19 +1270,55 @@ Delete the hand-rolled pricing block (`dominantCost`, `siblingCost`, `Math.max(0
 
 Declare `defaultSeverity: "warn"`, `grain: "aggregate"`, `id: "frontier_share"`.
 
-- [ ] **Step 4: Wire it into the runner**
-
-In `aggregate/index.ts`, replace the `checkFrontierShare(window, now)` call with `frontierShareRule.evaluate(window, { now })` followed by the same `priceCounterfactual` + push used in Task 5 — the actual side being the dominant model's own totals. Since the rule no longer returns the dominant totals, have `evaluate` also set `eventIds: []` and derive the actual side inside the runner by matching `finding.counterfactual` against `window.byModel`; simpler and less fragile is to price inside a small local helper that takes the dominant `ModelWindowTotals` the rule already selected — so return it on the finding via a non-exported field is *not* allowed by the contract. Instead: give `frontierShareRule` the counterfactual only, and in the runner locate the dominant totals with
+**Also implement `resolveActual`.** This rule reasons over a whole window but singles out one model, so only it knows which `ModelWindowTotals` the counterfactual should be priced against. Re-running the same selection is what keeps it exact — the runner must never infer the choice by matching token counts back against `window.byModel`, which is ambiguous whenever two frontier models share the same totals:
 
 ```ts
-const dominant = window.byModel.find(
-  (m) =>
-    m.inputTokens === finding.counterfactual.inputTokens &&
-    m.outputTokens === finding.counterfactual.outputTokens &&
-    m.modelTier === "frontier",
-);
-if (!dominant) continue;
+  /**
+   * The dominant model's own totals — NOT the window's. Pricing the whole
+   * window against one sibling's rate would compare across vendors, which is
+   * exactly what this rule otherwise refuses to do.
+   *
+   * Re-selects rather than caching: a Rule is a stateless singleton, so
+   * stashing the selection between evaluate() and resolveActual() would leak
+   * across users. selectDominant() is the shared helper both call.
+   */
+  resolveActual(window: AggregateWindow): Actual | null {
+    const selected = selectDominant(window);
+    if (!selected) return null;
+    const { dominant } = selected;
+    return {
+      model: dominant.model,
+      inputTokens: dominant.inputTokens,
+      outputTokens: dominant.outputTokens,
+      cacheReadTokens: dominant.cacheReadTokens,
+      cacheCreationTokens: dominant.cacheCreationTokens,
+    };
+  },
 ```
+
+Extract the existing selection logic into a module-level
+
+```ts
+function selectDominant(
+  window: AggregateWindow,
+): { dominant: ModelWindowTotals; suggestedModel: string } | null
+```
+
+that both `evaluate` and `resolveActual` call — it holds the threshold check, the sort by volume descending, and the walk to the next-largest frontier model when the largest has no in-vendor sibling. Neither method may duplicate that logic.
+
+- [ ] **Step 4: Wire it into the runner**
+
+In `aggregate/index.ts`, replace the `checkFrontierShare(window, now)` call with:
+
+```ts
+const finding = frontierShareRule.evaluate(window, ctx);
+if (finding) {
+  const actual = frontierShareRule.resolveActual!(window, finding);
+  if (actual) hits.push(priceFinding(frontierShareRule, finding, actual, ctx));
+}
+```
+
+Use the shared `priceFinding` exported from `../index.js` (Task 2) rather than calling `priceCounterfactual` directly — one assembly path for every rule of either grain. Apply the same to `cacheEfficiencyRule` if Task 5 hand-rolled its own push; both should route through `priceFinding` by the end of this task.
 
 Update the export block to name `frontierShareRule` instead of `checkFrontierShare`.
 
@@ -2071,18 +2090,18 @@ git commit -m "docs: publish the rule-authoring contract"
 |---|---|
 | Counterfactual type + shared pricer | 1 |
 | Rule contract, named `Severity` | 2 |
-| `frontier_trivial` counterfactual | 3 |
-| `context_bloat`, `full_document_io` + stated assumption | 4 |
+| `frontier_trivial` counterfactual | 2 |
+| `context_bloat`, `full_document_io` + stated assumption | 2 |
 | `cache_efficiency` gains USD (item 1) | 5 |
 | `frontier_share` counterfactual | 6 |
 | Back-test, per-event pricing instant | 7 |
 | `counterfactual jsonb` migration | 8 |
-| Ranking + `frontier_trivial` → `info` (item 4) | 3 (severity), 9 (ordering) |
+| Ranking + `frontier_trivial` → `info` (item 4) | 2 (severity), 9 (ordering) |
 | Back-test endpoint, window validation | 10 |
 | Evidence in UI, absent ≠ empty | 11 |
 | `docs/rules/authoring.md` (item 3) | 12 |
 | Risk 1: cards disappear on the materiality flip | 5, Step 1 test |
-| Risk 3: `context_bloat` first-request assumption | 4, via `assumption` |
+| Risk 3: `context_bloat` first-request assumption | 2, via `assumption` |
 | Testing: determinism across the Sonnet 5 cutoff | 1, 7 |
 | Testing: grain routing | 7 |
 
@@ -2092,7 +2111,7 @@ No spec requirement is unassigned. The OTEL/JSONL capture split is stated in the
 
 **Type consistency:** `Counterfactual`, `Actual`, `PricedSavings`, `PricingContext` (Task 1) are used unchanged in Tasks 3–8. `RuleFinding.implicatedTokens` (Task 2) is the field every rule sets and `priceCounterfactual`'s `ctx.implicatedTokens` consumes. `Severity` (Task 2) is used by `Rule.defaultSeverity` and `RuleHit.severity`. `frontierTrivialRule` / `fullDocumentIoRule` / `contextBloatRule` / `cacheEfficiencyRule` / `frontierShareRule` are named identically at definition, in `REQUEST_RULES`, in the runners, and in the `index.ts` exports. `BacktestRow.wouldHaveSavedUsd` is the same name in the engine (Task 7), the route (Task 10), and the tests.
 
-One known wrinkle, flagged rather than hidden: Task 6 Step 4 recovers the dominant `ModelWindowTotals` by matching token counts, because the contract deliberately gives a rule no channel to hand the runner an intermediate value. If two frontier models in one window share identical input *and* output token counts, the match is ambiguous. This is vanishingly unlikely with real totals, and the `find` picks the first, which is deterministic. If the implementer would rather not rely on that, the clean alternative is to widen `Rule` with an optional `resolveActual(input, finding)` method — raise it at review rather than improvising.
+The token-count-matching wrinkle this section originally flagged in Task 6 is resolved by Amendment 2: `Rule.resolveActual` gives `frontier_share` an exact channel for the model it selected, so nothing is inferred. `selectDominant()` is shared between `evaluate` and `resolveActual` so the selection cannot drift between the two.
 
 ---
 
