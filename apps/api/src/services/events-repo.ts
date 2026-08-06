@@ -374,12 +374,29 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
             recommendations.ruleId,
             recommendations.dedupeKey,
           ],
+          // Principle: on conflict, refresh everything the RULE computes;
+          // preserve only what the user or the system owns. A rule that
+          // re-fires against a grown window (e.g. an hourly aggregate job
+          // re-hitting the same UTC-day dedupeKey) recomputes severity,
+          // title, detail, tokens, USD, counterfactual, and eventIds
+          // together as one consistent snapshot — refreshing some of those
+          // fields while leaving others (e.g. `detail`'s interpolated
+          // percentage) at their first-insert values reproduces the exact
+          // "stale narrative beside fresh numbers" bug this task exists to
+          // eliminate. `status` and `createdAt` are deliberately excluded:
+          // status records the USER's dismissal judgement, which a re-fire
+          // must never overturn, and createdAt records when the finding
+          // FIRST appeared, not when it was last recomputed.
           set: {
+            severity: rec.severity,
+            title: rec.title,
+            detail: rec.detail,
             estimatedWastedTokens: rec.estimatedWastedTokens,
             estimatedWastedUsd:
               rec.estimatedWastedUsd != null
                 ? String(rec.estimatedWastedUsd)
                 : null,
+            eventIds: rec.eventIds,
             counterfactual: rec.counterfactual,
             assumption: rec.assumption,
           },
@@ -702,9 +719,21 @@ export function createMemoryEventsRepo(): EventsRepo {
       const key = recDedupeKey(rec.userId, rec.ruleId, rec.dedupeKey);
       const existing = recMap.get(key);
       if (existing) {
+        // Principle: on conflict, refresh everything the RULE computes;
+        // preserve only what the user or the system owns — same reasoning
+        // as the Drizzle onConflictDoUpdate `set` above, kept symmetric so
+        // this fake can't pass a test the real implementation fails.
+        // `status` and `createdAt` are the two exceptions: status is the
+        // user's dismissal judgement (a re-fire must never overturn it),
+        // and createdAt is when the finding first appeared, not when it
+        // was last recomputed — both are left untouched below.
+        existing.severity = rec.severity;
+        existing.title = rec.title;
+        existing.detail = rec.detail;
         existing.estimatedWastedTokens = rec.estimatedWastedTokens;
         existing.estimatedWastedUsd =
           rec.estimatedWastedUsd != null ? String(rec.estimatedWastedUsd) : null;
+        existing.eventIds = rec.eventIds;
         existing.counterfactual = rec.counterfactual;
         existing.assumption = rec.assumption;
         return;

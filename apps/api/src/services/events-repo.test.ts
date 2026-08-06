@@ -187,32 +187,40 @@ describe("events-repo", () => {
     expect(row!.assumption).toBe("claude-sonnet-5 handles small requests as well");
   });
 
-  it("refreshes evidence and priced savings on a second upsert with the same dedupe key, instead of keeping the first insert's stale values", async () => {
+  it("refreshes every rule-computed field on a second upsert with the same dedupe key, instead of keeping the first insert's stale values", async () => {
     // A re-fired rule must overwrite, not merely coexist with, the prior
     // card's evidence — this is the onConflictDoUpdate (Drizzle) /
     // update-in-place (in-memory) path Task 8 added specifically so a
     // dedupe-key collision refreshes rather than goes stale. Nothing else
     // in the suite reaches this branch: the other round-trip test upserts
     // once, and ingest.test.ts's dedupe test never re-runs rules for an
-    // already-seen eventId. The two counterfactuals below deliberately
-    // differ in every field a partial `set` clause could silently drop:
-    // model, both token counts, and — to pin that the null-vs-zero cache
-    // distinction survives an UPDATE and not just an INSERT —
-    // cacheReadTokens going from null (first upsert) to a real number
-    // (second upsert).
+    // already-seen eventId.
+    //
+    // Every field below that the RULE computes differs between the two
+    // upserts — model, both token counts, cacheReadTokens null->number (so
+    // the null-vs-zero distinction is pinned across an UPDATE, not just an
+    // INSERT), severity, title, detail, and eventIds — because a partial
+    // `set` clause silently dropping any ONE of them reproduces the exact
+    // "stale narrative beside fresh numbers" bug this task exists to
+    // eliminate: e.g. frontier_share's `detail` interpolates a percentage
+    // and a model name that must move in lockstep with estimatedWastedUsd
+    // and counterfactual when the window it's computed over grows.
+    // createdAt is captured from the FIRST upsert and asserted unchanged —
+    // it's the one field a re-fire must never touch (see the dismissed-row
+    // test below for the other: status).
     const repo = createMemoryEventsRepo();
     const base = {
       userId: "u1",
       ruleId: "frontier_trivial",
-      severity: "info",
-      title: "t",
-      detail: "d",
-      eventIds: ["e1"],
       dedupeKey: "e1",
     };
 
     await repo.upsertRecommendation({
       ...base,
+      severity: "info",
+      title: "Frontier model for trivial task",
+      detail: "82% of your tokens went to the frontier tier, the largest being claude-opus-5",
+      eventIds: ["e1"],
       estimatedWastedTokens: 160,
       estimatedWastedUsd: 0.02,
       counterfactual: {
@@ -224,9 +232,15 @@ describe("events-repo", () => {
       },
       assumption: "claude-sonnet-5 handles small requests as well",
     });
+    const [firstRow] = await repo.listRecommendations("u1", "open");
+    const firstCreatedAt = firstRow!.createdAt;
 
     await repo.upsertRecommendation({
       ...base,
+      severity: "high",
+      title: "Frontier share is high",
+      detail: "91% of your tokens went to the frontier tier, the largest being claude-opus-4",
+      eventIds: ["e1", "e2", "e3"],
       estimatedWastedTokens: 999,
       estimatedWastedUsd: 0.09,
       counterfactual: {
@@ -245,6 +259,12 @@ describe("events-repo", () => {
     expect(rows).toHaveLength(1);
     const [row] = rows;
 
+    expect(row!.severity).toBe("high");
+    expect(row!.title).toBe("Frontier share is high");
+    expect(row!.detail).toBe(
+      "91% of your tokens went to the frontier tier, the largest being claude-opus-4",
+    );
+    expect(row!.eventIds).toEqual(["e1", "e2", "e3"]);
     expect(row!.counterfactual).toEqual({
       model: "claude-haiku-4-5",
       inputTokens: 300,
@@ -260,5 +280,72 @@ describe("events-repo", () => {
     // would misrepresent what that evidence actually prices out to.
     expect(row!.estimatedWastedTokens).toBe(999);
     expect(Number(row!.estimatedWastedUsd)).toBeCloseTo(0.09, 8);
+    // createdAt records when the finding FIRST appeared, not when it was
+    // last recomputed — a re-fire must never touch it.
+    expect(row!.createdAt).toEqual(firstCreatedAt);
+  });
+
+  it("leaves a dismissed recommendation dismissed when the same rule fires again with new evidence", async () => {
+    // status is the other field a re-fire must never touch: it records the
+    // USER's judgement (they dismissed this card), not anything the rule
+    // computes. Silently flipping a dismissed card back to "open" because
+    // the underlying rule fired again would overturn that judgement without
+    // the user asking for it — a materially worse bug than stale evidence,
+    // since it makes a dismissed recommendation reappear.
+    const repo = createMemoryEventsRepo();
+    const base = {
+      userId: "u1",
+      ruleId: "frontier_trivial",
+      dedupeKey: "e1",
+      severity: "info",
+      title: "t",
+      eventIds: ["e1"],
+    };
+
+    await repo.upsertRecommendation({
+      ...base,
+      detail: "first",
+      estimatedWastedTokens: 160,
+      estimatedWastedUsd: 0.02,
+      counterfactual: {
+        model: "claude-sonnet-5",
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheReadTokens: null,
+        cacheCreationTokens: null,
+      },
+      assumption: "first assumption",
+    });
+    const [inserted] = await repo.listRecommendations("u1", "open");
+    const dismissed = await repo.dismissRecommendation("u1", inserted!.id);
+    expect(dismissed).toBe(true);
+
+    await repo.upsertRecommendation({
+      ...base,
+      detail: "second — rule fired again with fresh evidence",
+      estimatedWastedTokens: 999,
+      estimatedWastedUsd: 0.09,
+      counterfactual: {
+        model: "claude-haiku-4-5",
+        inputTokens: 300,
+        outputTokens: 75,
+        cacheReadTokens: 50,
+        cacheCreationTokens: 10,
+      },
+      assumption: "second assumption",
+    });
+
+    const openRows = await repo.listRecommendations("u1", "open");
+    expect(openRows).toHaveLength(0);
+
+    const allRows = await repo.listRecommendations("u1");
+    expect(allRows).toHaveLength(1);
+    const [row] = allRows;
+    expect(row!.status).toBe("dismissed");
+    // Evidence still refreshes underneath the dismissal — a user who
+    // un-dismisses later should see the current numbers, not the stale
+    // ones from when they first dismissed it.
+    expect(row!.detail).toBe("second — rule fired again with fresh evidence");
+    expect(row!.estimatedWastedTokens).toBe(999);
   });
 });
