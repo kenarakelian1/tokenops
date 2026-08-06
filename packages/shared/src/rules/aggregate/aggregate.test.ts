@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   runAggregateRules,
-  checkFrontierShare,
+  frontierShareRule,
   cacheEfficiencyRule,
   CACHE_EFFICIENCY_MIN_READ_RATIO,
 } from "./index.js";
@@ -114,13 +114,16 @@ describe("runAggregateRules", () => {
     // being X" rather than implying the percentage is X's alone.
     expect(hit!.detail).toMatch(/95%/);
     expect(hit!.detail).toMatch(/largest being claude-opus-5\[1m\]/);
-    // Savings price ONLY the dominant model's (opus's) own 400k/100k tokens
-    // against claude-sonnet-5's intro rate ($2/$10 per 1M): 400k*2/1e6 +
-    // 100k*10/1e6 = 0.8 + 1 = 1.8. dominant cost (50, given directly) minus
-    // that = 48.2. The pre-fix computation summed both vendors' cost (90)
-    // and priced both vendors' combined tokens at sonnet's rate, yielding
-    // 86.9 instead — a different, cross-vendor-contaminated number.
-    expect(hit!.estimatedWastedUsd).toBeCloseTo(48.2, 5);
+    // Savings price ONLY the dominant model's (opus's) own 400k/100k tokens,
+    // and BOTH sides go through the same estimator (Actual deliberately
+    // carries no costUsd, so the real costUsd: 50 given above is not used —
+    // see counterfactual.ts). Actual (opus-5, $5/$25 per 1M): 400k*5/1e6 +
+    // 100k*25/1e6 = 2 + 2.5 = 4.5. Counterfactual (claude-sonnet-5's intro
+    // rate, $2/$10 per 1M): 400k*2/1e6 + 100k*10/1e6 = 0.8 + 1 = 1.8.
+    // Difference = 2.7. The pre-fix computation summed both vendors' cost
+    // (90) and priced both vendors' combined tokens at sonnet's rate,
+    // yielding 86.9 instead — a different, cross-vendor-contaminated number.
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(2.7, 5);
   });
 
   it("still fires with a positive saving at a realistic (90%) cache-read ratio with a real costUsd present", () => {
@@ -179,19 +182,21 @@ describe("runAggregateRules", () => {
     ]);
 
     it("prices the sibling at the intro rate before the expiry", () => {
-      const hit = checkFrontierShare(
+      const hits = runAggregateRules(
         singleOpusWindow,
         new Date("2026-08-15T00:00:00Z"),
       );
+      const hit = hits.find((h) => h.ruleId === "frontier_share");
       // opus cost: 1,000,000 * $5/1M = 5. sonnet intro: 1,000,000 * $2/1M = 2.
       expect(hit!.estimatedWastedUsd).toBeCloseTo(3, 5);
     });
 
     it("prices the sibling at the standard rate on/after the expiry", () => {
-      const hit = checkFrontierShare(
+      const hits = runAggregateRules(
         singleOpusWindow,
         new Date("2026-09-01T00:00:00Z"),
       );
+      const hit = hits.find((h) => h.ruleId === "frontier_share");
       // opus cost: 1,000,000 * $5/1M = 5. sonnet standard: 1,000,000 * $3/1M = 3.
       expect(hit!.estimatedWastedUsd).toBeCloseTo(2, 5);
     });
@@ -370,5 +375,64 @@ describe("cache_efficiency counterfactual", () => {
     );
     expect(hits.some((h) => h.ruleId === "cache_efficiency")).toBe(false);
     expect(MIN_WASTED_USD).toBe(0.01); // pins the floor this depends on
+  });
+});
+
+describe("frontier_share counterfactual", () => {
+  it("swaps only the dominant model, carrying its own cache breakdown", () => {
+    const w = window([
+      {
+        model: "claude-opus-5",
+        modelTier: "frontier",
+        inputTokens: 100_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 90_000_000,
+        cacheCreationTokens: 1_000_000,
+        costUsd: 900,
+      },
+      {
+        model: "claude-haiku-4-5",
+        modelTier: "small",
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: 0.1,
+      },
+    ]);
+    const finding = frontierShareRule.evaluate(w, {
+      now: new Date("2026-09-15T00:00:00Z"),
+    });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual).toEqual({
+      model: "claude-sonnet-5",
+      inputTokens: 100_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 90_000_000,
+      cacheCreationTokens: 1_000_000,
+    });
+  });
+
+  it("still produces a positive saving at a realistic 90% cache-read ratio", () => {
+    // Regression guard for 9b1257b: pricing the sibling at full rate while
+    // the dominant side got its cache discount clamped savings to 0 and
+    // dropped the only card an OTEL-only user would see.
+    const hits = runAggregateRules(
+      window([
+        {
+          model: "claude-opus-5",
+          modelTier: "frontier",
+          inputTokens: 100_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 90_000_000,
+          cacheCreationTokens: 0,
+          costUsd: 900,
+        },
+      ]),
+      new Date("2026-09-15T00:00:00Z"),
+    );
+    const hit = hits.find((h) => h.ruleId === "frontier_share");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeGreaterThan(0);
   });
 });

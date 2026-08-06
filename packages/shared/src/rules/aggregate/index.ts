@@ -4,11 +4,11 @@ import { priceFinding } from "../index.js";
 import { isMaterial } from "../materiality.js";
 import type { RuleHit } from "../types.js";
 import { cacheEfficiencyRule } from "./cache-efficiency.js";
-import { checkFrontierShare } from "./frontier-share.js";
+import { frontierShareRule } from "./frontier-share.js";
 
 export {
   FRONTIER_SHARE_THRESHOLD,
-  checkFrontierShare,
+  frontierShareRule,
 } from "./frontier-share.js";
 export {
   CACHE_EFFICIENCY_MIN_READ_RATIO,
@@ -68,7 +68,7 @@ export type AggregateWindow = {
  * does for per-event hits — otherwise aggregates would reintroduce the
  * noisy-finding problem in a new place.
  *
- * @param now Comparison instant forwarded to checkFrontierShare for
+ * @param now Comparison instant forwarded to frontierShareRule for
  *   date-gated pricing (e.g. the Claude Sonnet 5 introductory rate).
  *   Defaults to the real current time; tests pass a fixed Date to pin
  *   behavior on either side of a cutoff.
@@ -92,9 +92,13 @@ export function runAggregateRules(
   now: Date = new Date(),
 ): RuleHit[] {
   const hits: RuleHit[] = [];
+  const ctx: RuleContext = { now };
 
-  const frontier = checkFrontierShare(window, now);
-  if (frontier) hits.push(frontier);
+  const finding = frontierShareRule.evaluate(window, ctx);
+  if (finding) {
+    const actual = frontierShareRule.resolveActual!(window, finding);
+    if (actual) hits.push(priceFinding(frontierShareRule, finding, actual, ctx));
+  }
 
   // cacheEfficiencyRule can fire once per model, but its dedupeKey (ruleId +
   // window start, built by the aggregate-rules job) carries no model — two
@@ -102,7 +106,6 @@ export function runAggregateRules(
   // memory repo's has()/Drizzle's onConflictDoNothing depends on
   // non-deterministic GROUP BY order. Keep only the worst-offending model
   // (see isWorseCacheHit) so the choice is deterministic instead.
-  const ctx: RuleContext = { now };
   let worstCache: RuleHit | null = null;
   for (const totals of window.byModel) {
     const finding = cacheEfficiencyRule.evaluate(totals, ctx);
