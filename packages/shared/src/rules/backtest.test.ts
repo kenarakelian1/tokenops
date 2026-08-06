@@ -115,4 +115,91 @@ describe("backtest", () => {
     });
     expect(res.rows).toEqual([]);
   });
+
+  // Both tests below share this window: a single frontier model (100% of
+  // window tokens, clearing FRONTIER_SHARE_THRESHOLD) whose dominant
+  // contributor is claude-opus-5, so frontier_share's counterfactual prices
+  // claude-sonnet-5. Priced at the window's own end (2026-08-08, Sonnet 5
+  // intro rate $2/$10 active): actual (opus-5 $5/MTok, 10M in / 0 out) =
+  // $50; counterfactual (sonnet-5 intro) = $20; saving = $30. Overriding
+  // claude-sonnet-5 to $0.5/$2.5 per MTok drops the counterfactual to $5,
+  // raising the saving to $45 — an explicit override beats the date-gated
+  // intro rate, per estimateCostUsd's documented precedence.
+  const frontierShareWindow: AggregateWindow = {
+    start: "2026-08-01T00:00:00.000Z",
+    end: "2026-08-08T00:00:00.000Z",
+    byModel: [
+      {
+        model: "claude-opus-5",
+        modelTier: "frontier",
+        inputTokens: 10_000_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: null,
+      },
+    ],
+  };
+  const cheapOverride = {
+    "claude-sonnet-5": { inputPerMTok: 0.5, outputPerMTok: 2.5 },
+  };
+
+  it("honours priceOverrides for an aggregate-grain rule (frontier_share)", () => {
+    const base = {
+      events: [] as UsageEvent[],
+      windows: [frontierShareWindow],
+      windowStart: "2026-08-01T00:00:00.000Z",
+      windowEnd: "2026-08-31T00:00:00.000Z",
+    };
+
+    const defaultRow = backtest(base).rows.find(
+      (r) => r.ruleId === "frontier_share",
+    );
+    const overriddenRow = backtest({
+      ...base,
+      priceOverrides: cheapOverride,
+    }).rows.find((r) => r.ruleId === "frontier_share");
+
+    expect(defaultRow).toBeDefined();
+    expect(overriddenRow).toBeDefined();
+    expect(defaultRow!.wouldHaveSavedUsd).toBeCloseTo(30, 5);
+    expect(overriddenRow!.wouldHaveSavedUsd).toBeCloseTo(45, 5);
+  });
+
+  it("honours priceOverrides for a request-grain rule in the same run as an aggregate-grain rule", () => {
+    // Default fixture (claude-opus-4, 20 in / 180 out, priced at its own
+    // 2026-08-15 timestamp — intro rate active): actual $0.0138,
+    // counterfactual (sonnet-5 intro) $0.00184, saving $0.01196. With
+    // cheapOverride the counterfactual drops to $0.00046, raising the
+    // saving to $0.01334.
+    const base = {
+      events: [ev({ eventId: "a" })],
+      windows: [frontierShareWindow],
+      windowStart: "2026-08-01T00:00:00.000Z",
+      windowEnd: "2026-08-31T00:00:00.000Z",
+    };
+
+    const defaultRun = backtest(base);
+    const overriddenRun = backtest({ ...base, priceOverrides: cheapOverride });
+
+    const defaultTrivial = defaultRun.rows.find(
+      (r) => r.ruleId === "frontier_trivial",
+    );
+    const overriddenTrivial = overriddenRun.rows.find(
+      (r) => r.ruleId === "frontier_trivial",
+    );
+    expect(defaultTrivial!.wouldHaveSavedUsd).toBeCloseTo(0.01196, 5);
+    expect(overriddenTrivial!.wouldHaveSavedUsd).toBeCloseTo(0.01334, 5);
+
+    // Same run also carries the aggregate-grain rule — pins that both grains
+    // honour the same override table in a single backtest() call.
+    const defaultShare = defaultRun.rows.find(
+      (r) => r.ruleId === "frontier_share",
+    );
+    const overriddenShare = overriddenRun.rows.find(
+      (r) => r.ruleId === "frontier_share",
+    );
+    expect(defaultShare!.wouldHaveSavedUsd).toBeCloseTo(30, 5);
+    expect(overriddenShare!.wouldHaveSavedUsd).toBeCloseTo(45, 5);
+  });
 });

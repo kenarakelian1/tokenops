@@ -1,4 +1,5 @@
 import type { ModelTier } from "../../model-tier.js";
+import type { PriceRow } from "../../pricing.js";
 import type { RuleContext } from "../contract.js";
 import { priceFinding } from "../index.js";
 import { isMaterial } from "../materiality.js";
@@ -72,6 +73,11 @@ export type AggregateWindow = {
  *   date-gated pricing (e.g. the Claude Sonnet 5 introductory rate).
  *   Defaults to the real current time; tests pass a fixed Date to pin
  *   behavior on either side of a cutoff.
+ * @param priceOverrides User-supplied price table, forwarded to priceFinding
+ *   for both frontierShareRule and cacheEfficiencyRule so aggregate-grain
+ *   rules honour the same table request-grain rules do. An explicit override
+ *   still wins over the date-gated Sonnet 5 introductory rate — that
+ *   precedence lives in estimateCostUsd, not here.
  */
 /**
  * Is `candidate` a worse (more wasteful) cache_efficiency hit than
@@ -90,9 +96,10 @@ function isWorseCacheHit(candidate: RuleHit, current: RuleHit): boolean {
 export function runAggregateRules(
   window: AggregateWindow,
   now: Date = new Date(),
+  priceOverrides?: Record<string, PriceRow>,
 ): RuleHit[] {
   const hits: RuleHit[] = [];
-  const ctx: RuleContext = { now };
+  const ctx: RuleContext = { now, priceOverrides };
 
   const finding = frontierShareRule.evaluate(window, ctx);
   if (finding) {

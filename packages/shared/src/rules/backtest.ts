@@ -86,7 +86,11 @@ export function backtest(input: BacktestInput): BacktestResult {
 
   // Aggregate-grain rules, each window priced at its own end instant.
   for (const window of input.windows) {
-    const hits = runAggregateRules(window, new Date(window.end));
+    const hits = runAggregateRules(
+      window,
+      new Date(window.end),
+      input.priceOverrides,
+    );
     for (const hit of hits) {
       record(hit.ruleId, hit.estimatedWastedUsd, hit.assumption);
     }
