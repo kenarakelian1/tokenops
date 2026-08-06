@@ -348,4 +348,73 @@ describe("events-repo", () => {
     expect(row!.detail).toBe("second — rule fired again with fresh evidence");
     expect(row!.estimatedWastedTokens).toBe(999);
   });
+
+  it("orders recommendations by savings, nulls last", async () => {
+    // A $0.94 finding must never sit above a $23 one, and a finding whose
+    // savings could not be priced (null) is not thereby a large one — it
+    // sinks below every priced card regardless of token count.
+    const repo = createMemoryEventsRepo();
+    const base = {
+      userId: "u1",
+      severity: "warn",
+      title: "t",
+      detail: "d",
+      estimatedWastedTokens: 1,
+      eventIds: [],
+      counterfactual: null,
+      assumption: null,
+    };
+    await repo.upsertRecommendation({
+      ...base, ruleId: "frontier_trivial", estimatedWastedUsd: 0.94, dedupeKey: "a",
+    });
+    await repo.upsertRecommendation({
+      ...base, ruleId: "cache_efficiency", estimatedWastedUsd: 23.1, dedupeKey: "b",
+    });
+    await repo.upsertRecommendation({
+      // A huge token count must not compensate for an unpriceable USD value
+      // — null-USD findings sink to the bottom regardless.
+      ...base,
+      ruleId: "context_bloat",
+      estimatedWastedUsd: null,
+      estimatedWastedTokens: 999_999,
+      dedupeKey: "c",
+    });
+
+    const rows = await repo.listRecommendations("u1", "open");
+    expect(rows.map((r) => r.ruleId)).toEqual([
+      "cache_efficiency",
+      "frontier_trivial",
+      "context_bloat",
+    ]);
+  });
+
+  it("orders by savings numerically, not lexically — a $9.00 finding must not lexically outrank $23.00", async () => {
+    // estimated_wasted_usd is a numeric column stored as a string. String
+    // comparison of "9.00" vs "23.00" puts "9" above "23" character-by-
+    // character; the fix must compare as numbers on both the Drizzle
+    // (Postgres numeric column) and in-memory (Number(...) coercion) side.
+    const repo = createMemoryEventsRepo();
+    const base = {
+      userId: "u1",
+      severity: "warn",
+      title: "t",
+      detail: "d",
+      estimatedWastedTokens: 1,
+      eventIds: [],
+      counterfactual: null,
+      assumption: null,
+    };
+    await repo.upsertRecommendation({
+      ...base, ruleId: "frontier_trivial", estimatedWastedUsd: 9.0, dedupeKey: "nine",
+    });
+    await repo.upsertRecommendation({
+      ...base, ruleId: "cache_efficiency", estimatedWastedUsd: 23.0, dedupeKey: "twentythree",
+    });
+
+    const rows = await repo.listRecommendations("u1", "open");
+    expect(rows.map((r) => r.ruleId)).toEqual([
+      "cache_efficiency",
+      "frontier_trivial",
+    ]);
+  });
 });

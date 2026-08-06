@@ -427,7 +427,14 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .select()
         .from(recommendations)
         .where(and(...conditions))
-        .orderBy(desc(recommendations.createdAt));
+        // Savings first, so a $0.94 finding can never sit above a $23 one.
+        // NULLS LAST: an unpriceable finding is not a large one.
+        // estimated_wasted_usd is numeric, so the raw column sorts
+        // numerically (not lexically) — do not cast it to text.
+        .orderBy(
+          sql`${recommendations.estimatedWastedUsd} DESC NULLS LAST`,
+          desc(recommendations.createdAt),
+        );
     },
 
     async dismissRecommendation(userId, id) {
@@ -784,7 +791,19 @@ export function createMemoryEventsRepo(): EventsRepo {
           if (status && r.status !== status) return false;
           return true;
         })
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        .sort((a, b) => {
+          // Mirrors the Drizzle `estimated_wasted_usd DESC NULLS LAST, created_at DESC`
+          // ordering above — kept symmetric so this fake can't pass a test
+          // the real implementation fails. Compared as numbers, not strings:
+          // estimatedWastedUsd is stored as a string, and string comparison
+          // would put "9.00" above "23.00".
+          const au = a.estimatedWastedUsd == null ? null : Number(a.estimatedWastedUsd);
+          const bu = b.estimatedWastedUsd == null ? null : Number(b.estimatedWastedUsd);
+          if (au == null && bu != null) return 1;
+          if (bu == null && au != null) return -1;
+          if (au != null && bu != null && au !== bu) return bu - au;
+          return b.createdAt.getTime() - a.createdAt.getTime();
+        });
     },
 
     async dismissRecommendation(userId, id) {
