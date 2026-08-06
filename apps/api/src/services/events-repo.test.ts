@@ -154,4 +154,36 @@ describe("events-repo", () => {
     expect(totals[0]!.cacheCreationTokens).toBe(125);
     expect(totals[0]!.costUsd).toBeCloseTo(1.75, 8);
   });
+
+  it("round-trips a counterfactual and assumption on a recommendation", async () => {
+    const repo = createMemoryEventsRepo();
+    await repo.upsertRecommendation({
+      userId: "u1",
+      ruleId: "frontier_trivial",
+      severity: "info",
+      title: "t",
+      detail: "d",
+      estimatedWastedTokens: 160,
+      estimatedWastedUsd: 0.02,
+      eventIds: ["e1"],
+      dedupeKey: "e1",
+      counterfactual: {
+        model: "claude-sonnet-5",
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheReadTokens: null,
+        cacheCreationTokens: null,
+      },
+      assumption: "claude-sonnet-5 handles small requests as well",
+    });
+    const [row] = await repo.listRecommendations("u1", "open");
+    expect(row!.counterfactual).toEqual({
+      model: "claude-sonnet-5",
+      inputTokens: 120,
+      outputTokens: 40,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+    });
+    expect(row!.assumption).toBe("claude-sonnet-5 handles small requests as well");
+  });
 });

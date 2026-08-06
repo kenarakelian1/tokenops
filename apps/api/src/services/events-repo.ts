@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt, lte, ne, sql } from "drizzle-orm";
 import {
   getModelTier,
+  type Counterfactual,
   type EventGrain,
   type ModelWindowTotals,
   type UsageEvent,
@@ -44,6 +45,8 @@ export type RecommendationInsert = {
   estimatedWastedUsd: number | null;
   eventIds: string[];
   dedupeKey: string;
+  counterfactual: Counterfactual | null;
+  assumption: string | null;
 };
 
 /** Data access for usage events, aggregates, recommendations, machines. */
@@ -360,10 +363,22 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
               ? String(rec.estimatedWastedUsd)
               : null,
           eventIds: rec.eventIds,
+          counterfactual: rec.counterfactual,
+          assumption: rec.assumption,
           dedupeKey: rec.dedupeKey,
           status: "open",
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [
+            recommendations.userId,
+            recommendations.ruleId,
+            recommendations.dedupeKey,
+          ],
+          set: {
+            counterfactual: rec.counterfactual,
+            assumption: rec.assumption,
+          },
+        });
     },
 
     async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
@@ -680,7 +695,12 @@ export function createMemoryEventsRepo(): EventsRepo {
 
     async upsertRecommendation(rec) {
       const key = recDedupeKey(rec.userId, rec.ruleId, rec.dedupeKey);
-      if (recMap.has(key)) return;
+      const existing = recMap.get(key);
+      if (existing) {
+        existing.counterfactual = rec.counterfactual;
+        existing.assumption = rec.assumption;
+        return;
+      }
       recSeq += 1;
       const id = `00000000-0000-4000-8000-${String(recSeq).padStart(12, "0")}`;
       recMap.set(key, {
@@ -696,6 +716,8 @@ export function createMemoryEventsRepo(): EventsRepo {
             ? String(rec.estimatedWastedUsd)
             : null,
         eventIds: rec.eventIds,
+        counterfactual: rec.counterfactual,
+        assumption: rec.assumption,
         dedupeKey: rec.dedupeKey,
         status: "open",
         createdAt: new Date(),

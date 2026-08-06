@@ -57,6 +57,8 @@ export async function applyRulesForEvent(
       estimatedWastedUsd: hit.estimatedWastedUsd,
       eventIds: hit.eventIds,
       dedupeKey: event.eventId,
+      counterfactual: hit.counterfactual,
+      assumption: hit.assumption,
     });
   }
   return hits;
