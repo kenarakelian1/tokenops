@@ -42,8 +42,9 @@ export function Recommendations() {
     <div>
       <h1>Recommendations</h1>
       <p className="muted" style={{ marginTop: "-0.5rem" }}>
-        Efficiency tips with estimated waste. Savings figures are{" "}
-        <strong>estimated</strong>.
+        Efficiency findings, highest estimated savings first. Savings figures are{" "}
+        <strong>estimated</strong> — each is a real token count priced at
+        published rates under the stated assumption, not a measurement.
       </p>
 
       {error ? <div className="error">{error}</div> : null}
@@ -87,6 +88,18 @@ export function Recommendations() {
                   ? ` · ${r.eventIds.length} linked event(s)`
                   : null}
               </div>
+              {r.counterfactual ? (
+                <div className="muted mono" style={{ fontSize: "0.8rem", marginTop: "0.35rem" }}>
+                  Would have been: {r.counterfactual.model} ·{" "}
+                  {formatTokens(r.counterfactual.inputTokens)} in /{" "}
+                  {formatTokens(r.counterfactual.outputTokens)} out
+                </div>
+              ) : null}
+              {r.assumption ? (
+                <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.35rem" }}>
+                  Assumes: {r.assumption}
+                </div>
+              ) : null}
             </article>
           ))}
         </div>
