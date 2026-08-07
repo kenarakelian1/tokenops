@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { FRONTIER_MODEL_PATTERNS, getModelTier } from "./model-tier.js";
 import { cheaperSiblingModel, estimateCostUsd } from "./pricing.js";
 
 describe("estimateCostUsd", () => {
@@ -175,5 +176,86 @@ describe("cheaperSiblingModel", () => {
     it("still returns null for gpt-4o-mini itself", () => {
       expect(cheaperSiblingModel("gpt-4o-mini")).toBeNull();
     });
+  });
+});
+
+/**
+ * The invariant that closes the whole class of "frontier-tier, has a sibling,
+ * cannot be priced".
+ *
+ * A model in that state produces a recommendation card with `—` where the
+ * dollar figure goes, and — because the list orders by savings `NULLS LAST` —
+ * sinks it to the bottom of the panel. `gpt-4`, `gpt-4-turbo` and
+ * `claude-3-opus-*` were all in that state: `getModelTier` calls them
+ * frontier, `cheaperSiblingModel` names a target, and `resolvePrice`
+ * (prefix-matching only) found no row for any of them.
+ */
+const NOW = new Date("2026-09-15T00:00:00Z"); // after the Sonnet 5 intro expiry
+
+/**
+ * One realistic model string per frontier pattern in model-tier.ts, including
+ * the suffixed forms production actually sends. The test below asserts this
+ * corpus covers every pattern, so adding a pattern there without adding a
+ * representative here fails rather than silently going unchecked.
+ */
+const FRONTIER_MODEL_SAMPLES = [
+  "claude-opus-5", // /opus/i
+  "claude-opus-5[1m]", // bracketed context-window suffix
+  "claude-opus-4-1", // dotted point-release suffix
+  "claude-3-opus-20240229", // /claude-3-opus/i, dated snapshot suffix
+  "o1", // /o1(?!-mini)/i
+  "o3", // /o3(?!-mini)/i
+  "gpt-4", // /gpt-4(?!o-mini)/i
+  "gpt-4-turbo",
+  "gpt-4o",
+  "gpt-4.1",
+  "grok-4", // /grok-4/i
+  "grok-3", // /grok-3(?!-mini)/i
+];
+
+describe("every frontier model with a sibling can be priced", () => {
+  it("covers every frontier pattern with at least one sample", () => {
+    for (const pattern of FRONTIER_MODEL_PATTERNS) {
+      expect(
+        FRONTIER_MODEL_SAMPLES.some((m) => pattern.test(m)),
+        `no FRONTIER_MODEL_SAMPLES entry matches ${pattern}`,
+      ).toBe(true);
+    }
+  });
+
+  it("classifies every sample as frontier", () => {
+    for (const model of FRONTIER_MODEL_SAMPLES) {
+      expect(getModelTier(model), model).toBe("frontier");
+    }
+  });
+
+  it("prices both sides of every actionable frontier swap", () => {
+    for (const model of FRONTIER_MODEL_SAMPLES) {
+      const sibling = cheaperSiblingModel(model);
+      // No sibling means no card at all (frontier_trivial and frontier_share
+      // both return null), so there is nothing to price. o1/o3/grok are here.
+      if (sibling === null) continue;
+
+      expect(
+        estimateCostUsd(model, 1_000_000, 1_000_000, undefined, NOW),
+        `${model} is frontier and has sibling ${sibling}, but cannot be priced`,
+      ).not.toBeNull();
+      expect(
+        estimateCostUsd(sibling, 1_000_000, 1_000_000, undefined, NOW),
+        `${sibling} is ${model}'s suggested target, but cannot be priced`,
+      ).not.toBeNull();
+    }
+  });
+
+  it("does not let the gpt-4 row shadow the longer gpt-4* keys", () => {
+    // resolvePrice() takes the LONGEST prefix match. Adding "gpt-4" must not
+    // reprice gpt-4o ($2.50/MTok in) or gpt-4.1 ($2) at the original GPT-4's
+    // $30, nor gpt-4o-mini ($0.15) at either.
+    expect(estimateCostUsd("gpt-4", 1_000_000, 0, undefined, NOW)).toBeCloseTo(30, 5);
+    expect(estimateCostUsd("gpt-4-turbo", 1_000_000, 0, undefined, NOW)).toBeCloseTo(10, 5);
+    expect(estimateCostUsd("gpt-4o", 1_000_000, 0, undefined, NOW)).toBeCloseTo(2.5, 5);
+    expect(estimateCostUsd("gpt-4o-mini", 1_000_000, 0, undefined, NOW)).toBeCloseTo(0.15, 5);
+    expect(estimateCostUsd("gpt-4.1", 1_000_000, 0, undefined, NOW)).toBeCloseTo(2, 5);
+    expect(estimateCostUsd("gpt-4.1-mini", 1_000_000, 0, undefined, NOW)).toBeCloseTo(0.4, 5);
   });
 });
