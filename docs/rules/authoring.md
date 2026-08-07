@@ -168,10 +168,16 @@ honest answer than charging the whole call as waste, which is what
 
 ### Grain: which runner will call you
 
-`grain` is a declaration, not a hint. It replaced an `isAggregate()` gate
-that used to live inside the runner, so that a new rule **states** which
-shape of input it consumes rather than remembering to opt out of the wrong
-one.
+`grain` is a declaration, not a hint, and it is enforced: `runRules` skips
+any rule in `REQUEST_RULES` whose `grain` is not `"request"`. `REQUEST_RULES`
+is a hand-maintained array, so appending an aggregate-grain rule to it
+compiles — the filter is what stops that rule from then being handed a single
+event it never asked for. It stays silent instead.
+
+That check sits **alongside** `isAggregate()` in the same runner, and the two
+are not interchangeable: `isAggregate()` asks whether the *event* is a
+time-bucketed sum, `grain` asks what shape of input the *rule* consumes. Both
+gates are live.
 
 | `grain` | Input type | Runner | Registration |
 |---|---|---|---|
@@ -361,8 +367,25 @@ count that is not a difference.
 assumption: `${suggestedModel} handles requests at or under ${FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS} tokens as well as ${event.model}`,
 ```
 
-Rendered, that reads: *"claude-sonnet-5 handles requests at or under 200
-tokens as well as claude-opus-5."*
+The card wraps that in a prefix it owns
+(`apps/web/src/pages/Recommendations.tsx`):
+
+```tsx
+Assumes: {r.assumption}
+```
+
+so the rendered line is:
+
+> Assumes: claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5
+
+**Write the clause, not the sentence.** The string a rule returns must *not*
+begin with "Assumes" — the UI supplies that word, and a rule that supplies it
+too renders "Assumes: Assumes …". Four of the five shipped rules did exactly
+that until `assumptions.test.ts` started pinning all five strings
+character-for-character; the assertions that existed before it
+(`toMatch(/half/i)`, `toMatch(/claude-sonnet-5/)`) could not see a duplicated
+prefix. Start with a lowercase noun phrase or a model name, as all five now
+do.
 
 That sentence appears **on the card**, next to the estimated dollar figure. It
 is the thing a user is invited to disagree with. It names models they
@@ -402,15 +425,17 @@ actually have done.** Not something cheaper. Not something theoretically
 optimal. Something they could have chosen, in the situation they were
 actually in.
 
-What the five shipped rules declare:
+What the five shipped rules declare. The right-hand column is the **rendered**
+card line — the `Assumes: ` prefix comes from the UI, not from the rule (see
+§ 2), so the string in the source is everything after the colon:
 
-| Rule | Counterfactual | Stated assumption |
+| Rule | Counterfactual | Rendered on the card |
 |---|---|---|
-| `frontier_trivial` | Cheapest in-vendor sibling model; every token count unchanged | *"claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5"* |
-| `full_document_io` | Same model; `inputTokens` reduced by `inputTokens × fileDumpScore × 0.5`, cache breakdown trimmed | *"Assumes excerpting removes half the dumped content, leaving the rest of the prompt unchanged"* |
-| `context_bloat` | Same model; `inputTokens` held flat at the session's first request, cache breakdown trimmed | *"Assumes context could have stayed at the size of the session's first request"* |
-| `cache_efficiency` | Same model; `cacheReadTokens` raised toward `inputTokens × 0.5`, capped at `inputTokens − cacheCreationTokens` so the two cache components still fit inside `inputTokens` (see § 4.4) | *"Assumes a 50% cache-read ratio is achievable for this workload"* — the percentage is the ratio **actually targeted**, so it drops below 50% whenever the cap binds |
-| `frontier_share` | Dominant frontier model's cheaper in-vendor sibling, over **that model's own** tokens and cache breakdown | *"Assumes routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors' frontier tokens are counted in the share but not repriced."* |
+| `frontier_trivial` | Cheapest in-vendor sibling model; every token count unchanged | *"Assumes: claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5"* |
+| `full_document_io` | Same model; `inputTokens` reduced by `inputTokens × fileDumpScore × 0.5`, cache breakdown trimmed | *"Assumes: excerpting removes half the dumped content, leaving the rest of the prompt unchanged"* |
+| `context_bloat` | Same model; `inputTokens` held flat at the session's first request, cache breakdown trimmed | *"Assumes: context could have stayed at the size of the session's first request"* |
+| `cache_efficiency` | Same model; `cacheReadTokens` raised toward `inputTokens × 0.5`, capped at `inputTokens − cacheCreationTokens` so the two cache components still fit inside `inputTokens` (see § 4.4) | *"Assumes: a 50% cache-read ratio is achievable for this workload"* — the percentage is the ratio **actually targeted**, so it drops below 50% whenever the cap binds |
+| `frontier_share` | Dominant frontier model's cheaper in-vendor sibling, over **that model's own** tokens and cache breakdown | *"Assumes: routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors' frontier tokens are counted in the share but not repriced."* |
 
 Three shapes appear, and yours will be one of them:
 
@@ -645,7 +670,7 @@ Two details worth copying:
   null-vs-zero distinction of § 4.1 survives the cap.
 - **The stated assumption follows the cap, not the constant.** The card
   reports `Math.round((targetReads / totals.inputTokens) * 100)`, so the
-  worked example above says *"Assumes a 20% cache-read ratio is achievable
+  worked example above renders *"Assumes: a 20% cache-read ratio is achievable
   for this workload"*. Had it hardcoded the 50% constant, the card would
   assert a ratio its own counterfactual never reaches — the assumption would
   be describing a hypothetical that was not priced.
@@ -918,7 +943,9 @@ Open a pull request against `main`. A rule PR should contain:
    If your counterfactual contains a number that represents a belief about
    what the user could have done — an excerpt fraction, an achievable ratio,
    a quality equivalence — it must be a named constant *and* it must appear
-   in `assumption`, in words, phrased for the person reading the card.
+   in `assumption`, in words, phrased for the person reading the card, as a
+   clause with no leading "Assumes" (§ 2). Add the string to
+   `assumptions.test.ts`, which pins all of them exactly.
 7. **A README row** — add the rule to the table in the "Recommendation rules"
    section, then re-render with
    `node scripts/build-doc-html.mjs README.md README.html`.

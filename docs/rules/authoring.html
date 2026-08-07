@@ -253,10 +253,15 @@ export type PricedSavings = {
 honest answer than charging the whole call as waste, which is what
 <code>frontier_trivial</code> did before this function existed.</p>
 <h3 id="grain-which-runner-will-call-you">Grain: which runner will call you</h3>
-<p><code>grain</code> is a declaration, not a hint. It replaced an <code>isAggregate()</code> gate
-that used to live inside the runner, so that a new rule <strong>states</strong> which
-shape of input it consumes rather than remembering to opt out of the wrong
-one.</p>
+<p><code>grain</code> is a declaration, not a hint, and it is enforced: <code>runRules</code> skips
+any rule in <code>REQUEST_RULES</code> whose <code>grain</code> is not <code>&quot;request&quot;</code>. <code>REQUEST_RULES</code>
+is a hand-maintained array, so appending an aggregate-grain rule to it
+compiles — the filter is what stops that rule from then being handed a single
+event it never asked for. It stays silent instead.</p>
+<p>That check sits <strong>alongside</strong> <code>isAggregate()</code> in the same runner, and the two
+are not interchangeable: <code>isAggregate()</code> asks whether the <em>event</em> is a
+time-bucketed sum, <code>grain</code> asks what shape of input the <em>rule</em> consumes. Both
+gates are live.</p>
 <table>
 <thead>
 <tr>
@@ -426,8 +431,22 @@ count that is not a difference.</p>
 <h3 id="why-assumption-is-phrased-for-a-user">Why <code>assumption</code> is phrased for a user</h3>
 <pre><code class="language-ts">assumption: `${suggestedModel} handles requests at or under ${FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS} tokens as well as ${event.model}`,
 </code></pre>
-<p>Rendered, that reads: <em>&quot;claude-sonnet-5 handles requests at or under 200
-tokens as well as claude-opus-5.&quot;</em></p>
+<p>The card wraps that in a prefix it owns
+(<code>apps/web/src/pages/Recommendations.tsx</code>):</p>
+<pre><code class="language-tsx">Assumes: {r.assumption}
+</code></pre>
+<p>so the rendered line is:</p>
+<blockquote>
+<p>Assumes: claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5</p>
+</blockquote>
+<p><strong>Write the clause, not the sentence.</strong> The string a rule returns must <em>not</em>
+begin with &quot;Assumes&quot; — the UI supplies that word, and a rule that supplies it
+too renders &quot;Assumes: Assumes …&quot;. Four of the five shipped rules did exactly
+that until <code>assumptions.test.ts</code> started pinning all five strings
+character-for-character; the assertions that existed before it
+(<code>toMatch(/half/i)</code>, <code>toMatch(/claude-sonnet-5/)</code>) could not see a duplicated
+prefix. Start with a lowercase noun phrase or a model name, as all five now
+do.</p>
 <p>That sentence appears <strong>on the card</strong>, next to the estimated dollar figure. It
 is the thing a user is invited to disagree with. It names models they
 recognise and a threshold they can evaluate against their own workload. It
@@ -456,39 +475,41 @@ list.</p>
 actually have done.</strong> Not something cheaper. Not something theoretically
 optimal. Something they could have chosen, in the situation they were
 actually in.</p>
-<p>What the five shipped rules declare:</p>
+<p>What the five shipped rules declare. The right-hand column is the <strong>rendered</strong>
+card line — the <code>Assumes: </code> prefix comes from the UI, not from the rule (see
+§ 2), so the string in the source is everything after the colon:</p>
 <table>
 <thead>
 <tr>
 <th>Rule</th>
 <th>Counterfactual</th>
-<th>Stated assumption</th>
+<th>Rendered on the card</th>
 </tr>
 </thead>
 <tbody><tr>
 <td><code>frontier_trivial</code></td>
 <td>Cheapest in-vendor sibling model; every token count unchanged</td>
-<td><em>&quot;claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5&quot;</em></td>
+<td><em>&quot;Assumes: claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5&quot;</em></td>
 </tr>
 <tr>
 <td><code>full_document_io</code></td>
 <td>Same model; <code>inputTokens</code> reduced by <code>inputTokens × fileDumpScore × 0.5</code>, cache breakdown trimmed</td>
-<td><em>&quot;Assumes excerpting removes half the dumped content, leaving the rest of the prompt unchanged&quot;</em></td>
+<td><em>&quot;Assumes: excerpting removes half the dumped content, leaving the rest of the prompt unchanged&quot;</em></td>
 </tr>
 <tr>
 <td><code>context_bloat</code></td>
 <td>Same model; <code>inputTokens</code> held flat at the session&#39;s first request, cache breakdown trimmed</td>
-<td><em>&quot;Assumes context could have stayed at the size of the session&#39;s first request&quot;</em></td>
+<td><em>&quot;Assumes: context could have stayed at the size of the session&#39;s first request&quot;</em></td>
 </tr>
 <tr>
 <td><code>cache_efficiency</code></td>
 <td>Same model; <code>cacheReadTokens</code> raised toward <code>inputTokens × 0.5</code>, capped at <code>inputTokens − cacheCreationTokens</code> so the two cache components still fit inside <code>inputTokens</code> (see § 4.4)</td>
-<td><em>&quot;Assumes a 50% cache-read ratio is achievable for this workload&quot;</em> — the percentage is the ratio <strong>actually targeted</strong>, so it drops below 50% whenever the cap binds</td>
+<td><em>&quot;Assumes: a 50% cache-read ratio is achievable for this workload&quot;</em> — the percentage is the ratio <strong>actually targeted</strong>, so it drops below 50% whenever the cap binds</td>
 </tr>
 <tr>
 <td><code>frontier_share</code></td>
 <td>Dominant frontier model&#39;s cheaper in-vendor sibling, over <strong>that model&#39;s own</strong> tokens and cache breakdown</td>
-<td><em>&quot;Assumes routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors&#39; frontier tokens are counted in the share but not repriced.&quot;</em></td>
+<td><em>&quot;Assumes: routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors&#39; frontier tokens are counted in the share but not repriced.&quot;</em></td>
 </tr>
 </tbody></table>
 <p>Three shapes appear, and yours will be one of them:</p>
@@ -684,7 +705,7 @@ but it is still copied through to the counterfactual as <code>null</code>. The
 null-vs-zero distinction of § 4.1 survives the cap.</li>
 <li><strong>The stated assumption follows the cap, not the constant.</strong> The card
 reports <code>Math.round((targetReads / totals.inputTokens) * 100)</code>, so the
-worked example above says <em>&quot;Assumes a 20% cache-read ratio is achievable
+worked example above renders <em>&quot;Assumes: a 20% cache-read ratio is achievable
 for this workload&quot;</em>. Had it hardcoded the 50% constant, the card would
 assert a ratio its own counterfactual never reaches — the assumption would
 be describing a hypothetical that was not priced.</li>
@@ -945,7 +966,9 @@ the runner with a fixture that clears the materiality floor.</li>
 If your counterfactual contains a number that represents a belief about
 what the user could have done — an excerpt fraction, an achievable ratio,
 a quality equivalence — it must be a named constant <em>and</em> it must appear
-in <code>assumption</code>, in words, phrased for the person reading the card.</li>
+in <code>assumption</code>, in words, phrased for the person reading the card, as a
+clause with no leading &quot;Assumes&quot; (§ 2). Add the string to
+<code>assumptions.test.ts</code>, which pins all of them exactly.</li>
 <li><strong>A README row</strong> — add the rule to the table in the &quot;Recommendation rules&quot;
 section, then re-render with
 <code>node scripts/build-doc-html.mjs README.md README.html</code>.</li>
