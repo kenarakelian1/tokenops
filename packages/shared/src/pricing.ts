@@ -24,6 +24,15 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
   // specific key always wins.
   "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8 },
   "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6 },
+  // Same trap one level deeper: without this row, "gpt-4.1-nano" longest-
+  // prefix-matches "gpt-4.1" and prices a $0.10/$0.40 model at $2/$8. That
+  // is worse than the null it replaced — getModelTier calls nano frontier
+  // (its frontier patterns are checked before the small ones) and
+  // cheaperSiblingModel offers gpt-4o-mini, which is actually MORE expensive
+  // than nano, so the card would assert a confident saving for a swap that
+  // costs the user more. With the real rate the counterfactual is dearer,
+  // savings clamp to 0, and materiality correctly drops the card.
+  "gpt-4.1-nano": { inputPerMTok: 0.1, outputPerMTok: 0.4 },
   o1: { inputPerMTok: 15, outputPerMTok: 60 },
   "o3-mini": { inputPerMTok: 1.1, outputPerMTok: 4.4 },
   // Anthropic (approximate; model strings vary by API)

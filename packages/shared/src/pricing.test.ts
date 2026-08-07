@@ -209,6 +209,8 @@ const FRONTIER_MODEL_SAMPLES = [
   "gpt-4-turbo",
   "gpt-4o",
   "gpt-4.1",
+  "gpt-4.1-nano", // frontier patterns are checked before the small ones
+
   "grok-4", // /grok-4/i
   "grok-3", // /grok-3(?!-mini)/i
 ];
@@ -257,5 +259,29 @@ describe("every frontier model with a sibling can be priced", () => {
     expect(estimateCostUsd("gpt-4o-mini", 1_000_000, 0, undefined, NOW)).toBeCloseTo(0.15, 5);
     expect(estimateCostUsd("gpt-4.1", 1_000_000, 0, undefined, NOW)).toBeCloseTo(2, 5);
     expect(estimateCostUsd("gpt-4.1-mini", 1_000_000, 0, undefined, NOW)).toBeCloseTo(0.4, 5);
+    // The same trap one level deeper: "gpt-4.1-nano" must not price off the
+    // "gpt-4.1" row at $2 — that is 20x its real rate, and in the direction
+    // that invents savings.
+    expect(estimateCostUsd("gpt-4.1-nano", 1_000_000, 0, undefined, NOW)).toBeCloseTo(0.1, 5);
+  });
+
+  it("never recommends a swap to a more expensive model", () => {
+    // gpt-4.1-nano ($0.10/$0.40) is classified frontier and offered
+    // gpt-4o-mini ($0.15/$0.60) as its "cheaper" sibling. Pricing both sides
+    // is what stops a card claiming savings for a swap that costs more:
+    // savings clamp to 0 and materiality drops the finding.
+    for (const model of FRONTIER_MODEL_SAMPLES) {
+      const sibling = cheaperSiblingModel(model);
+      if (sibling === null) continue;
+      const actual = estimateCostUsd(model, 1_000_000, 1_000_000, undefined, NOW)!;
+      const swapped = estimateCostUsd(sibling, 1_000_000, 1_000_000, undefined, NOW)!;
+      if (swapped <= actual) continue; // the normal case: the sibling is cheaper
+      // The sibling is dearer, so the saving must be zero, never negative-
+      // turned-positive or clamped into a real-looking figure.
+      expect(
+        Math.max(0, actual - swapped),
+        `${model} -> ${sibling} costs more; savings must clamp to 0`,
+      ).toBe(0);
+    }
   });
 });
