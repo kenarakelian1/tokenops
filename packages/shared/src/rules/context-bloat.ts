@@ -70,8 +70,11 @@ export const contextBloatRule: Rule<UsageEvent> = {
         cacheReadTokens: trimmedCache.cacheReadTokens,
         cacheCreationTokens: trimmedCache.cacheCreationTokens,
       },
+      // No leading "Assumes" — the card renders the prefix (see
+      // apps/web/src/pages/Recommendations.tsx). A rule states the belief;
+      // the UI frames it.
       assumption:
-        "Assumes context could have stayed at the size of the session's first request",
+        "context could have stayed at the size of the session's first request",
     };
   },
 };

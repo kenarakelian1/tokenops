@@ -117,8 +117,11 @@ export const frontierShareRule: Rule<AggregateWindow> = {
         cacheReadTokens: dominant.cacheReadTokens,
         cacheCreationTokens: dominant.cacheCreationTokens,
       },
+      // No leading "Assumes" — the card renders the prefix (see
+      // apps/web/src/pages/Recommendations.tsx). A rule states the belief;
+      // the UI frames it.
       assumption:
-        `Assumes routine work moves from ${dominant.model} to ${suggestedModel}. ` +
+        `routine work moves from ${dominant.model} to ${suggestedModel}. ` +
         `Other vendors' frontier tokens are counted in the share but not repriced.`,
     };
   },

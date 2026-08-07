@@ -69,8 +69,11 @@ export const fullDocumentIoRule: Rule<UsageEvent> = {
         cacheReadTokens: trimmedCache.cacheReadTokens,
         cacheCreationTokens: trimmedCache.cacheCreationTokens,
       },
+      // No leading "Assumes" — the card renders the prefix (see
+      // apps/web/src/pages/Recommendations.tsx). A rule states the belief;
+      // the UI frames it.
       assumption:
-        "Assumes excerpting removes half the dumped content, leaving the rest of the prompt unchanged",
+        "excerpting removes half the dumped content, leaving the rest of the prompt unchanged",
     };
   },
 };

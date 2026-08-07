@@ -24,6 +24,12 @@ export type RuleFinding = {
    * on the card. Required whenever the counterfactual embeds a judgement the
    * user might reasonably dispute (e.g. "excerpting removes half the dumped
    * content"). Omit only when the counterfactual is self-evident.
+   *
+   * Write the CLAUSE only, with no leading "Assumes" — the card supplies the
+   * prefix ("Assumes: {assumption}", see
+   * apps/web/src/pages/Recommendations.tsx), so a rule that includes the word
+   * itself renders "Assumes: Assumes …". A rule states the belief; the UI
+   * frames it. `assumptions.test.ts` pins all five strings exactly.
    */
   assumption?: string;
 };
@@ -38,9 +44,18 @@ export type RuleContext = {
 
 /**
  * The published rule contract. `grain` declares which shape of input a rule
- * consumes, replacing the isAggregate() gate that used to live inside
- * runRules — a new rule now STATES its grain rather than remembering to opt
- * out of the wrong one.
+ * consumes, so a new rule STATES what it can be handed rather than
+ * remembering to opt out of the wrong thing.
+ *
+ * The declaration is enforced, not documentation: `runRules` skips any rule
+ * in REQUEST_RULES whose grain is not "request". It does NOT replace the
+ * separate isAggregate() check in that runner — that one gates on the
+ * EVENT's grain (is this datum a time-bucketed sum?), which is a different
+ * question from what the RULE declares it consumes. Both gates are live.
+ *
+ * The aggregate runner (rules/aggregate/index.ts) is hand-wired rather than a
+ * loop over a registry, because its two rules take different input types, so
+ * there is no symmetric filter on that side.
  *
  * See docs/rules/authoring.md.
  */

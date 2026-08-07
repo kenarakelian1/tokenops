@@ -78,7 +78,11 @@ export const cacheEfficiencyRule: Rule<ModelWindowTotals> = {
       // readCapacity caps targetReads below inputTokens * 0.5 (heavy
       // recorded cache-creation volume), a card that still said "50%" would
       // assert an achievable ratio the counterfactual itself doesn't reach.
-      assumption: `Assumes a ${Math.round(
+      //
+      // No leading "Assumes" — the card renders the prefix (see
+      // apps/web/src/pages/Recommendations.tsx). A rule states the belief;
+      // the UI frames it.
+      assumption: `a ${Math.round(
         (targetReads / totals.inputTokens) * 100,
       )}% cache-read ratio is achievable for this workload`,
     };
