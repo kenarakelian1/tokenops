@@ -302,6 +302,17 @@ import type { Rule, RuleContext, RuleFinding } from &quot;./contract.js&quot;;
 /** Max total tokens for a call to be considered &quot;trivial&quot;. */
 export const FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS = 200;
 
+/**
+ * Frontier model used for a trivial request (few tokens, few messages, no
+ * large paste). Counterfactual: the same call served by the cheapest sibling
+ * in the SAME vendor family — cross-vendor advice isn&#39;t actionable, since a
+ * user can&#39;t switch one call from Claude Opus to GPT-4o-mini.
+ *
+ * Declared `info`: capped at 200 tokens, the most this can ever save on one
+ * call is a fraction of a cent, and in a coding agent the user does not pick
+ * a model per request at all. Ordering by savings keeps it below rules that
+ * carry real money.
+ */
 export const frontierTrivialRule: Rule&lt;UsageEvent&gt; = {
   id: &quot;frontier_trivial&quot;,
   grain: &quot;request&quot;,
@@ -471,8 +482,8 @@ actually in.</p>
 </tr>
 <tr>
 <td><code>cache_efficiency</code></td>
-<td>Same model; <code>cacheReadTokens</code> raised to <code>inputTokens × 0.5</code></td>
-<td><em>&quot;Assumes a 50% cache-read ratio is achievable for this workload&quot;</em></td>
+<td>Same model; <code>cacheReadTokens</code> raised toward <code>inputTokens × 0.5</code>, capped at <code>inputTokens − cacheCreationTokens</code> so the two cache components still fit inside <code>inputTokens</code> (see § 4.4)</td>
+<td><em>&quot;Assumes a 50% cache-read ratio is achievable for this workload&quot;</em> — the percentage is the ratio <strong>actually targeted</strong>, so it drops below 50% whenever the cap binds</td>
 </tr>
 <tr>
 <td><code>frontier_share</code></td>
@@ -480,17 +491,22 @@ actually in.</p>
 <td><em>&quot;Assumes routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors&#39; frontier tokens are counted in the share but not repriced.&quot;</em></td>
 </tr>
 </tbody></table>
-<p>Two shapes appear, and yours will be one of them:</p>
+<p>Three shapes appear, and yours will be one of them:</p>
 <ul>
 <li><strong>Routing advice</strong> — change <code>model</code>, keep every token count. The saving is
-the rate delta on identical volume.</li>
-<li><strong>Volume advice</strong> — keep <code>model</code>, lower <code>inputTokens</code> (and trim the cache
-breakdown to match; see § 4.4). The saving is the removed tokens at the
-model&#39;s own rate.</li>
+the rate delta on identical volume. (<code>frontier_trivial</code>, <code>frontier_share</code>)</li>
+<li><strong>Volume advice</strong> — keep <code>model</code>, lower <code>inputTokens</code>, and trim the cache
+breakdown to match with <code>trimCacheTokens</code> (§ 4.4). The saving is the removed
+tokens at the model&#39;s own rate. (<code>full_document_io</code>, <code>context_bloat</code>)</li>
+<li><strong>Cache-mix advice</strong> — keep <code>model</code> and <code>inputTokens</code>, and move tokens
+between the rate tiers <em>inside</em> that input by raising a cache component. The
+saving is the multiplier delta (a cache read is billed at 0.1× the base
+input rate). The target must be capped to fit inside <code>inputTokens</code> — see
+§ 4.4. (<code>cache_efficiency</code>)</li>
 </ul>
-<p>Mixing the two in one rule means you are asserting the user would have done
-two different things, and the dollar figure stops being attributable to
-either.</p>
+<p>Mixing two of them in one rule means you are asserting the user would have
+done two different things at once, and the dollar figure stops being
+attributable to either.</p>
 <h3 id="cross-vendor-swaps-are-not-actionable">Cross-vendor swaps are not actionable</h3>
 <p><strong>Never propose moving a call from one vendor to another.</strong> A user cannot
 switch a single request from Claude Opus to GPT-4o-mini: the API is
@@ -639,6 +655,45 @@ uncached portion does cached content shrink, and then <code>cacheCreationTokens<
 stays <code>null</code>.</p>
 <p>Its post-condition is exactly the invariant above. Use it in any rule whose
 counterfactual lowers <code>inputTokens</code>.</p>
+<p><strong>Cache-raising rules must cap, and <code>trimCacheTokens</code> will not help them.</strong>
+There is a third shape, and <code>cache_efficiency</code> is the reference example: it
+leaves <code>inputTokens</code> alone and <em>raises</em> a cache component. <code>trimCacheTokens</code>
+only shrinks, so it does not apply. The rule has to enforce the invariant
+itself — the target it wants (<code>inputTokens × 0.5</code>) is not necessarily a target
+it can have, because whatever <code>cacheCreationTokens</code> the window already
+recorded occupies part of the same <code>inputTokens</code> budget. From
+<code>aggregate/cache-efficiency.ts</code>:</p>
+<pre><code class="language-ts">const cacheCreationTokens = totals.cacheCreationTokens ?? 0;
+const readCapacity = Math.max(0, totals.inputTokens - cacheCreationTokens);
+const targetReads = Math.min(
+  totals.inputTokens * CACHE_EFFICIENCY_MIN_READ_RATIO,
+  readCapacity,
+);
+</code></pre>
+<p>Worked: a window with <code>inputTokens: 1000</code>, <code>cacheReadTokens: 100</code>,
+<code>cacheCreationTokens: 800</code> fires the rule (10% read ratio). The uncapped
+target of 500 reads would give a counterfactual holding <code>500 + 800 = 1300</code>
+cache tokens inside a 1000-token prompt — the invariant broken, and the
+counterfactual priced as more expensive than it is. <code>readCapacity</code> is 200, so
+<code>targetReads</code> becomes 200 and <code>200 + 800 = 1000</code> fits exactly.</p>
+<p>Two details worth copying:</p>
+<ul>
+<li><strong>The <code>?? 0</code> is arithmetic-only.</strong> A <code>null</code> <code>cacheCreationTokens</code> counts as
+<code>0</code> when computing capacity — the same convention <code>trimCacheTokens</code> uses —
+but it is still copied through to the counterfactual as <code>null</code>. The
+null-vs-zero distinction of § 4.1 survives the cap.</li>
+<li><strong>The stated assumption follows the cap, not the constant.</strong> The card
+reports <code>Math.round((targetReads / totals.inputTokens) * 100)</code>, so the
+worked example above says <em>&quot;Assumes a 20% cache-read ratio is achievable
+for this workload&quot;</em>. Had it hardcoded the 50% constant, the card would
+assert a ratio its own counterfactual never reaches — the assumption would
+be describing a hypothetical that was not priced.</li>
+</ul>
+<p>The general lesson: when a rule sets a cache component to a <em>computed target</em>
+rather than copying or trimming an observed one, the target is a wish. Clamp
+it to what <code>inputTokens</code> can actually hold, and derive both
+<code>implicatedTokens</code> and the stated assumption from the clamped value, so the
+number on the card and the number that was priced are the same number.</p>
 <hr>
 <h2 id="5-testing-a-rule">5. Testing a rule</h2>
 <p>Tests live beside the rule (<code>packages/shared/src/rules/*.test.ts</code>) and run
@@ -745,11 +800,19 @@ empty array from a rule that is working perfectly</strong>, and your test proves
 nothing except that the floor works.</p>
 <p>The concrete trap, which cost real debugging time: <strong>no <code>claude-opus-5</code> →
 <code>claude-sonnet-5</code> swap can clear <code>MIN_WASTED_USD</code> inside <code>frontier_trivial</code>&#39;s
-200-token cap.</strong> Opus 5 is $5/$25 per million tokens, Sonnet 5 is $3/$15
-(or $2/$10 while the introductory rate is live). The best case is 200 tokens
-of pure output: <code>200 × ($25 − $15) / 1,000,000 = $0.002</code>. That is a fifth of
-the floor. Every fixture built on that pair silently returns <code>[]</code>, and the
-natural conclusion — &quot;the rule is broken&quot; — is wrong.</p>
+200-token cap.</strong> Opus 5 is $5/$25 per million tokens; Sonnet 5 is $2/$10 while
+the introductory rate is live and $3/$15 after it expires on 2026-08-31. The
+delta is widest under the introductory rate, and the best case is 200 tokens
+of pure output:</p>
+<pre><code>intro rate:       200 × ($25 − $10) / 1,000,000 = $0.003   ← the ceiling
+after 2026-08-31: 200 × ($25 − $15) / 1,000,000 = $0.002
+</code></pre>
+<p>So the most this swap can ever be worth is <strong>$0.003</strong>, under a $0.01 floor —
+and less once the introductory rate lapses. Both figures are given because a
+reader checking the arithmetic will get one or the other depending on the day;
+neither clears. <code>rules.test.ts</code> states the ceiling the same way (&quot;max ~$0.003
+at any token split&quot;). Every fixture built on that pair silently returns <code>[]</code>,
+and the natural conclusion — &quot;the rule is broken&quot; — is wrong.</p>
 <p>The fixtures that do work pick their models and token splits deliberately:</p>
 <ul>
 <li><code>frontier_trivial</code> uses <strong><code>claude-opus-4</code></strong> ($15/$75) with an
