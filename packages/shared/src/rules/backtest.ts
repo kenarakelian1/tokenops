@@ -4,12 +4,32 @@ import { runAggregateRules, type AggregateWindow } from "./aggregate/index.js";
 import { runRules } from "./index.js";
 import type { RuleId } from "./types.js";
 
+/**
+ * Which instant this row's dollars were priced at — the caveat that travels
+ * with the number, so a consumer never has to infer it.
+ *
+ * - `"event-timestamp"` — every hit priced at its own event's timestamp. A
+ *   date-gated rate applies exactly as it did when the traffic happened.
+ * - `"window-end"` — the whole window priced at a single instant, its end.
+ *   Rates that changed mid-window are NOT honoured: a 90-day window is
+ *   priced entirely off the rate card in force at `end`. Slicing the window
+ *   into rate-stable segments is future work; until then this is the
+ *   limitation, stated rather than papered over.
+ */
+export type PricingBasis = "event-timestamp" | "window-end";
+
 export type BacktestRow = {
   ruleId: RuleId;
   hits: number;
   wouldHaveSavedUsd: number;
   /** The assumption behind the savings, taken from the first hit for the rule. */
   assumption: string | null;
+  /**
+   * How `wouldHaveSavedUsd` was priced. Fixed per rule, because it follows
+   * the rule's grain: request-grain rules are replayed event by event,
+   * aggregate-grain rules once per window. See PricingBasis.
+   */
+  pricingBasis: PricingBasis;
 };
 
 export type BacktestResult = {
@@ -36,11 +56,30 @@ export type BacktestInput = {
  * is what makes it a back-test rather than a rollup, and it means changing a
  * threshold shows its dollar impact on real history immediately.
  *
- * Every event is priced at its OWN timestamp, and every window at its own
- * end — never wall-clock now. The Claude Sonnet 5 introductory rate expires
- * 2026-08-31, so a back-test that used the current time would reprice August
- * traffic at September rates and report different savings for the same
- * historical window depending on the day it ran.
+ * Nothing here is priced at wall-clock now, so the same stored history
+ * reports the same figures whatever day the back-test runs. That matters
+ * because the Claude Sonnet 5 introductory rate expires 2026-08-31: a
+ * back-test reading the current clock would reprice August traffic at
+ * September rates.
+ *
+ * The two grains reach that guarantee with different resolution, and the
+ * difference is a real limitation, not a detail:
+ *
+ *  - **Request grain** — each event is priced at its OWN timestamp, so a
+ *    rate change part-way through the window is honoured event by event.
+ *    Reported as `pricingBasis: "event-timestamp"`.
+ *  - **Aggregate grain** — each window is priced at a single instant, its
+ *    `end`. The caller supplies the windows, and the one the API builds
+ *    (apps/api/src/routes/recommendations.ts) spans the whole back-test
+ *    period, so a 90-day run prices all 90 days off the rate card in force
+ *    on the last day. Run on 2026-09-05, every day of Claude Sonnet 5
+ *    traffic in that window is priced at the post-expiry $3/$15 even though
+ *    the introductory $2/$10 applied for most of it. Reported as
+ *    `pricingBasis: "window-end"`.
+ *
+ * Slicing an aggregate window into rate-stable segments would close that
+ * gap and is deliberately out of scope here; `pricingBasis` on every row
+ * exists so a consumer of these numbers is told which of the two they have.
  */
 export function backtest(input: BacktestInput): BacktestResult {
   const byRule = new Map<RuleId, BacktestRow>();
@@ -49,12 +88,15 @@ export function backtest(input: BacktestInput): BacktestResult {
     ruleId: RuleId,
     usd: number | null,
     assumption: string | null,
+    pricingBasis: PricingBasis,
   ) => {
     const existing = byRule.get(ruleId);
     if (existing) {
       existing.hits += 1;
       existing.wouldHaveSavedUsd += usd ?? 0;
       existing.assumption ??= assumption;
+      // pricingBasis follows the rule's grain, so every hit for a given
+      // ruleId carries the same one — nothing to merge.
       return;
     }
     byRule.set(ruleId, {
@@ -62,6 +104,7 @@ export function backtest(input: BacktestInput): BacktestResult {
       hits: 1,
       wouldHaveSavedUsd: usd ?? 0,
       assumption,
+      pricingBasis,
     });
   };
 
@@ -77,14 +120,16 @@ export function backtest(input: BacktestInput): BacktestResult {
       priceOverrides: input.priceOverrides,
     });
     for (const hit of hits) {
-      record(hit.ruleId, hit.estimatedWastedUsd, hit.assumption);
+      record(hit.ruleId, hit.estimatedWastedUsd, hit.assumption, "event-timestamp");
     }
     if (event.sessionId) {
       bySession.set(event.sessionId, [...priorSameSession, event]);
     }
   }
 
-  // Aggregate-grain rules, each window priced at its own end instant.
+  // Aggregate-grain rules. One pricing instant for the whole window — its
+  // end — with the consequence spelled out on PricingBasis and reported on
+  // every row these produce.
   for (const window of input.windows) {
     const hits = runAggregateRules(
       window,
@@ -92,7 +137,7 @@ export function backtest(input: BacktestInput): BacktestResult {
       input.priceOverrides,
     );
     for (const hit of hits) {
-      record(hit.ruleId, hit.estimatedWastedUsd, hit.assumption);
+      record(hit.ruleId, hit.estimatedWastedUsd, hit.assumption, "window-end");
     }
   }
 

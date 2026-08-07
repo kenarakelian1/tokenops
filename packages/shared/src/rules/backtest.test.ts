@@ -166,6 +166,51 @@ describe("backtest", () => {
     expect(overriddenRow!.wouldHaveSavedUsd).toBeCloseTo(45, 5);
   });
 
+  it("labels each row with the pricing instant its grain actually used", () => {
+    // The doc comment used to claim "every event at its OWN timestamp, and
+    // every window at its own end — never wall-clock now" as one uniform
+    // property. Only the request half is per-event: an aggregate window is
+    // priced at a single instant, so a 90-day window straddling the Sonnet 5
+    // intro expiry is priced entirely at the end-of-window rate card. Every
+    // row now states which of the two it is.
+    const res = backtest({
+      events: [ev({ eventId: "a" })],
+      windows: [frontierShareWindow],
+      windowStart: "2026-08-01T00:00:00.000Z",
+      windowEnd: "2026-08-31T00:00:00.000Z",
+    });
+
+    const trivial = res.rows.find((r) => r.ruleId === "frontier_trivial");
+    const share = res.rows.find((r) => r.ruleId === "frontier_share");
+    expect(trivial!.pricingBasis).toBe("event-timestamp");
+    expect(share!.pricingBasis).toBe("window-end");
+    // No row may be silent about it.
+    expect(res.rows.every((r) => r.pricingBasis != null)).toBe(true);
+  });
+
+  it("prices a whole aggregate window at its end instant, across a rate change", () => {
+    // The limitation, demonstrated rather than asserted. frontierShareWindow
+    // is claude-opus-5 -> claude-sonnet-5, and Sonnet 5's intro rate ($2/MTok)
+    // expires 2026-08-31. Two windows with IDENTICAL totals, differing only
+    // in when they end, produce different savings — because the end instant
+    // is the only date the aggregate half looks at.
+    //
+    // Ending 2026-08-08 (intro live): actual opus-5 10M in = $50,
+    //   counterfactual sonnet-5 @ $2 = $20, saving $30.
+    // Ending 2026-09-08 (intro lapsed): counterfactual @ $3 = $30,
+    //   saving $20.
+    const savingsForWindowEnding = (end: string) =>
+      backtest({
+        events: [],
+        windows: [{ ...frontierShareWindow, end }],
+        windowStart: "2026-08-01T00:00:00.000Z",
+        windowEnd: end,
+      }).rows.find((r) => r.ruleId === "frontier_share")!.wouldHaveSavedUsd;
+
+    expect(savingsForWindowEnding("2026-08-08T00:00:00.000Z")).toBeCloseTo(30, 5);
+    expect(savingsForWindowEnding("2026-09-08T00:00:00.000Z")).toBeCloseTo(20, 5);
+  });
+
   it("honours priceOverrides for a request-grain rule in the same run as an aggregate-grain rule", () => {
     // Default fixture (claude-opus-4, 20 in / 180 out, priced at its own
     // 2026-08-15 timestamp — intro rate active): actual $0.0138,

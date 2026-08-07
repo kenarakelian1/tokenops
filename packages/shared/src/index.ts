@@ -59,6 +59,7 @@ export {
   type BacktestInput,
   type BacktestResult,
   type BacktestRow,
+  type PricingBasis,
 } from "./rules/backtest.js";
 export {
   runAggregateRules,

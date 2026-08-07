@@ -188,6 +188,13 @@ recommendationsRoutes.get("/backtest", requireUser, async (c) => {
 
   const byModel = await repo.modelWindowTotals(userId, startIso, endIso);
 
+  // One window spanning the whole period, so every aggregate-grain row is
+  // priced at a single instant (`endIso`) rather than at the rates in force
+  // when each day's traffic happened — a 90-day run prices all 90 days off
+  // today's rate card. Each row says which it is via `pricingBasis`
+  // ("window-end" here, "event-timestamp" for the request grain); see
+  // backtest.ts. Splitting this into rate-stable sub-windows is the fix, and
+  // is deliberately not done here.
   const result = backtest({
     events,
     windows: [{ start: startIso, end: endIso, byModel }],
