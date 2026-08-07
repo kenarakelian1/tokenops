@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recommendation credibility — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="recommendation-credibility-—-design">Recommendation credibility — design</h1>
+<p><strong>Date:</strong> 2026-08-05
+<strong>Status:</strong> Approved, not yet implemented</p>
+<h2 id="problem">Problem</h2>
+<p>The recommendation engine is TokenOps&#39; only genuinely differentiated component.
+Every open-source alternative — Langfuse, Helicone, Phoenix, OpenLIT — shows
+cost breakdowns and stops there; none ships a prescriptive rules layer. The
+closest comparables are commercial (Revenium&#39;s AI Insights, launched June 2026,
+is a detector pipeline ranked by monthly savings) or noncommercially licensed
+(NadirClaw, PolyForm, which <em>acts</em> on the same signals rather than reporting
+them).</p>
+<p>That lead is worth defending, and today it rests on numbers a careful user
+would not trust.</p>
+<h3 id="every-rule-invents-its-own-money-math">Every rule invents its own money math</h3>
+<p>Each of the five rules computes <code>estimatedWastedUsd</code> its own way. The results
+are not comparable to each other, and two of them are built on undeclared
+assumptions:</p>
+<ul>
+<li><code>full_document_io</code> multiplies by a bare <code>0.5</code> — <code>Math.floor(inputTokens * fileDumpScore * 0.5)</code>. Nothing states what that factor represents, so the
+dollar figure it produces cannot be checked.</li>
+<li><code>context_bloat</code> prorates total cost by a token ratio, which is not the same
+thing as the cost of the extra tokens.</li>
+</ul>
+<h3 id="cache_efficiency-cannot-quote-dollars-at-all"><code>cache_efficiency</code> cannot quote dollars at all</h3>
+<p>It hardcodes <code>estimatedWastedUsd: null</code>, and its comment explains why: &quot;There&#39;s
+no per-token cache-read price in the pricing table.&quot;</p>
+<p><strong>That comment is stale.</strong> Commit <code>6e90aab</code> added
+<code>CACHE_READ_PRICE_MULTIPLIER = 0.1</code> and <code>CACHE_CREATION_PRICE_MULTIPLIER = 1.25</code>
+to <code>estimateCostUsd</code> via the <code>CacheTokenBreakdown</code> option. The price exists; the
+rule never picked it up. So the highest-value rule reports in tokens while
+cheaper rules report in dollars — and because <code>isMaterial</code> falls back to
+<code>MIN_WASTED_TOKENS</code> when USD is null, it is also being filtered by a different
+standard than everything else.</p>
+<h3 id="nothing-establishes-that-a-rule-is-worth-following">Nothing establishes that a rule is worth following</h3>
+<p>A card asserts a number for a single event or window. There is no way to ask
+&quot;what would this rule have saved me last month?&quot;, and no way to see the dollar
+impact of changing a threshold. <code>CACHE_EFFICIENCY_MIN_READ_RATIO = 0.5</code> is a
+guess that has never been measured against real traffic.</p>
+<h3 id="severity-is-decorative">Severity is decorative</h3>
+<p><code>severity</code> is stored and rendered as a CSS class. It gates nothing and sorts
+nothing, so a $0.94 finding can appear above a $23 one.</p>
+<h2 id="decision">Decision</h2>
+<p><strong>Rules stop computing money. They declare a counterfactual — what the request
+or window would have looked like had the advice been followed — and a single
+pricer turns that into dollars.</strong></p>
+<pre><code class="language-ts">savings = estimateCostUsd(actual) − estimateCostUsd(counterfactual)
+</code></pre>
+<p>Both sides go through the existing <code>estimateCostUsd</code>, including its
+<code>CacheTokenBreakdown</code> option. This one change resolves all four items:
+<code>cache_efficiency</code> gets USD as a consequence rather than a special case, the
+back-test is the same pricer run over history, the contract becomes small enough
+to publish, and ranking has a comparable number to sort on.</p>
+<p>This is not a new idea in this codebase so much as a generalization of one.
+<code>frontier_share</code> already prices its dominant model and its suggested sibling
+against <strong>the same cache breakdown</strong>, with a comment explaining that failing to
+do so inflates the sibling estimate, clamps savings to zero through
+<code>Math.max(0, ...)</code>, and silently drops the only card an OTEL-only user would
+see. A shared pricer makes that class of bug structurally impossible instead of
+a comment future rules must remember to read.</p>
+<h3 id="capture-paths">Capture paths</h3>
+<p>The recommendation-evidence spec decided that Claude Code capture moves from
+OTEL to session JSONL, and that &quot;OTEL is replaced, not supplemented.&quot; That is
+revised here: <strong>the OTLP receiver stays.</strong></p>
+<p>The split is by source, so no request is ever captured twice:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Path</th>
+<th>Grain</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Claude Code</td>
+<td>session JSONL adapter</td>
+<td>request</td>
+</tr>
+<tr>
+<td>Any other OTLP emitter (Codex/Gemini via a collector, custom apps)</td>
+<td>OTLP receiver on <code>:4318</code></td>
+<td>aggregate</td>
+</tr>
+</tbody></table>
+<p>The reasoning: reading <code>~/.claude/projects/**/*.jsonl</code> is exactly what ccusage
+does, so it is the price of parity on Claude Code — but the OTLP receiver
+accepts telemetry from anything that speaks OTLP, which ccusage cannot do at
+all. Keeping both makes the two capture paths complementary rather than
+redundant. Since they never observe the same traffic, the double-counting risk
+that motivated the original &quot;replace, not supplement&quot; decision does not arise.</p>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>The session-JSONL adapter itself.</strong> It has its own approved spec
+(<code>2026-08-05-recommendation-evidence-design.md</code>), including the redaction
+design that spec calls its highest-risk component. This work is built and
+tested independently of it.</li>
+<li><strong>Shadow replay.</strong> Re-running flagged requests against the cheaper model and
+scoring output quality would be a stronger claim, but it needs stored content,
+provider keys on the API server, and a judge model. Not now.</li>
+<li><strong>Declarative (YAML) rules.</strong> The existing rules need session lookback and
+tri-state cache logic; a DSL expressive enough for them is a programming
+language. The typed interface is the contract.</li>
+<li><strong>New rules.</strong> No new detector classes here. This work makes the existing five
+credible; it does not add a sixth.</li>
+<li><strong>Acting on a recommendation.</strong> TokenOps reports; it does not route.</li>
+</ul>
+<h2 id="architecture">Architecture</h2>
+<h3 id="the-counterfactual">The counterfactual</h3>
+<pre><code class="language-ts">/** What this request or window would have looked like had the advice been taken. */
+export type Counterfactual = {
+  /** Same model when the advice concerns tokens rather than routing. */
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+};
+</code></pre>
+<p><code>cacheReadTokens</code> / <code>cacheCreationTokens</code> keep the <code>number | null</code> semantics
+established in <code>ModelWindowTotals</code>: <code>null</code> means no breakdown was recorded, <code>0</code>
+means recorded and genuinely zero. The pricer must preserve that distinction —
+collapsing <code>null</code> to <code>0</code> reintroduces exactly the confidently-wrong-finding
+problem that branch existed to fix.</p>
+<p>What each rule declares:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Counterfactual</th>
+<th>Stated assumption</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>frontier_trivial</code></td>
+<td><code>{ model: cheaperSibling, tokens unchanged }</code></td>
+<td>A cheaper in-vendor sibling handles calls at or under 200 tokens</td>
+</tr>
+<tr>
+<td><code>frontier_share</code></td>
+<td><code>{ model: cheaperSibling, dominant model&#39;s own tokens and cache breakdown }</code></td>
+<td>Routine work moves to the sibling; other vendors&#39; tokens are not repriced</td>
+</tr>
+<tr>
+<td><code>context_bloat</code></td>
+<td><code>{ same model, inputTokens: first.inputTokens }</code></td>
+<td>Context could have stayed flat across the session</td>
+</tr>
+<tr>
+<td><code>full_document_io</code></td>
+<td><code>{ same model, inputTokens − excerpted }</code></td>
+<td>Excerpting removes half the dumped content</td>
+</tr>
+<tr>
+<td><code>cache_efficiency</code></td>
+<td><code>{ same model, cacheReadTokens: inputTokens × MIN_READ_RATIO }</code></td>
+<td>A 50% cache-read ratio is achievable for this workload</td>
+</tr>
+</tbody></table>
+<p>The <code>full_document_io</code> row is the point of the exercise. The <code>0.5</code> does not
+disappear — it stops being an unexplained multiplier inside a dollar figure and
+becomes a named assumption rendered on the card, where a user can disagree with
+it.</p>
+<p><code>cache_efficiency</code> is likewise not a special case. Its counterfactual moves
+tokens from the full input rate into the 0.1× cache-read rate, and the existing
+multipliers price the difference. That is the whole of item 1.</p>
+<h3 id="the-rule-contract">The rule contract</h3>
+<pre><code class="language-ts">export interface Rule&lt;TInput&gt; {
+  readonly id: RuleId;
+  readonly grain: &quot;request&quot; | &quot;aggregate&quot;;
+  readonly defaultSeverity: Severity;
+  evaluate(input: TInput, ctx: RuleContext): RuleFinding | null;
+}
+
+export type RuleFinding = {
+  title: string;
+  detail: string;
+  eventIds: string[];
+  counterfactual: Counterfactual;
+  /** The assumption the counterfactual rests on. Shown to the user, not buried. */
+  assumption?: string;
+};
+
+export type RuleContext = {
+  /** Pricing instant. Callers pass the EVENT&#39;s timestamp, not wall-clock now. */
+  now: Date;
+  priceOverrides?: Record&lt;string, PriceRow&gt;;
+  /** Request-grain rules only; prior events in the same session. */
+  sessionContext?: UsageEvent[];
+};
+</code></pre>
+<p><code>Severity</code> is the existing <code>&quot;info&quot; | &quot;warn&quot; | &quot;high&quot;</code> union, extracted from its
+current inline declaration on <code>RuleHit</code> into a named exported type — the
+contract cannot be published while one of its field types is anonymous.</p>
+<p>The runner owns pricing, materiality, and severity. A contributor writes a
+predicate and a counterfactual and nothing else. <code>RuleHit</code> remains the runner&#39;s
+<strong>output</strong> type, so the database schema and the API response shape do not move.</p>
+<p><code>grain</code> on the rule replaces the <code>isAggregate</code> gate currently enforced inside
+<code>runRules</code>. That gate exists because every per-request rule reads features an
+aggregate cannot have; making it a declared property means a new rule states its
+grain rather than remembering to opt out of the wrong one.</p>
+<p>Ships with <code>docs/rules/authoring.md</code>: the interface, a worked example rule, the
+fixture-driven test harness, and an explicit statement of which types are stable
+and which are internal.</p>
+<h3 id="the-back-test">The back-test</h3>
+<p>A pure function in <code>packages/shared</code>, exposed as
+<code>GET /v1/recommendations/backtest?window=&lt;7d|30d|90d&gt;</code>. <code>window</code> defaults to
+<code>30d</code>; any other value is a 400 rather than a silent fallback, matching how the
+existing recommendations route rejects an unknown <code>status</code>.</p>
+<pre><code>rule                hits   would have saved   assumption
+──────────────────────────────────────────────────────────────────────
+cache_efficiency       3             $23.10   50% cache-read ratio achievable
+frontier_share         1             $18.30   routine work moves to sonnet-5
+frontier_trivial      41              $0.94   cheaper sibling handles ≤200-token calls
+</code></pre>
+<p>The defining property: it <strong>re-runs the current rules over historical events</strong>.
+It does not sum the <code>recommendations</code> table. That is what makes it a back-test
+rather than a rollup, and it yields something beyond the user-facing claim —
+change <code>CACHE_EFFICIENCY_MIN_READ_RATIO</code> from 0.5 to 0.6 and the dollar impact
+on 30 days of real traffic is immediately visible. Threshold tuning stops being
+a guess.</p>
+<p>Aggregate-grain rules rebuild their windows through the same path the
+<code>aggregate-rules</code> job already uses. Request-grain rules replay stored events
+with their session context, and inherit the existing aggregate gate rather than
+reimplementing it — replaying them over the OTEL-derived history would otherwise
+evaluate fabricated features (<code>promptChars: 54</code>, the length of the synthetic
+string <code>[otel] claude_code.token.usage model=...</code>).</p>
+<p><strong>Each event is priced at its own timestamp.</strong> <code>estimateCostUsd</code> takes <code>now</code> for
+date-gated pricing, and the Claude Sonnet 5 introductory rate expires
+2026-08-31. A back-test that passed wall-clock <code>now</code> would reprice August
+traffic at September rates, so the same historical window would report different
+savings depending on when it ran. Historical numbers must not move; this is what
+makes the result reproducible.</p>
+<p>On current production data — 712 aggregate events — the two aggregate rules
+produce real figures immediately. The three request-grain rules are
+fixture-covered and populate when the JSONL adapter lands.</p>
+<h3 id="ranking">Ranking</h3>
+<p><code>listRecommendations</code> orders by <code>estimated_wasted_usd DESC NULLS LAST, created_at DESC</code>. <code>frontier_trivial.defaultSeverity</code> becomes <code>info</code>.</p>
+<p>Severity stays declared per rule rather than derived from savings. The two are
+different axes: a cheap finding can be urgent, and a threshold that maps dollars
+onto severity would just be a fresh set of magic numbers. Ordering carries the
+weight; severity remains a label.</p>
+<p>One migration: add a nullable <code>counterfactual jsonb</code> column to
+<code>recommendations</code>, so a card can show <em>&quot;would have been <code>claude-haiku-4-5</code>,
+1,200 in / 350 out&quot;</em> as evidence rather than an unsourced number.</p>
+<h2 id="migration">Migration</h2>
+<p>Existing recommendation rows have no counterfactual and keep <code>NULL</code> in the new
+column. The UI renders evidence when present and omits it otherwise; it must not
+imply a counterfactual was computed and came back empty.</p>
+<p>All five rules move to the new contract in one change. The pricing <em>inputs</em> do
+not change — only where the arithmetic lives — so existing tests are the
+regression net. The single deliberate behavior change is <code>cache_efficiency</code>
+gaining USD.</p>
+<h2 id="testing">Testing</h2>
+<ul>
+<li><strong>Per-rule counterfactual tests.</strong> Each rule&#39;s declared counterfactual
+asserted directly, separately from its pricing.</li>
+<li><strong><code>cache_efficiency</code> quotes USD</strong>, with the figure pinned. This is the
+headline behavior change. The <code>null</code>-versus-<code>0</code> cache distinction is
+re-asserted; that invariant must survive the refactor.</li>
+<li><strong>Materiality boundary.</strong> Findings just above and just below
+<code>MIN_WASTED_USD</code>, including the case described under Risks below.</li>
+<li><strong>Back-test determinism.</strong> Identical events and rules produce identical
+output, including across the 2026-08-31 Sonnet 5 cutoff, run from both sides
+of it.</li>
+<li><strong>Grain routing.</strong> A request-grain rule is never evaluated against an
+aggregate event, asserted through the back-test rather than only through
+<code>runRules</code>.</li>
+<li><strong>Regression net.</strong> Existing rule suites from <code>#24</code> / <code>#25</code> pass unchanged
+wherever behavior should not move. Any suite that needs <em>changing</em> rather than
+passing is a signal to stop and re-examine, not to update the assertion.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ol>
+<li><strong>Cards will disappear on deploy.</strong> Today <code>cache_efficiency</code> returns <code>null</code>
+USD, so materiality falls back to <code>MIN_WASTED_TOKENS = 5_000</code>. Once it quotes
+dollars, the <code>MIN_WASTED_USD = 0.01</code> floor governs — and roughly 10k wasted
+tokens on a cheap model prices near $0.009, which passes today and fails
+after. That is the correct outcome, since such a finding is genuinely worth
+under a cent, but a live production card may vanish. Recorded here so it
+reads as intended behavior rather than a regression.</li>
+<li><strong>Refactoring recently-stabilized code.</strong> All five rules move at once,
+against work merged days ago. Mitigated by the regression net above and by
+keeping pricing inputs unchanged.</li>
+<li><strong><code>context_bloat</code> assumes the session&#39;s first request was not itself
+bloated.</strong> If it was, savings are understated. Surfaced through <code>assumption</code>
+on the card rather than silently absorbed.</li>
+<li><strong>Back-test cost at scale.</strong> Trivial at 712 events, unbounded later.
+Mitigated by a window cap and on-demand computation. Not optimized further
+until there is data saying to.</li>
+<li><strong>A counterfactual is still a model, not a measurement.</strong> It prices real
+token counts at published rates, which is a substantially stronger claim than
+a bare multiplier, but it does not prove the cheaper path would have produced
+an acceptable answer. Only shadow replay would, and that is a non-goal here.
+The UI must keep saying <strong>estimated</strong>.</li>
+</ol>
+<h2 id="follow-ups">Follow-ups</h2>
+<ul>
+<li>Session-JSONL adapter, per its own spec — lights up the three request-grain
+rules on real data.</li>
+<li>Shadow replay behind an opt-in, once content capture and its 2-hour window
+exist.</li>
+<li>New detector classes suggested by the competitive review: <code>max_tokens</code>
+truncation (paying for answers cut mid-thought) and dormant spend.</li>
+<li>Once <code>docs/rules/authoring.md</code> is published, revisit whether the rule corpus
+should accept outside contributions formally — a closed competitor cannot
+match a contributed rule set, which is a more durable advantage than any
+individual rule.</li>
+</ul>
+</main>
+</body>
+</html>

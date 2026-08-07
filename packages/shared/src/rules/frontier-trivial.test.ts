@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { checkFrontierTrivial } from "./frontier-trivial.js";
+import { frontierTrivialRule } from "./frontier-trivial.js";
 import type { UsageEvent } from "../schema/event.js";
+
+const CTX = { now: new Date("2026-09-15T00:00:00Z") };
 
 function ev(
   partial: Partial<UsageEvent> &
@@ -31,9 +33,9 @@ const trivialFeatures = {
   fileDumpScore: 0,
 };
 
-describe("checkFrontierTrivial", () => {
+describe("frontierTrivialRule", () => {
   it("flags a trivial Claude Opus call and names the in-vendor sibling", () => {
-    const hit = checkFrontierTrivial(
+    const finding = frontierTrivialRule.evaluate(
       ev({
         eventId: "a",
         model: "claude-opus-5[1m]",
@@ -41,9 +43,10 @@ describe("checkFrontierTrivial", () => {
         outputTokens: 10,
         features: trivialFeatures,
       }),
+      CTX,
     );
-    expect(hit).not.toBeNull();
-    expect(hit?.detail).toContain("claude-sonnet-5");
+    expect(finding).not.toBeNull();
+    expect(finding?.detail).toContain("claude-sonnet-5");
   });
 
   it("suppresses the recommendation for a trivial grok-4 call — no in-vendor cheaper sibling exists", () => {
@@ -53,7 +56,7 @@ describe("checkFrontierTrivial", () => {
     // was added, this rule compared every frontier-tier trivial call against
     // a hardcoded "gpt-4o-mini" regardless of vendor, so this case used to
     // produce a hit the user could not act on.
-    const hit = checkFrontierTrivial(
+    const finding = frontierTrivialRule.evaluate(
       ev({
         eventId: "b",
         model: "grok-4",
@@ -61,7 +64,8 @@ describe("checkFrontierTrivial", () => {
         outputTokens: 10,
         features: trivialFeatures,
       }),
+      CTX,
     );
-    expect(hit).toBeNull();
+    expect(finding).toBeNull();
   });
 });

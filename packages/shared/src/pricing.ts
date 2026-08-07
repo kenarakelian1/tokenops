@@ -10,11 +10,39 @@ export const DEFAULT_PRICES: Record<string, PriceRow> = {
   // OpenAI
   "gpt-4o": { inputPerMTok: 2.5, outputPerMTok: 10 },
   "gpt-4o-mini": { inputPerMTok: 0.15, outputPerMTok: 0.6 },
+  // The rest of the gpt-4 family. getModelTier() (model-tier.ts) calls every
+  // "gpt-4*" except gpt-4o-mini frontier, and cheaperSiblingModel() offers
+  // gpt-4o-mini as their sibling — so without these rows a frontier_share or
+  // frontier_trivial card on bare gpt-4 traffic had no priceable actual side
+  // and shipped with "—" where the money goes. Approximate public list rates,
+  // like the rest of this table.
+  "gpt-4": { inputPerMTok: 30, outputPerMTok: 60 },
+  "gpt-4-turbo": { inputPerMTok: 10, outputPerMTok: 30 },
+  // resolvePrice() matches by longest PREFIX, so the "gpt-4" row above would
+  // otherwise catch gpt-4.1* and price a $2/$8 model at the original GPT-4's
+  // $30/$60. These rows exist to keep that from happening; a longer, more
+  // specific key always wins.
+  "gpt-4.1": { inputPerMTok: 2, outputPerMTok: 8 },
+  "gpt-4.1-mini": { inputPerMTok: 0.4, outputPerMTok: 1.6 },
+  // Same trap one level deeper: without this row, "gpt-4.1-nano" longest-
+  // prefix-matches "gpt-4.1" and prices a $0.10/$0.40 model at $2/$8. That
+  // is worse than the null it replaced — getModelTier calls nano frontier
+  // (its frontier patterns are checked before the small ones) and
+  // cheaperSiblingModel offers gpt-4o-mini, which is actually MORE expensive
+  // than nano, so the card would assert a confident saving for a swap that
+  // costs the user more. With the real rate the counterfactual is dearer,
+  // savings clamp to 0, and materiality correctly drops the card.
+  "gpt-4.1-nano": { inputPerMTok: 0.1, outputPerMTok: 0.4 },
   o1: { inputPerMTok: 15, outputPerMTok: 60 },
   "o3-mini": { inputPerMTok: 1.1, outputPerMTok: 4.4 },
   // Anthropic (approximate; model strings vary by API)
   "claude-sonnet-4": { inputPerMTok: 3, outputPerMTok: 15 },
   "claude-opus-4": { inputPerMTok: 15, outputPerMTok: 75 },
+  // Claude 3 Opus. /claude-3-opus/i is one of model-tier.ts's frontier
+  // patterns and cheaperSiblingModel() gives it claude-sonnet-5, but
+  // "claude-3-opus-20240229" prefix-matches no other key here — same
+  // unpriceable-frontier-with-a-sibling hole as bare gpt-4.
+  "claude-3-opus": { inputPerMTok: 15, outputPerMTok: 75 },
   "claude-haiku": { inputPerMTok: 0.8, outputPerMTok: 4 },
   // Claude 5 family (published Anthropic list prices as of 2026-08).
   // Prefix-matches "claude-opus-5[1m]" (bracketed context-window suffix)

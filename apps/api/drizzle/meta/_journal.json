@@ -29,6 +29,13 @@
       "when": 1785937081237,
       "tag": "0003_wet_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786048609168,
+      "tag": "0004_kind_kingpin",
+      "breakpoints": true
     }
   ]
 }

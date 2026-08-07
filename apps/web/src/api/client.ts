@@ -113,6 +113,14 @@ export type RecommendationDto = {
   eventIds: string[];
   status: string;
   createdAt: string;
+  counterfactual: {
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+  } | null;
+  assumption: string | null;
 };
 
 export type MachineDto = {

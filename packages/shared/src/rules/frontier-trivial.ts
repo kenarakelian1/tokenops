@@ -1,53 +1,55 @@
-import { cheaperSiblingModel, estimateCostUsd } from "../pricing.js";
+import { cheaperSiblingModel } from "../pricing.js";
 import type { UsageEvent } from "../schema/event.js";
-import type { RuleHit } from "./types.js";
+import type { Rule, RuleContext, RuleFinding } from "./contract.js";
 
 /** Max total tokens for a call to be considered "trivial". */
 export const FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS = 200;
 
 /**
- * Frontier model used for a trivial request (few tokens, few messages, no large paste).
- * Savings: cost(frontier) − cost(default small model).
+ * Frontier model used for a trivial request (few tokens, few messages, no
+ * large paste). Counterfactual: the same call served by the cheapest sibling
+ * in the SAME vendor family — cross-vendor advice isn't actionable, since a
+ * user can't switch one call from Claude Opus to GPT-4o-mini.
+ *
+ * Declared `info`: capped at 200 tokens, the most this can ever save on one
+ * call is a fraction of a cent, and in a coding agent the user does not pick
+ * a model per request at all. Ordering by savings keeps it below rules that
+ * carry real money.
  */
-export function checkFrontierTrivial(event: UsageEvent): RuleHit | null {
-  const { features, inputTokens, outputTokens } = event;
-  const totalTokens = inputTokens + outputTokens;
+export const frontierTrivialRule: Rule<UsageEvent> = {
+  id: "frontier_trivial",
+  grain: "request",
+  defaultSeverity: "info",
 
-  if (features.modelTier !== "frontier") return null;
-  if (totalTokens > FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS) return null;
-  if (features.messageCount == null) return null;
-  if (features.largePasteScore == null) return null;
-  if (features.messageCount > 2) return null;
-  if (features.largePasteScore >= 0.3) return null;
+  evaluate(event: UsageEvent, _ctx: RuleContext): RuleFinding | null {
+    const { features, inputTokens, outputTokens } = event;
+    const totalTokens = inputTokens + outputTokens;
 
-  // Cross-vendor advice is not actionable — a user can't switch an
-  // individual call from, say, Claude Opus to GPT-4o-mini. If there's no
-  // cheaper model in the same vendor family, there's no recommendation to
-  // make.
-  const suggestedModel = cheaperSiblingModel(event.model);
-  if (!suggestedModel) return null;
+    if (features.modelTier !== "frontier") return null;
+    if (totalTokens > FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS) return null;
+    if (features.messageCount == null) return null;
+    if (features.largePasteScore == null) return null;
+    if (features.messageCount > 2) return null;
+    if (features.largePasteScore >= 0.3) return null;
 
-  const frontierCost =
-    event.costUsd ??
-    estimateCostUsd(event.model, inputTokens, outputTokens);
-  const smallCost = estimateCostUsd(suggestedModel, inputTokens, outputTokens);
+    const suggestedModel = cheaperSiblingModel(event.model);
+    if (!suggestedModel) return null;
 
-  let estimatedWastedUsd: number | null = null;
-  if (frontierCost != null && smallCost != null) {
-    estimatedWastedUsd = Math.max(0, frontierCost - smallCost);
-  } else if (frontierCost != null) {
-    estimatedWastedUsd = frontierCost;
-  }
-
-  return {
-    ruleId: "frontier_trivial",
-    severity: "warn",
-    title: "Frontier model for trivial task",
-    detail:
-      `This request used a frontier-tier model for a small prompt/response. ` +
-      `Consider switching to ${suggestedModel} for simple tasks like this.`,
-    estimatedWastedTokens: totalTokens,
-    estimatedWastedUsd,
-    eventIds: [event.eventId],
-  };
-}
+    return {
+      title: "Frontier model for trivial task",
+      detail:
+        `This request used a frontier-tier model for a small prompt/response. ` +
+        `Consider switching to ${suggestedModel} for simple tasks like this.`,
+      eventIds: [event.eventId],
+      implicatedTokens: totalTokens,
+      counterfactual: {
+        model: suggestedModel,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
+      },
+      assumption: `${suggestedModel} handles requests at or under ${FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS} tokens as well as ${event.model}`,
+    };
+  },
+};

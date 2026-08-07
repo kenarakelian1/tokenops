@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { runAggregateRules, checkFrontierShare } from "./index.js";
+import {
+  runAggregateRules,
+  frontierShareRule,
+  cacheEfficiencyRule,
+  CACHE_EFFICIENCY_MIN_READ_RATIO,
+} from "./index.js";
 import type { AggregateWindow, ModelWindowTotals } from "./index.js";
+import { MIN_WASTED_USD } from "../materiality.js";
 
 const window = (byModel: ModelWindowTotals[]): AggregateWindow => ({
   start: "2026-07-29T00:00:00.000Z",
@@ -108,13 +114,16 @@ describe("runAggregateRules", () => {
     // being X" rather than implying the percentage is X's alone.
     expect(hit!.detail).toMatch(/95%/);
     expect(hit!.detail).toMatch(/largest being claude-opus-5\[1m\]/);
-    // Savings price ONLY the dominant model's (opus's) own 400k/100k tokens
-    // against claude-sonnet-5's intro rate ($2/$10 per 1M): 400k*2/1e6 +
-    // 100k*10/1e6 = 0.8 + 1 = 1.8. dominant cost (50, given directly) minus
-    // that = 48.2. The pre-fix computation summed both vendors' cost (90)
-    // and priced both vendors' combined tokens at sonnet's rate, yielding
-    // 86.9 instead — a different, cross-vendor-contaminated number.
-    expect(hit!.estimatedWastedUsd).toBeCloseTo(48.2, 5);
+    // Savings price ONLY the dominant model's (opus's) own 400k/100k tokens,
+    // and BOTH sides go through the same estimator (Actual deliberately
+    // carries no costUsd, so the real costUsd: 50 given above is not used —
+    // see counterfactual.ts). Actual (opus-5, $5/$25 per 1M): 400k*5/1e6 +
+    // 100k*25/1e6 = 2 + 2.5 = 4.5. Counterfactual (claude-sonnet-5's intro
+    // rate, $2/$10 per 1M): 400k*2/1e6 + 100k*10/1e6 = 0.8 + 1 = 1.8.
+    // Difference = 2.7. The pre-fix computation summed both vendors' cost
+    // (90) and priced both vendors' combined tokens at sonnet's rate,
+    // yielding 86.9 instead — a different, cross-vendor-contaminated number.
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(2.7, 5);
   });
 
   it("still fires with a positive saving at a realistic (90%) cache-read ratio with a real costUsd present", () => {
@@ -173,19 +182,21 @@ describe("runAggregateRules", () => {
     ]);
 
     it("prices the sibling at the intro rate before the expiry", () => {
-      const hit = checkFrontierShare(
+      const hits = runAggregateRules(
         singleOpusWindow,
         new Date("2026-08-15T00:00:00Z"),
       );
+      const hit = hits.find((h) => h.ruleId === "frontier_share");
       // opus cost: 1,000,000 * $5/1M = 5. sonnet intro: 1,000,000 * $2/1M = 2.
       expect(hit!.estimatedWastedUsd).toBeCloseTo(3, 5);
     });
 
     it("prices the sibling at the standard rate on/after the expiry", () => {
-      const hit = checkFrontierShare(
+      const hits = runAggregateRules(
         singleOpusWindow,
         new Date("2026-09-01T00:00:00Z"),
       );
+      const hit = hits.find((h) => h.ruleId === "frontier_share");
       // opus cost: 1,000,000 * $5/1M = 5. sonnet standard: 1,000,000 * $3/1M = 3.
       expect(hit!.estimatedWastedUsd).toBeCloseTo(2, 5);
     });
@@ -305,5 +316,184 @@ describe("runAggregateRules", () => {
       ]),
     );
     expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeUndefined();
+  });
+});
+
+const NOW = new Date("2026-09-15T00:00:00Z");
+
+describe("cache_efficiency counterfactual", () => {
+  const totals = (over: Partial<ModelWindowTotals> = {}): ModelWindowTotals => ({
+    model: "claude-opus-5",
+    modelTier: "frontier",
+    inputTokens: 10_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: null,
+    ...over,
+  });
+
+  it("targets the minimum healthy read ratio", () => {
+    const finding = cacheEfficiencyRule.evaluate(totals(), { now: NOW });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual.cacheReadTokens).toBe(
+      10_000_000 * CACHE_EFFICIENCY_MIN_READ_RATIO,
+    );
+    expect(finding!.counterfactual.model).toBe("claude-opus-5");
+  });
+
+  it("now quotes USD instead of null", () => {
+    // opus-5 in = $5/MTok. Actual: 10M at full rate = $50.
+    // Counterfactual: 5M full ($25) + 5M at 0.1x ($2.50) = $27.50. Saves $22.50.
+    const hits = runAggregateRules(window([totals()]), NOW);
+    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(22.5, 4);
+  });
+
+  it("stays silent when no cache breakdown was ever recorded", () => {
+    const finding = cacheEfficiencyRule.evaluate(
+      totals({ cacheReadTokens: null }),
+      { now: NOW },
+    );
+    expect(finding).toBeNull();
+  });
+
+  it("drops a finding worth under a cent, which the token floor used to pass", () => {
+    // haiku in = $1/MTok. 20k input, 0 reads -> counterfactual moves 10k to
+    // 0.1x: saves 10k * $1/1M * 0.9 = $0.009, under MIN_WASTED_USD.
+    // The old token fallback (MIN_WASTED_TOKENS = 5_000) passed this at 10k.
+    const hits = runAggregateRules(
+      window([
+        totals({
+          model: "claude-haiku-4-5",
+          modelTier: "small",
+          inputTokens: 20_000,
+        }),
+      ]),
+      NOW,
+    );
+    expect(hits.some((h) => h.ruleId === "cache_efficiency")).toBe(false);
+    expect(MIN_WASTED_USD).toBe(0.01); // pins the floor this depends on
+  });
+
+  it("keeps cache tokens a subset of inputTokens when creation tokens leave less than half the input available for reads", () => {
+    // Worked example from the bug report / docs/rules/authoring.md § 4.4's
+    // invariant: a window dominated by cache WRITES with poor read reuse.
+    // Before the fix, targetReads was always inputTokens * 0.5 regardless of
+    // how much cacheCreationTokens already occupied, so the counterfactual
+    // declared targetReads (50,000) + cacheCreationTokens (60,000) =
+    // 110,000 against a 100,000-token input — more cache tokens than the
+    // input contains.
+    const finding = cacheEfficiencyRule.evaluate(
+      totals({
+        inputTokens: 100_000,
+        cacheReadTokens: 10_000,
+        cacheCreationTokens: 60_000,
+      }),
+      { now: NOW },
+    );
+    expect(finding).not.toBeNull();
+    const cf = finding!.counterfactual;
+    expect(
+      (cf.cacheReadTokens ?? 0) + (cf.cacheCreationTokens ?? 0),
+    ).toBeLessThanOrEqual(cf.inputTokens);
+    // The achievable read target is capped at inputTokens - cacheCreationTokens
+    // (100,000 - 60,000 = 40,000), not the naive inputTokens * 0.5 (50,000).
+    expect(cf.cacheReadTokens).toBe(40_000);
+    expect(cf.cacheCreationTokens).toBe(60_000);
+    // The shortfall (and implicatedTokens) shrinks to match the honest,
+    // achievable target: 40,000 - 10,000 = 30,000, not the naive
+    // 50,000 - 10,000 = 40,000.
+    expect(finding!.implicatedTokens).toBe(30_000);
+  });
+
+  it("prices the capped counterfactual correctly for a cache-write-heavy window", () => {
+    // Same window as above, on claude-opus-5 ($5/$25 per 1M; cache reads at
+    // 0.1x and cache creation at 1.25x the base input rate — see
+    // pricing.ts). Both figures below are derived by hand from those rates,
+    // not read off the code under test.
+    //
+    // Actual: fullRate = 100,000 - 10,000 - 60,000 = 30,000.
+    //   cost = 30,000/1e6*5 + 10,000/1e6*5*0.1 + 60,000/1e6*5*1.25
+    //        = 0.15 + 0.005 + 0.375 = 0.53
+    // Counterfactual (reads capped at 40,000, creation unchanged at 60,000):
+    //   fullRate = 100,000 - 40,000 - 60,000 = 0
+    //   cost = 0 + 40,000/1e6*5*0.1 + 60,000/1e6*5*1.25
+    //        = 0.02 + 0.375 = 0.395
+    // Saving = 0.53 - 0.395 = 0.135
+    const hits = runAggregateRules(
+      window([
+        totals({
+          inputTokens: 100_000,
+          cacheReadTokens: 10_000,
+          cacheCreationTokens: 60_000,
+          costUsd: 0.53,
+        }),
+      ]),
+      NOW,
+    );
+    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(0.135, 5);
+  });
+});
+
+describe("frontier_share counterfactual", () => {
+  it("swaps only the dominant model, carrying its own cache breakdown", () => {
+    const w = window([
+      {
+        model: "claude-opus-5",
+        modelTier: "frontier",
+        inputTokens: 100_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 90_000_000,
+        cacheCreationTokens: 1_000_000,
+        costUsd: 900,
+      },
+      {
+        model: "claude-haiku-4-5",
+        modelTier: "small",
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: 0.1,
+      },
+    ]);
+    const finding = frontierShareRule.evaluate(w, {
+      now: new Date("2026-09-15T00:00:00Z"),
+    });
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual).toEqual({
+      model: "claude-sonnet-5",
+      inputTokens: 100_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 90_000_000,
+      cacheCreationTokens: 1_000_000,
+    });
+  });
+
+  it("still produces a positive saving at a realistic 90% cache-read ratio", () => {
+    // Regression guard for 9b1257b: pricing the sibling at full rate while
+    // the dominant side got its cache discount clamped savings to 0 and
+    // dropped the only card an OTEL-only user would see.
+    const hits = runAggregateRules(
+      window([
+        {
+          model: "claude-opus-5",
+          modelTier: "frontier",
+          inputTokens: 100_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 90_000_000,
+          cacheCreationTokens: 0,
+          costUsd: 900,
+        },
+      ]),
+      new Date("2026-09-15T00:00:00Z"),
+    );
+    const hit = hits.find((h) => h.ruleId === "frontier_share");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeGreaterThan(0);
   });
 });

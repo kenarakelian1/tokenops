@@ -60,6 +60,8 @@ async function seedRecommendationFor(
     estimatedWastedUsd: 0,
     eventIds: ["evt-1"],
     dedupeKey: "evt-1",
+    counterfactual: null,
+    assumption: null,
   });
   const [rec] = await repo.listRecommendations(userId, "open");
   return rec!.id;

@@ -97,6 +97,8 @@ export async function runAggregateRulesForUser(
       estimatedWastedUsd: hit.estimatedWastedUsd,
       eventIds: hit.eventIds,
       dedupeKey,
+      counterfactual: hit.counterfactual,
+      assumption: hit.assumption,
     });
     await repo.supersedeOpenRecommendations(userId, hit.ruleId, dedupeKey);
   }
