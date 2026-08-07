@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { runRules } from "./index.js";
+import { REQUEST_RULES, runRules } from "./index.js";
+import type { Rule } from "./contract.js";
 import { UsageEventSchema } from "../schema/event.js";
 import type { UsageEvent } from "../schema/event.js";
 import { frontierTrivialRule } from "./frontier-trivial.js";
@@ -198,6 +199,46 @@ describe("grain gating", () => {
   it("runs NO per-request rule on an aggregate event with identical numbers", () => {
     const hits = runRules({ ...trivialFrontier, grain: "aggregate" } as never);
     expect(hits).toEqual([]);
+  });
+
+  it("never evaluates an aggregate-grain rule that is sitting in REQUEST_RULES", () => {
+    // REQUEST_RULES is a hand-maintained array: nothing stops an
+    // aggregate-grain rule being appended to it, and before the declared-grain
+    // filter existed, runRules called it and handed it a single UsageEvent.
+    // `Rule.grain` was read by nothing at all.
+    let evaluated = false;
+    const misfiled: Rule<UsageEvent> = {
+      id: "cache_efficiency",
+      grain: "aggregate",
+      defaultSeverity: "warn",
+      evaluate() {
+        evaluated = true;
+        // A finding rich enough to clear the materiality floor, so a leak
+        // shows up as a hit and not just a silent extra call.
+        return {
+          title: "misfiled",
+          detail: "misfiled",
+          eventIds: [],
+          implicatedTokens: 1_000_000,
+          counterfactual: {
+            model: "claude-haiku-4-5",
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cacheReadTokens: null,
+            cacheCreationTokens: null,
+          },
+        };
+      },
+    };
+
+    REQUEST_RULES.push(misfiled);
+    try {
+      const hits = runRules({ ...trivialFrontier, grain: "request" } as never);
+      expect(evaluated).toBe(false);
+      expect(hits.map((h) => h.ruleId)).not.toContain("cache_efficiency");
+    } finally {
+      REQUEST_RULES.pop();
+    }
   });
 
   it("accepts an event whose per-request features are absent", () => {

@@ -34,7 +34,15 @@ export {
 } from "./context-bloat.js";
 export { MIN_WASTED_USD, MIN_WASTED_TOKENS, isMaterial } from "./materiality.js";
 
-/** Aggregate events are time-bucketed sums, not requests. */
+/**
+ * Is this EVENT a time-bucketed sum rather than a single request?
+ *
+ * This is a question about the DATA, and is separate from `Rule.grain`, which
+ * is a question about the RULE. Both gates live in runRules below: an
+ * aggregate event is discarded before any rule runs (per-request rules read
+ * features an aggregate cannot have), and an aggregate-grain rule is skipped
+ * even if it is sitting in REQUEST_RULES.
+ */
 export function isAggregate(event: UsageEvent): boolean {
   return event.grain === "aggregate";
 }
@@ -94,9 +102,16 @@ function eventAsActual(event: UsageEvent): Actual {
 /**
  * Run all efficiency rules against an event (and optional same-session history).
  *
- * Aggregates are gated here, not in each rule: a new per-request rule must opt
- * in to aggregates deliberately rather than remember to opt out. Every
- * request-grain rule reads features an aggregate cannot have.
+ * Two independent gates, both here rather than in each rule:
+ *
+ *  - **The event's grain.** An aggregate event is a time-bucketed sum with no
+ *    request inside it, and every request-grain rule reads features it cannot
+ *    have — so aggregates are discarded outright (isAggregate, above).
+ *  - **The rule's declared grain.** `REQUEST_RULES` is a hand-maintained
+ *    array, so nothing stops an aggregate-grain rule being appended to it.
+ *    Skipping any rule that does not declare `grain: "request"` is what makes
+ *    `Rule.grain` load-bearing instead of decorative: a misfiled rule stays
+ *    silent instead of being handed a shape it never asked for.
  */
 export function runRules(
   event: UsageEvent,
@@ -114,6 +129,8 @@ export function runRules(
   const hits: RuleHit[] = [];
 
   for (const rule of REQUEST_RULES) {
+    // The declared-grain gate. See the doc comment above.
+    if (rule.grain !== "request") continue;
     const finding = rule.evaluate(event, fullCtx);
     if (!finding) continue;
     const actual = rule.resolveActual
