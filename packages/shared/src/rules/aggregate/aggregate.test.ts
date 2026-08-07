@@ -376,6 +376,67 @@ describe("cache_efficiency counterfactual", () => {
     expect(hits.some((h) => h.ruleId === "cache_efficiency")).toBe(false);
     expect(MIN_WASTED_USD).toBe(0.01); // pins the floor this depends on
   });
+
+  it("keeps cache tokens a subset of inputTokens when creation tokens leave less than half the input available for reads", () => {
+    // Worked example from the bug report / docs/rules/authoring.md § 4.4's
+    // invariant: a window dominated by cache WRITES with poor read reuse.
+    // Before the fix, targetReads was always inputTokens * 0.5 regardless of
+    // how much cacheCreationTokens already occupied, so the counterfactual
+    // declared targetReads (50,000) + cacheCreationTokens (60,000) =
+    // 110,000 against a 100,000-token input — more cache tokens than the
+    // input contains.
+    const finding = cacheEfficiencyRule.evaluate(
+      totals({
+        inputTokens: 100_000,
+        cacheReadTokens: 10_000,
+        cacheCreationTokens: 60_000,
+      }),
+      { now: NOW },
+    );
+    expect(finding).not.toBeNull();
+    const cf = finding!.counterfactual;
+    expect(
+      (cf.cacheReadTokens ?? 0) + (cf.cacheCreationTokens ?? 0),
+    ).toBeLessThanOrEqual(cf.inputTokens);
+    // The achievable read target is capped at inputTokens - cacheCreationTokens
+    // (100,000 - 60,000 = 40,000), not the naive inputTokens * 0.5 (50,000).
+    expect(cf.cacheReadTokens).toBe(40_000);
+    expect(cf.cacheCreationTokens).toBe(60_000);
+    // The shortfall (and implicatedTokens) shrinks to match the honest,
+    // achievable target: 40,000 - 10,000 = 30,000, not the naive
+    // 50,000 - 10,000 = 40,000.
+    expect(finding!.implicatedTokens).toBe(30_000);
+  });
+
+  it("prices the capped counterfactual correctly for a cache-write-heavy window", () => {
+    // Same window as above, on claude-opus-5 ($5/$25 per 1M; cache reads at
+    // 0.1x and cache creation at 1.25x the base input rate — see
+    // pricing.ts). Both figures below are derived by hand from those rates,
+    // not read off the code under test.
+    //
+    // Actual: fullRate = 100,000 - 10,000 - 60,000 = 30,000.
+    //   cost = 30,000/1e6*5 + 10,000/1e6*5*0.1 + 60,000/1e6*5*1.25
+    //        = 0.15 + 0.005 + 0.375 = 0.53
+    // Counterfactual (reads capped at 40,000, creation unchanged at 60,000):
+    //   fullRate = 100,000 - 40,000 - 60,000 = 0
+    //   cost = 0 + 40,000/1e6*5*0.1 + 60,000/1e6*5*1.25
+    //        = 0.02 + 0.375 = 0.395
+    // Saving = 0.53 - 0.395 = 0.135
+    const hits = runAggregateRules(
+      window([
+        totals({
+          inputTokens: 100_000,
+          cacheReadTokens: 10_000,
+          cacheCreationTokens: 60_000,
+          costUsd: 0.53,
+        }),
+      ]),
+      NOW,
+    );
+    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
+    expect(hit).toBeDefined();
+    expect(hit!.estimatedWastedUsd).toBeCloseTo(0.135, 5);
+  });
 });
 
 describe("frontier_share counterfactual", () => {

@@ -40,7 +40,20 @@ export const cacheEfficiencyRule: Rule<ModelWindowTotals> = {
     const readRatio = cacheReadTokens / totals.inputTokens;
     if (readRatio >= CACHE_EFFICIENCY_MIN_READ_RATIO) return null;
 
-    const targetReads = totals.inputTokens * CACHE_EFFICIENCY_MIN_READ_RATIO;
+    // Reads and creation tokens are both subsets of inputTokens (see
+    // docs/rules/authoring.md § 4.4), so the achievable read target cannot
+    // just be inputTokens * 0.5 — it has to leave room for whatever creation
+    // tokens are already recorded. `?? 0` here mirrors trimCacheTokens: a
+    // null cacheCreationTokens ("no breakdown recorded") is treated as 0 for
+    // this arithmetic but still copied through as null on the counterfactual
+    // below, so the null-vs-zero distinction on the emitted finding is
+    // untouched.
+    const cacheCreationTokens = totals.cacheCreationTokens ?? 0;
+    const readCapacity = Math.max(0, totals.inputTokens - cacheCreationTokens);
+    const targetReads = Math.min(
+      totals.inputTokens * CACHE_EFFICIENCY_MIN_READ_RATIO,
+      readCapacity,
+    );
     const shortfall = Math.max(0, Math.round(targetReads - cacheReadTokens));
     if (shortfall === 0) return null;
 
@@ -61,8 +74,12 @@ export const cacheEfficiencyRule: Rule<ModelWindowTotals> = {
         cacheReadTokens: targetReads,
         cacheCreationTokens: totals.cacheCreationTokens,
       },
+      // Stated as the ratio actually targeted, not the constant 0.5 — when
+      // readCapacity caps targetReads below inputTokens * 0.5 (heavy
+      // recorded cache-creation volume), a card that still said "50%" would
+      // assert an achievable ratio the counterfactual itself doesn't reach.
       assumption: `Assumes a ${Math.round(
-        CACHE_EFFICIENCY_MIN_READ_RATIO * 100,
+        (targetReads / totals.inputTokens) * 100,
       )}% cache-read ratio is achievable for this workload`,
     };
   },
