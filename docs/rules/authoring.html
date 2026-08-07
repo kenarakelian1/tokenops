@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Writing a TokenOps recommendation rule</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="writing-a-tokenops-recommendation-rule">Writing a TokenOps recommendation rule</h1>
+<p>TokenOps ships five efficiency rules. This document is the contract for
+writing a sixth. Outside contributions are accepted — the rule surface is
+published precisely so that people who know a workload we don&#39;t can encode
+it.</p>
+<p>Everything below is copied from the source under
+<code>packages/shared/src/rules/</code>. If a snippet here and the code disagree, the
+code wins and this document is a bug.</p>
+<p><strong>A note on the word &quot;estimated.&quot;</strong> TokenOps never reports a measured saving.
+A rule declares what a request <em>would have looked like</em> had its advice been
+taken; the runner prices both the real token counts and the hypothetical ones
+through the same published rate table at the same instant, and reports the
+difference. That is an estimate resting on a stated assumption, and every
+number a rule produces is labelled that way in the type names
+(<code>estimatedWastedUsd</code>), on the card, and in this guide.</p>
+<hr>
+<h2 id="1-what-a-rule-is">1. What a rule is</h2>
+<p>A rule is <strong>a predicate plus a counterfactual</strong>. It answers two questions:</p>
+<ol>
+<li>Is something wrong with this request (or this window)?</li>
+<li>What would the request have looked like if it weren&#39;t?</li>
+</ol>
+<p>It does not answer &quot;how much did that cost?&quot; A rule never multiplies a token
+count by a rate, never reads a price table, and never returns a dollar
+figure. The runner owns pricing, the materiality floor, severity, and
+ordering. A contributor writes a predicate and a counterfactual and nothing
+else.</p>
+<h3 id="the-rule-interface">The rule interface</h3>
+<p>From <code>packages/shared/src/rules/contract.ts</code>:</p>
+<pre><code class="language-ts">export interface Rule&lt;TInput&gt; {
+  readonly id: RuleId;
+  readonly grain: &quot;request&quot; | &quot;aggregate&quot;;
+  readonly defaultSeverity: Severity;
+  evaluate(input: TInput, ctx: RuleContext): RuleFinding | null;
+  /**
+   * Which slice of the input the counterfactual should be priced against.
+   *
+   * Most rules compare against the whole input and omit this — the runner
+   * then builds the Actual from the input itself. A rule that reasons over a
+   * COLLECTION and singles out one member (frontier_share picks the dominant
+   * model out of a window) must implement this, because only the rule knows
+   * which member it chose. Without it the runner would have to infer the
+   * choice by matching token counts back against the collection, which is
+   * ambiguous whenever two members share the same totals.
+   *
+   * Return null to withdraw the finding — if a rule cannot say what its
+   * counterfactual is measured against, there is nothing to price.
+   */
+  resolveActual?(input: TInput, finding: RuleFinding): Actual | null;
+}
+</code></pre>
+<p><code>TInput</code> is <code>UsageEvent</code> for request-grain rules, and either
+<code>AggregateWindow</code> or <code>ModelWindowTotals</code> for aggregate-grain rules — see
+§ 1.4.</p>
+<h3 id="what-a-rule-returns">What a rule returns</h3>
+<pre><code class="language-ts">export type RuleFinding = {
+  title: string;
+  detail: string;
+  eventIds: string[];
+  counterfactual: Counterfactual;
+  /**
+   * Tokens implicated by this finding — for display and for the materiality
+   * fallback when USD is unknown. Not the token delta: a model-swap finding
+   * implicates every token in the call while changing none of them.
+   */
+  implicatedTokens: number;
+  /**
+   * The assumption the counterfactual rests on, in plain language, rendered
+   * on the card. Required whenever the counterfactual embeds a judgement the
+   * user might reasonably dispute (e.g. &quot;excerpting removes half the dumped
+   * content&quot;). Omit only when the counterfactual is self-evident.
+   */
+  assumption?: string;
+};
+</code></pre>
+<p>Returning <code>null</code> from <code>evaluate</code> means &quot;this rule has nothing to say about
+this input.&quot; That is the overwhelmingly common case and costs nothing.</p>
+<h3 id="what-a-rule-is-given">What a rule is given</h3>
+<pre><code class="language-ts">export type RuleContext = {
+  /** Pricing instant. Replays pass the event&#39;s own timestamp — see PricingContext. */
+  now: Date;
+  priceOverrides?: Record&lt;string, PriceRow&gt;;
+  /** Request-grain rules only: prior events in the same session, oldest first. */
+  sessionContext?: UsageEvent[];
+};
+</code></pre>
+<p><code>ctx.now</code> exists so a rule that needs a time reference gets the <em>pricing
+instant</em> the runner is using, not the wall clock. Most predicates ignore it
+entirely (all five shipped rules name it <code>_ctx</code> or use only
+<code>ctx.sessionContext</code>). It matters because replays and back-tests pass each
+event&#39;s own timestamp, so the same historical window reports the same
+estimated savings no matter what day you ask.</p>
+<p><code>ctx.priceOverrides</code> is threaded through to the pricer for you. A rule should
+never read it — if you find yourself wanting to, you are about to compute
+money, which is § 4.2.</p>
+<h3 id="the-counterfactual">The counterfactual</h3>
+<p>From <code>packages/shared/src/rules/counterfactual.ts</code>:</p>
+<pre><code class="language-ts">/**
+ * What a request or window would have looked like had a rule&#39;s advice been
+ * followed. `model` equals the actual model when the advice concerns tokens
+ * rather than routing.
+ *
+ * cacheReadTokens/cacheCreationTokens keep the `number | null` semantics
+ * established on ModelWindowTotals: `null` means no breakdown was recorded,
+ * `0` means recorded and genuinely zero. Both are subsets of inputTokens.
+ */
+export type Counterfactual = {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+};
+
+/** The observed side of the comparison. Deliberately carries no costUsd — see below. */
+export type Actual = {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+};
+</code></pre>
+<p><code>Actual</code> and <code>Counterfactual</code> are structurally identical on purpose: they are
+the two sides of one comparison, priced by one function through one table.</p>
+<pre><code class="language-ts">export function priceCounterfactual(
+  actual: Actual,
+  counterfactual: Counterfactual,
+  ctx: PricingContext,
+): PricedSavings;
+
+export type PricedSavings = {
+  estimatedWastedTokens: number;
+  estimatedWastedUsd: number | null;
+};
+</code></pre>
+<p><code>estimatedWastedUsd</code> is <code>null</code> when either side is unpriceable — a more
+honest answer than charging the whole call as waste, which is what
+<code>frontier_trivial</code> did before this function existed.</p>
+<h3 id="grain-which-runner-will-call-you">Grain: which runner will call you</h3>
+<p><code>grain</code> is a declaration, not a hint. It replaced an <code>isAggregate()</code> gate
+that used to live inside the runner, so that a new rule <strong>states</strong> which
+shape of input it consumes rather than remembering to opt out of the wrong
+one.</p>
+<table>
+<thead>
+<tr>
+<th><code>grain</code></th>
+<th>Input type</th>
+<th>Runner</th>
+<th>Registration</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>&quot;request&quot;</code></td>
+<td><code>UsageEvent</code></td>
+<td><code>runRules</code> (<code>rules/index.ts</code>)</td>
+<td>append to <code>REQUEST_RULES</code></td>
+</tr>
+<tr>
+<td><code>&quot;aggregate&quot;</code></td>
+<td><code>AggregateWindow</code> or <code>ModelWindowTotals</code></td>
+<td><code>runAggregateRules</code> (<code>rules/aggregate/index.ts</code>)</td>
+<td>wire into the runner body and add the id to <code>AGGREGATE_RULE_IDS</code></td>
+</tr>
+</tbody></table>
+<p>Request-grain rules read a single event&#39;s derived <code>features</code> — prompt chars,
+message count, paste and file-dump scores, and (for <code>context_bloat</code>) that
+event&#39;s same-session history. An aggregate has none of that: it is a
+time-bucketed sum with no request inside it. <code>runRules</code> discards every
+<code>grain: &quot;aggregate&quot;</code> event before any request rule runs.</p>
+<p>The aggregate runner is not a <code>for</code> loop over a registry — it calls its two
+rules explicitly, because <code>frontier_share</code> consumes a whole
+<code>AggregateWindow</code> while <code>cache_efficiency</code> is evaluated once per model row
+(<code>ModelWindowTotals</code>) and deduplicated down to the worst offender. Adding an
+aggregate rule means editing <code>runAggregateRules</code> as well as
+<code>AGGREGATE_RULE_IDS</code>; that list is what tells the hourly job which cards to
+retire when a rule stops firing.</p>
+<hr>
+<h2 id="2-a-worked-example-frontier_trivial">2. A worked example: <code>frontier_trivial</code></h2>
+<p>This is the whole rule, verbatim from
+<code>packages/shared/src/rules/frontier-trivial.ts</code>:</p>
+<pre><code class="language-ts">import { cheaperSiblingModel } from &quot;../pricing.js&quot;;
+import type { UsageEvent } from &quot;../schema/event.js&quot;;
+import type { Rule, RuleContext, RuleFinding } from &quot;./contract.js&quot;;
+
+/** Max total tokens for a call to be considered &quot;trivial&quot;. */
+export const FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS = 200;
+
+export const frontierTrivialRule: Rule&lt;UsageEvent&gt; = {
+  id: &quot;frontier_trivial&quot;,
+  grain: &quot;request&quot;,
+  defaultSeverity: &quot;info&quot;,
+
+  evaluate(event: UsageEvent, _ctx: RuleContext): RuleFinding | null {
+    const { features, inputTokens, outputTokens } = event;
+    const totalTokens = inputTokens + outputTokens;
+
+    if (features.modelTier !== &quot;frontier&quot;) return null;
+    if (totalTokens &gt; FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS) return null;
+    if (features.messageCount == null) return null;
+    if (features.largePasteScore == null) return null;
+    if (features.messageCount &gt; 2) return null;
+    if (features.largePasteScore &gt;= 0.3) return null;
+
+    const suggestedModel = cheaperSiblingModel(event.model);
+    if (!suggestedModel) return null;
+
+    return {
+      title: &quot;Frontier model for trivial task&quot;,
+      detail:
+        `This request used a frontier-tier model for a small prompt/response. ` +
+        `Consider switching to ${suggestedModel} for simple tasks like this.`,
+      eventIds: [event.eventId],
+      implicatedTokens: totalTokens,
+      counterfactual: {
+        model: suggestedModel,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens: event.cacheReadTokens ?? null,
+        cacheCreationTokens: event.cacheCreationTokens ?? null,
+      },
+      assumption: `${suggestedModel} handles requests at or under ${FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS} tokens as well as ${event.model}`,
+    };
+  },
+};
+</code></pre>
+<p>Roughly thirty lines of body, of which seven are early returns. That ratio is
+normal and correct.</p>
+<h3 id="why-each-early-return-exists">Why each early return exists</h3>
+<pre><code class="language-ts">if (features.modelTier !== &quot;frontier&quot;) return null;
+if (totalTokens &gt; FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS) return null;
+</code></pre>
+<p>The predicate proper. Nothing subtle: this rule is about frontier models
+doing small work.</p>
+<pre><code class="language-ts">if (features.messageCount == null) return null;
+if (features.largePasteScore == null) return null;
+</code></pre>
+<p><strong>Absence is not zero.</strong> <code>features.messageCount</code> and
+<code>features.largePasteScore</code> are optional on <code>UsageFeaturesSchema</code> — a capture
+path that cannot derive them omits them. Treating a missing <code>largePasteScore</code>
+as <code>0</code> would mean &quot;we know there was no large paste,&quot; which is a claim the
+data does not support, and would fire this rule on every frontier call from a
+capture path that simply doesn&#39;t report the field. Note that these two guards
+use <code>== null</code> so they catch both <code>null</code> and <code>undefined</code>, and that they come
+<em>before</em> the comparisons that consume the same fields.</p>
+<pre><code class="language-ts">if (features.messageCount &gt; 2) return null;
+if (features.largePasteScore &gt;= 0.3) return null;
+</code></pre>
+<p>Now the values can be trusted, so they can be compared. A three-message
+exchange or a substantial paste isn&#39;t a trivial task even if the token count
+is small.</p>
+<pre><code class="language-ts">const suggestedModel = cheaperSiblingModel(event.model);
+if (!suggestedModel) return null;
+</code></pre>
+<p><strong>A finding a user cannot act on is not a finding.</strong> <code>cheaperSiblingModel</code>
+returns <code>null</code> when the vendor family is unrecognised, or when the model is
+already the cheapest tier in its family. Before this guard existed, the rule
+compared every frontier-tier trivial call against a hardcoded
+<code>gpt-4o-mini</code> — so a Grok user got a card telling them to switch vendors,
+which is not something they can do for one call. <code>frontier-trivial.test.ts</code>
+pins that behaviour with a <code>grok-4</code> fixture that must produce <code>null</code>.</p>
+<h3 id="why-the-counterfactual-keeps-token-counts-unchanged">Why the counterfactual keeps token counts unchanged</h3>
+<pre><code class="language-ts">counterfactual: {
+  model: suggestedModel,
+  inputTokens,       // unchanged
+  outputTokens,      // unchanged
+  cacheReadTokens: event.cacheReadTokens ?? null,
+  cacheCreationTokens: event.cacheCreationTokens ?? null,
+},
+</code></pre>
+<p>This rule&#39;s advice is &quot;use a different model,&quot; not &quot;send less.&quot; The
+hypothetical is <em>the same prompt, the same answer, a cheaper model</em> — so
+every token count carries over untouched and only <code>model</code> changes. The saving
+is entirely the rate delta between the two models on identical volume, which
+is exactly what the user would experience if they took the advice.</p>
+<p>A rule whose advice <em>is</em> &quot;send less&quot; changes <code>inputTokens</code> instead and leaves
+<code>model</code> alone. Both shapes go through the same pricer.</p>
+<p>The <code>?? null</code> on the cache fields is the null-vs-zero invariant of § 4.1:
+<code>UsageEvent.cacheReadTokens</code> is optional, and an absent field becomes <code>null</code>
+(&quot;no breakdown recorded&quot;), never <code>0</code> (&quot;recorded, genuinely zero&quot;).</p>
+<h3 id="why-implicatedtokens-is-the-total-not-a-delta">Why <code>implicatedTokens</code> is the total, not a delta</h3>
+<pre><code class="language-ts">implicatedTokens: totalTokens,   // inputTokens + outputTokens
+</code></pre>
+<p>The token delta between actual and counterfactual here is <strong>zero</strong> — the
+model changed, not the volume. If <code>implicatedTokens</code> meant &quot;tokens saved,&quot;
+this rule would always report <code>0</code>, the card would show &quot;0 tokens&quot; next to a
+real dollar figure, and the materiality fallback would drop every finding
+whose cost happened to be unpriceable.</p>
+<p><code>implicatedTokens</code> means &quot;the tokens this finding is <em>about</em>.&quot; For a model
+swap that is the entire call: all 200 of them were served by the wrong model.
+For <code>full_document_io</code> it is the removed share; for <code>context_bloat</code> the
+excess over the session&#39;s first request; for <code>cache_efficiency</code> the cache-read
+shortfall; for <code>frontier_share</code> all frontier tokens in the window. In each
+case it answers &quot;how much traffic does this finding concern,&quot; which is what
+a user reads it as.</p>
+<p>The field flows into <code>PricedSavings.estimatedWastedTokens</code> untouched — the
+pricer never derives it, precisely so a model-swap rule can report a token
+count that is not a difference.</p>
+<h3 id="why-assumption-is-phrased-for-a-user">Why <code>assumption</code> is phrased for a user</h3>
+<pre><code class="language-ts">assumption: `${suggestedModel} handles requests at or under ${FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS} tokens as well as ${event.model}`,
+</code></pre>
+<p>Rendered, that reads: <em>&quot;claude-sonnet-5 handles requests at or under 200
+tokens as well as claude-opus-5.&quot;</em></p>
+<p>That sentence appears <strong>on the card</strong>, next to the estimated dollar figure. It
+is the thing a user is invited to disagree with. It names models they
+recognise and a threshold they can evaluate against their own workload. It
+does not say &quot;assumes <code>cheaperSiblingModel(event.model)</code> is
+quality-equivalent below <code>FRONTIER_TRIVIAL_MAX_TOTAL_TOKENS</code>&quot; — that sentence
+is true, and useless to the person deciding whether to act.</p>
+<p>Write the assumption as the objection a skeptical user would raise, stated
+before they raise it. If you cannot write that sentence, the counterfactual
+is probably doing something you have not fully justified to yourself.</p>
+<p><code>assumption</code> is optional in the type and effectively mandatory in practice.
+All five shipped rules set it. Omit it only when the counterfactual embeds no
+judgement at all.</p>
+<h3 id="why-this-rule-is-info">Why this rule is <code>info</code></h3>
+<pre><code class="language-ts">defaultSeverity: &quot;info&quot;,
+</code></pre>
+<p>Capped at 200 tokens, the most this can ever save on one call is a fraction
+of a cent — and in a coding agent, the user does not pick a model per request
+at all. Severity is declared per rule and deliberately <strong>not</strong> derived from
+savings: a cheap finding can still be urgent, and mapping dollars onto
+severity would just be a fresh set of magic numbers. Cards are ordered by
+estimated savings, which is what actually keeps low-value findings down the
+list.</p>
+<hr>
+<h2 id="3-choosing-a-counterfactual">3. Choosing a counterfactual</h2>
+<p><strong>The rule of thumb: a counterfactual must be something the user could
+actually have done.</strong> Not something cheaper. Not something theoretically
+optimal. Something they could have chosen, in the situation they were
+actually in.</p>
+<p>What the five shipped rules declare:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Counterfactual</th>
+<th>Stated assumption</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>frontier_trivial</code></td>
+<td>Cheapest in-vendor sibling model; every token count unchanged</td>
+<td><em>&quot;claude-sonnet-5 handles requests at or under 200 tokens as well as claude-opus-5&quot;</em></td>
+</tr>
+<tr>
+<td><code>full_document_io</code></td>
+<td>Same model; <code>inputTokens</code> reduced by <code>inputTokens × fileDumpScore × 0.5</code>, cache breakdown trimmed</td>
+<td><em>&quot;Assumes excerpting removes half the dumped content, leaving the rest of the prompt unchanged&quot;</em></td>
+</tr>
+<tr>
+<td><code>context_bloat</code></td>
+<td>Same model; <code>inputTokens</code> held flat at the session&#39;s first request, cache breakdown trimmed</td>
+<td><em>&quot;Assumes context could have stayed at the size of the session&#39;s first request&quot;</em></td>
+</tr>
+<tr>
+<td><code>cache_efficiency</code></td>
+<td>Same model; <code>cacheReadTokens</code> raised to <code>inputTokens × 0.5</code></td>
+<td><em>&quot;Assumes a 50% cache-read ratio is achievable for this workload&quot;</em></td>
+</tr>
+<tr>
+<td><code>frontier_share</code></td>
+<td>Dominant frontier model&#39;s cheaper in-vendor sibling, over <strong>that model&#39;s own</strong> tokens and cache breakdown</td>
+<td><em>&quot;Assumes routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors&#39; frontier tokens are counted in the share but not repriced.&quot;</em></td>
+</tr>
+</tbody></table>
+<p>Two shapes appear, and yours will be one of them:</p>
+<ul>
+<li><strong>Routing advice</strong> — change <code>model</code>, keep every token count. The saving is
+the rate delta on identical volume.</li>
+<li><strong>Volume advice</strong> — keep <code>model</code>, lower <code>inputTokens</code> (and trim the cache
+breakdown to match; see § 4.4). The saving is the removed tokens at the
+model&#39;s own rate.</li>
+</ul>
+<p>Mixing the two in one rule means you are asserting the user would have done
+two different things, and the dollar figure stops being attributable to
+either.</p>
+<h3 id="cross-vendor-swaps-are-not-actionable">Cross-vendor swaps are not actionable</h3>
+<p><strong>Never propose moving a call from one vendor to another.</strong> A user cannot
+switch a single request from Claude Opus to GPT-4o-mini: the API is
+different, the client is different, the credentials are different, and in an
+agent harness the model may not be theirs to pick at all. A card advising it
+is not advice, it is noise — and the dollar figure attached to it is priced
+across two vendors&#39; rate cards, which compares nothing.</p>
+<p><code>cheaperSiblingModel(model)</code> is the only sanctioned way to name a target
+model. It returns a cheaper model <strong>in the same vendor family</strong> (Anthropic:
+haiku &lt; sonnet &lt; opus; OpenAI: <code>gpt-4o-mini</code> &lt; the rest of the <code>gpt-4*</code>
+family), or <code>null</code> when the family is unrecognised or the model is already
+the cheapest in it. When it returns <code>null</code>, return <code>null</code> — there is nothing
+actionable to say.</p>
+<p><code>frontier_share</code> shows how far this is taken. It reports the frontier share
+of <em>all</em> tokens in the window, which may span several vendors, but it prices
+only the largest frontier contributor&#39;s own tokens against that model&#39;s own
+in-vendor sibling. Summing the whole window against one sibling&#39;s rate would
+silently price gpt-4o tokens as if they were claude-sonnet-5. The assumption
+string says so out loud: <em>&quot;Other vendors&#39; frontier tokens are counted in the
+share but not repriced.&quot;</em> When the largest frontier contributor has no
+in-vendor sibling, <code>selectDominant</code> falls through to the next-largest rather
+than reaching across vendors.</p>
+<hr>
+<h2 id="4-the-invariants-a-rule-must-not-break">4. The invariants a rule must not break</h2>
+<p>Each of these has already caused a real bug in this codebase. They are not
+style preferences.</p>
+<h3 id="41-null-and-0-are-different-on-cache-fields">4.1 <code>null</code> and <code>0</code> are different on cache fields</h3>
+<p><code>cacheReadTokens</code> and <code>cacheCreationTokens</code> are <code>number | null</code> on
+<code>Counterfactual</code>, <code>Actual</code>, and <code>ModelWindowTotals</code>, and optional on
+<code>UsageEvent</code>. The two states mean different things:</p>
+<ul>
+<li><strong><code>null</code></strong> — no cache breakdown was ever recorded for this event or this
+slice of the window. Pre-migration events fold cache tokens into
+<code>inputTokens</code> and report nothing separately.</li>
+<li><strong><code>0</code></strong> — a breakdown was recorded, and reuse was genuinely zero.</li>
+</ul>
+<p>Collapsing them fails in <strong>both directions</strong>, which is why neither default is
+safe:</p>
+<ul>
+<li>Treating <code>null</code> as <code>0</code> on a window that predates cache reporting invents a
+&quot;low cache reuse&quot; finding out of missing data — a confidently wrong card on
+a window straddling the migration.</li>
+<li>Treating a real <code>0</code> as &quot;unknown&quot; silences a user who is genuinely paying
+full price for context on every single call, which is the most valuable
+card the aggregate class can produce.</li>
+</ul>
+<p><code>cacheEfficiencyRule</code> acts on the distinction in its first line —
+<code>if (totals.cacheReadTokens === null) return null;</code> — with a strict <code>===</code>, so
+a recorded <code>0</code> proceeds to the ratio check and produces a finding. Note that
+this guard is <code>=== null</code> (only <code>null</code> is &quot;unknown&quot;) while the
+<code>frontier_trivial</code> feature guards are <code>== null</code> (both <code>null</code> and <code>undefined</code>
+are &quot;absent&quot; on an optional field). Both are deliberate; match the semantics
+of the field you are reading.</p>
+<p>On the way out, preserve it: <code>event.cacheReadTokens ?? null</code>, never
+<code>?? 0</code>. <code>trimCacheTokens</code> follows the same discipline — a component that was
+<code>null</code> on the actual side stays <code>null</code> on the counterfactual and contributes
+<code>0</code> to the trim arithmetic, so trimming never materialises a number where the
+event recorded none.</p>
+<p>Related, and easy to get wrong the other way: cache tokens are <strong>already
+counted inside <code>inputTokens</code></strong>, not additional to it. Never add them.</p>
+<h3 id="42-never-read-a-provider-reported-costusd-for-savings">4.2 Never read a provider-reported <code>costUsd</code> for savings</h3>
+<p><code>Actual</code> has no <code>costUsd</code> field. That is deliberate, and it is the single
+most important thing in this document.</p>
+<p><code>UsageEvent</code> <em>does</em> carry <code>costUsd</code>, and so does <code>ModelWindowTotals</code>. Both
+are provider-reported and often more accurate than any estimate. Using one
+for savings is nevertheless always wrong, because of what it does to the
+<em>other</em> side of the comparison:</p>
+<ol>
+<li>The actual side gets a real, cache-discounted, provider-billed number.</li>
+<li>The counterfactual side can only ever be an estimate at published list
+rates, with no discount applied.</li>
+<li>The estimate therefore comes out <strong>higher</strong> than the real figure for what
+is genuinely the cheaper option.</li>
+<li><code>priceCounterfactual</code> clamps through <code>Math.max(0, actualCost - counterfactualCost)</code>, so the saving becomes <code>0</code>.</li>
+<li><code>0</code> is below <code>MIN_WASTED_USD</code>, so <code>isMaterial</code> filters the hit out.</li>
+<li>The card silently disappears. No error, no log, no failing test — the
+recommendation just never shows up.</li>
+</ol>
+<p><code>frontier_share</code> hit exactly this and was fixed inline. The fix that made it
+un-reintroducible was removing <code>costUsd</code> from the type: <code>priceCounterfactual</code>
+takes an <code>Actual</code>, <code>Actual</code> has no such field, so no future rule can pass one
+even by accident. Both sides go through <code>estimateCostUsd</code> with the same
+table, the same overrides, and the same <code>now</code>.</p>
+<p>If you want to know why an estimate diverges from a provider&#39;s bill, that is a
+pricing-table question, not a rule question. Fix the table.</p>
+<h3 id="43-declare-grain-honestly-keep-id-in-the-ruleid-union">4.3 Declare <code>grain</code> honestly; keep <code>id</code> in the <code>RuleId</code> union</h3>
+<pre><code class="language-ts">export type RuleId =
+  | &quot;frontier_trivial&quot;
+  | &quot;full_document_io&quot;
+  | &quot;context_bloat&quot;
+  | &quot;frontier_share&quot;
+  | &quot;cache_efficiency&quot;;
+</code></pre>
+<p>A new rule adds its id to this union in <code>packages/shared/src/rules/types.ts</code>.
+<code>RuleId</code> is not <code>string</code>, and it is not decorative: the union is what makes
+persistence, dismissal, supersession, and the aggregate job&#39;s retirement list
+exhaustive over the real set of rules. A rule whose id is not in the union
+does not type-check, which is the intended outcome.</p>
+<p><code>grain</code> must match the input the rule actually reads. A rule that declares
+<code>&quot;aggregate&quot;</code> but reads <code>event.features</code> compiles (the aggregate types have
+no <code>features</code>, so it usually won&#39;t — but a sufficiently loose <code>TInput</code> can
+sneak through) and then reads <code>undefined</code> at runtime for every OTEL-derived
+user. A rule that declares <code>&quot;request&quot;</code> and is registered with the aggregate
+runner will be handed a shape it does not expect. Declare it, register it in
+the matching place, and let the type parameter check you.</p>
+<h3 id="44-cache-tokens-are-a-subset-of-input-tokens">4.4 Cache tokens are a subset of input tokens</h3>
+<p>On any <code>Counterfactual</code> you construct:</p>
+<pre><code>(cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0) &lt;= inputTokens
+</code></pre>
+<p>They are subsets of <code>inputTokens</code>, not additions to it, and the pricer relies
+on that. <code>estimateCostUsd</code> carves the cache portions out of the full-rate
+portion:</p>
+<pre><code class="language-ts">const fullRateInputTokens = Math.max(
+  0,
+  inputTokens - cacheReadTokens - cacheCreationTokens,
+);
+</code></pre>
+<p>Break the invariant and that clamp fires: the excess cache tokens are still
+billed at their own multipliers while the full-rate portion has already
+bottomed out at zero, so the counterfactual is priced for more tokens than it
+actually contains. It comes out too expensive, and the estimated saving is
+understated — or, if the overshoot is large enough, driven to zero by the
+<code>Math.max(0, …)</code> in <code>priceCounterfactual</code> and filtered out as immaterial.</p>
+<p><strong>Routing rules cannot break this</strong>, because they copy the actual&#39;s cache
+breakdown alongside an unchanged <code>inputTokens</code>.</p>
+<p><strong>Token-reducing rules break it by default.</strong> Shrink <code>inputTokens</code> from
+12,000 to 7,200 while copying <code>cacheReadTokens: 8_000</code> across, and the
+counterfactual claims 8,000 cached tokens inside a 7,200-token prompt. Use
+<code>trimCacheTokens</code> (in <code>counterfactual.ts</code>, imported directly by
+<code>full-document-io.ts</code> and <code>context-bloat.ts</code>):</p>
+<pre><code class="language-ts">const trimmedCache = trimCacheTokens(
+  {
+    inputTokens,
+    cacheReadTokens: event.cacheReadTokens ?? null,
+    cacheCreationTokens: event.cacheCreationTokens ?? null,
+  },
+  counterfactualInputTokens,
+);
+</code></pre>
+<p>It removes <strong>uncached content first</strong>, which is what &quot;send an excerpt&quot; and
+&quot;hold context flat&quot; actually mean — a cached system prompt stays cached when
+the rest of the prompt shrinks around it. Only when the removal exceeds the
+uncached portion does cached content shrink, and then <code>cacheCreationTokens</code>
+(billed at 1.25× the base input rate) is shed before <code>cacheReadTokens</code>
+(billed at 0.1×) — the expensive part goes first. A component that was <code>null</code>
+stays <code>null</code>.</p>
+<p>Its post-condition is exactly the invariant above. Use it in any rule whose
+counterfactual lowers <code>inputTokens</code>.</p>
+<hr>
+<h2 id="5-testing-a-rule">5. Testing a rule</h2>
+<p>Tests live beside the rule (<code>packages/shared/src/rules/*.test.ts</code>) and run
+under Vitest with <code>pnpm -r test</code>.</p>
+<h3 id="the-ev-fixture-helper">The <code>ev()</code> fixture helper</h3>
+<p>Every request-grain test file defines the same local helper. From
+<code>packages/shared/src/rules/rules.test.ts</code>:</p>
+<pre><code class="language-ts">const CTX = { now: new Date(&quot;2026-09-15T00:00:00Z&quot;) };
+
+function ev(
+  partial: Partial&lt;UsageEvent&gt; &amp;
+    Pick&lt;
+      UsageEvent,
+      &quot;eventId&quot; | &quot;model&quot; | &quot;inputTokens&quot; | &quot;outputTokens&quot; | &quot;features&quot;
+    &gt;,
+): UsageEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    machineId: &quot;m&quot;,
+    machineName: &quot;n&quot;,
+    app: &quot;openai-proxy&quot;,
+    provider: &quot;openai&quot;,
+    costUsd: 0.01,
+    hasContent: false,
+    ...partial,
+  };
+}
+</code></pre>
+<p>The <code>Pick</code> is the useful part: the five fields every rule fixture must state
+are required, and everything else is filled in. A fixture then shows only
+what the test is about.</p>
+<h3 id="two-tests-per-rule-minimum">Two tests per rule, minimum</h3>
+<p><strong>One asserting the counterfactual directly.</strong> Call <code>evaluate</code> and inspect
+the finding. No pricing, no floors, no runner — just &quot;given this input, does
+the rule declare the hypothetical I expect?&quot;</p>
+<pre><code class="language-ts">describe(&quot;frontier_trivial counterfactual&quot;, () =&gt; {
+  it(&quot;declares the cheaper in-vendor sibling at unchanged token counts&quot;, () =&gt; {
+    const event = ev({
+      eventId: &quot;cf-1&quot;,
+      model: &quot;claude-opus-5&quot;,
+      inputTokens: 120,
+      outputTokens: 40,
+      costUsd: null,
+      features: {
+        promptChars: 40,
+        responseChars: 20,
+        messageCount: 1,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: &quot;frontier&quot;,
+      },
+    });
+    const finding = frontierTrivialRule.evaluate(event, CTX);
+    expect(finding).not.toBeNull();
+    expect(finding!.counterfactual).toEqual({
+      model: &quot;claude-sonnet-5&quot;,
+      inputTokens: 120,
+      outputTokens: 40,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+    });
+    expect(finding!.implicatedTokens).toBe(160);
+  });
+});
+</code></pre>
+<p>Note <code>costUsd: null</code> on that fixture. It is there to prove the point of
+§ 4.2: the rule and the pricer produce a complete finding with no
+provider-reported cost available at all.</p>
+<p><strong>One asserting the priced hit through the runner.</strong> This exercises
+<code>resolveActual</code>, <code>priceCounterfactual</code>, severity, and the materiality floor
+together:</p>
+<pre><code class="language-ts">it(&quot;flags frontier for trivial&quot;, () =&gt; {
+  const hits = runRules(
+    ev({
+      eventId: &quot;a&quot;,
+      model: &quot;claude-opus-4&quot;,
+      inputTokens: 20,
+      outputTokens: 180,
+      costUsd: 0.05,
+      features: {
+        promptChars: 40,
+        responseChars: 20,
+        messageCount: 1,
+        codeFenceCount: 0,
+        largePasteScore: 0,
+        fileDumpScore: 0,
+        modelTier: &quot;frontier&quot;,
+      },
+    }),
+  );
+  expect(hits.some((h) =&gt; h.ruleId === &quot;frontier_trivial&quot;)).toBe(true);
+});
+</code></pre>
+<p>Cover <strong>each branch of the predicate</strong>. <code>frontier_trivial</code> has seven early
+returns; each is a case where the rule must stay quiet, and each deserves a
+fixture. The <code>grok-4</code> test in <code>frontier-trivial.test.ts</code> exists because that
+branch was once missing and shipped an unactionable card.</p>
+<h3 id="materiality-can-hide-a-correct-rule">Materiality can hide a correct rule</h3>
+<p><code>runRules</code> and <code>runAggregateRules</code> both end with <code>.filter(isMaterial)</code>. A hit
+whose <code>estimatedWastedUsd</code> is below <code>MIN_WASTED_USD</code> ($0.01) is discarded
+before you see it. <strong>A fixture that does not clear the floor produces an
+empty array from a rule that is working perfectly</strong>, and your test proves
+nothing except that the floor works.</p>
+<p>The concrete trap, which cost real debugging time: <strong>no <code>claude-opus-5</code> →
+<code>claude-sonnet-5</code> swap can clear <code>MIN_WASTED_USD</code> inside <code>frontier_trivial</code>&#39;s
+200-token cap.</strong> Opus 5 is $5/$25 per million tokens, Sonnet 5 is $3/$15
+(or $2/$10 while the introductory rate is live). The best case is 200 tokens
+of pure output: <code>200 × ($25 − $15) / 1,000,000 = $0.002</code>. That is a fifth of
+the floor. Every fixture built on that pair silently returns <code>[]</code>, and the
+natural conclusion — &quot;the rule is broken&quot; — is wrong.</p>
+<p>The fixtures that do work pick their models and token splits deliberately:</p>
+<ul>
+<li><code>frontier_trivial</code> uses <strong><code>claude-opus-4</code></strong> ($15/$75) with an
+output-heavy 20/180 split. The output-rate delta against Sonnet 5 is what
+is large enough to matter; an input-heavy split at the same total does not
+clear the floor either.</li>
+<li><code>full_document_io</code> and <code>context_bloat</code> use <strong><code>gpt-4o</code></strong>, not
+<code>gpt-4o-mini</code> — the mini rate is too low to clear $0.01 at the token counts
+those fixtures use.</li>
+</ul>
+<p>When a rule-level test passes and the runner-level test returns <code>[]</code>, check
+the arithmetic against the floor before you touch the rule. If your rule is
+genuinely correct but cheap, that is fine — assert on <code>evaluate</code> directly and
+let the runner test use a model where the money is real.</p>
+<h3 id="pin-now-and-timestamp">Pin <code>now</code> and <code>timestamp</code></h3>
+<p>Do not rely on the wall clock. <code>claude-sonnet-5</code> has a date-gated
+introductory rate ($2/$10 instead of $3/$15) that <strong>expires 2026-08-31</strong>, so
+a fixture priced against Sonnet 5 produces one number before that date and a
+different one after. A test written today that asserts an exact dollar figure
+becomes a mystery failure on a specific morning.</p>
+<p>Two things to pin:</p>
+<ul>
+<li><strong><code>ctx.now</code></strong> — pass an explicit <code>RuleContext</code>, as the shipped tests do
+with <code>const CTX = { now: new Date(&quot;2026-09-15T00:00:00Z&quot;) };</code>. That date is
+after the cutoff, so those tests exercise the durable rate.</li>
+<li><strong><code>timestamp</code> on the fixture event</strong> — <code>runRules</code> defaults <code>now</code> to
+<code>new Date(event.timestamp)</code> when you do not pass <code>ctx</code>, and <code>ev()</code> defaults
+<code>timestamp</code> to <code>new Date().toISOString()</code>. A <code>runRules</code> call with no <code>ctx</code>
+and no explicit <code>timestamp</code> is therefore priced at the wall clock, whatever
+today happens to be.</li>
+</ul>
+<p><code>estimateCostUsd</code>, <code>priceCounterfactual</code>, and both runners all take <code>now</code> as
+a parameter for exactly this reason. Use it.</p>
+<hr>
+<h2 id="6-stability-guarantees">6. Stability guarantees</h2>
+<p><strong>Published surface.</strong> These are what a rule is written against, and they
+will not change incompatibly without a deliberate, announced migration:</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Rule&lt;TInput&gt;</code></td>
+<td><code>rules/contract.ts</code></td>
+</tr>
+<tr>
+<td><code>RuleFinding</code></td>
+<td><code>rules/contract.ts</code></td>
+</tr>
+<tr>
+<td><code>RuleContext</code></td>
+<td><code>rules/contract.ts</code></td>
+</tr>
+<tr>
+<td><code>Counterfactual</code></td>
+<td><code>rules/counterfactual.ts</code></td>
+</tr>
+<tr>
+<td><code>Actual</code></td>
+<td><code>rules/counterfactual.ts</code></td>
+</tr>
+<tr>
+<td><code>Severity</code></td>
+<td><code>rules/types.ts</code></td>
+</tr>
+<tr>
+<td><code>RuleId</code></td>
+<td><code>rules/types.ts</code> (grows as rules are added)</td>
+</tr>
+</tbody></table>
+<p><code>Severity</code> exists as a named type specifically so the published contract has
+no anonymous field types; it was extracted from an inline declaration on
+<code>RuleHit</code> for that reason.</p>
+<p><strong>Internal, may change without notice.</strong> These are exported because the
+runners and the API need them, not because they are a contribution surface:</p>
+<ul>
+<li><code>priceFinding</code> — the runner&#39;s assembly step.</li>
+<li><code>REQUEST_RULES</code> — the registry array. You append to it; do not depend on
+its order or identity.</li>
+<li><code>runRules</code>, <code>runAggregateRules</code> — the runners themselves.</li>
+<li><code>AGGREGATE_RULE_IDS</code> — a job-coordination detail.</li>
+<li><code>isMaterial</code>, <code>MIN_WASTED_USD</code>, <code>MIN_WASTED_TOKENS</code> — the floor is a
+product decision and its values are expected to move.</li>
+<li><code>trimCacheTokens</code> — stable in behaviour, but a helper rather than part of
+the contract (it is not re-exported from the package root; rules import it
+from <code>./counterfactual.js</code>).</li>
+</ul>
+<p><strong><code>RuleHit</code> is output-only.</strong></p>
+<pre><code class="language-ts">/** Runner OUTPUT. Rules return RuleFinding (see contract.ts); the runner prices it into this. */
+export interface RuleHit {
+  ruleId: RuleId;
+  severity: Severity;
+  title: string;
+  detail: string;
+  estimatedWastedTokens: number;
+  estimatedWastedUsd: number | null;
+  eventIds: string[];
+  counterfactual: Counterfactual | null;
+  assumption: string | null;
+}
+</code></pre>
+<p><strong>Never construct a <code>RuleHit</code> in a rule.</strong> It carries priced fields, a
+resolved severity, and nullability that only exists to read legacy rows back
+out of the database. Building one inside a rule means computing money, which
+is the one thing a rule must not do. Return a <code>RuleFinding</code>; the runner does
+the rest.</p>
+<hr>
+<h2 id="7-submitting-a-rule">7. Submitting a rule</h2>
+<p>Open a pull request against <code>main</code>. A rule PR should contain:</p>
+<ol>
+<li><strong>The rule</strong> — a new file under <code>packages/shared/src/rules/</code> (or
+<code>rules/aggregate/</code> for aggregate grain), exporting a <code>Rule&lt;TInput&gt;</code> and
+any named threshold constants. Every magic number gets a name and a doc
+comment saying what it represents.</li>
+<li><strong>Its id</strong> — added to the <code>RuleId</code> union in <code>rules/types.ts</code>.</li>
+<li><strong>Registration</strong> — appended to <code>REQUEST_RULES</code> in <code>rules/index.ts</code> for
+request grain; wired into <code>runAggregateRules</code> and added to
+<code>AGGREGATE_RULE_IDS</code> for aggregate grain.</li>
+<li><strong>Exports</strong> — re-exported from <code>rules/index.ts</code> (or
+<code>rules/aggregate/index.ts</code>) and from <code>packages/shared/src/index.ts</code>,
+matching how the existing five are exported.</li>
+<li><strong>Tests — at least one fixture-driven test per branch of the predicate.</strong>
+Every early return is a branch. Plus the two tests of § 5: one asserting
+the counterfactual off <code>evaluate</code>, one asserting the priced hit through
+the runner with a fixture that clears the materiality floor.</li>
+<li><strong>A stated assumption for any judgement embedded in the counterfactual.</strong>
+If your counterfactual contains a number that represents a belief about
+what the user could have done — an excerpt fraction, an achievable ratio,
+a quality equivalence — it must be a named constant <em>and</em> it must appear
+in <code>assumption</code>, in words, phrased for the person reading the card.</li>
+<li><strong>A README row</strong> — add the rule to the table in the &quot;Recommendation rules&quot;
+section, then re-render with
+<code>node scripts/build-doc-html.mjs README.md README.html</code>.</li>
+</ol>
+<p>Verify with:</p>
+<pre><code class="language-bash">pnpm -r build
+pnpm -r test
+</code></pre>
+<p>What review will ask:</p>
+<ul>
+<li>Could a user actually do the thing your counterfactual describes?</li>
+<li>Is the target model in the same vendor family?</li>
+<li>Does anything read <code>costUsd</code> on the way to a savings figure?</li>
+<li>Do <code>null</code> cache fields survive as <code>null</code>?</li>
+<li>Does <code>(cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0)</code> fit inside the
+counterfactual&#39;s own <code>inputTokens</code>?</li>
+<li>Is every threshold named, and is every judgement stated on the card?</li>
+<li>Does the assumption read like something a user would push back on, or like
+a code comment?</li>
+</ul>
+</main>
+</body>
+</html>

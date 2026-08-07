@@ -515,6 +515,12 @@ you depends on your capture path.</p>
 <p>Every hit is also subject to a materiality floor (<code>packages/shared/src/rules/materiality.ts</code>)
 — by default at least $0.01 estimated waste, or 5,000 tokens when cost is
 unknown — so cheap, noisy findings never reach the panel.</p>
+<p><strong>Writing your own rule:</strong> the rule contract is published, and <strong>outside rule
+contributions are accepted</strong>. See
+<a href="docs/rules/authoring.md">docs/rules/authoring.md</a>
+(<a href="docs/rules/authoring.html">rendered</a>) for the interface, an annotated
+worked example, how to choose a counterfactual, the invariants a rule must
+not break, the fixture-driven test pattern, and which types are stable.</p>
 <h3 id="why-per-request-rules-dont-fire-for-otel-only-users">Why per-request rules don&#39;t fire for OTEL-only users</h3>
 <p><code>frontier_trivial</code>, <code>full_document_io</code>, and <code>context_bloat</code> read a single
 event&#39;s <code>features</code> — prompt chars, message count, paste/file-dump score, and
