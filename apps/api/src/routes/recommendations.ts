@@ -3,7 +3,11 @@ import { backtest } from "@tokenops/shared";
 import { requireUser } from "../auth/middleware.js";
 import type { AuthRepo } from "../auth/repo.js";
 import type { ClerkVerifier } from "../auth/clerk.js";
-import type { Recommendation, RecommendationStatus } from "../db/schema.js";
+import type {
+  Recommendation,
+  RecommendationStatus,
+  UsageEventRow,
+} from "../db/schema.js";
 import { rowToUsageEvent, type EventsRepo } from "../services/events-repo.js";
 
 export type RecommendationsRouteVariables = {
@@ -33,6 +37,99 @@ function recToDto(row: Recommendation) {
 
 /** `window` query param -> trailing day count. Unknown values are rejected, not defaulted. */
 const WINDOW_DAYS: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90 };
+
+/** `EventsRepo.listEvents`' hard per-call maximum (see events-repo.ts's clamp). */
+export const EVENTS_PAGE_SIZE = 1000;
+
+/**
+ * Hard ceiling on how many events a single back-test call will scan.
+ *
+ * 20,000 events is roughly 220 events/day sustained for the entire 90-day
+ * window — well above realistic coding-agent request volumes for a single
+ * account — while bounding worst-case latency to 20 sequential
+ * EVENTS_PAGE_SIZE round trips. A pathological account past this ceiling
+ * gets `truncated: true` instead of an unbounded scan.
+ */
+export const MAX_BACKTEST_EVENTS = 20_000;
+
+/**
+ * Fetch every event in [startIso, endIso], paginating past `listEvents`'
+ * default single-page limit. An unpaginated call silently returns only the
+ * newest ~100-1000 rows (repo default/clamp), which would make a 30- or
+ * 90-day back-test report on a fraction of the window while presenting the
+ * figure as complete — the exact failure this endpoint exists to prevent.
+ *
+ * `listEvents` only supports newest-first order, so this walks a `to`
+ * cursor backward to the oldest timestamp seen in the previous page. `to`
+ * is inclusive, so the next page re-fetches any row exactly at that
+ * boundary instant; deduping by `eventId` is what keeps a row that shares
+ * its timestamp with the page boundary from being dropped OR double-counted
+ * (double-counting would silently inflate a rule's `hits`, which is worse
+ * than under-counting for an endpoint whose whole purpose is credibility).
+ *
+ * Stops at `maxEvents` (default `MAX_BACKTEST_EVENTS`) and reports
+ * `truncated` only when a probe fetch past the cap confirms there really is
+ * more data beyond it — a window whose true size happens to land exactly on
+ * the cap must still report `truncated: false`. `pageSize` and `maxEvents`
+ * are injectable (defaulting to the production constants above) purely so
+ * tests can exercise the cursor/dedupe/probe logic at small, fast sizes
+ * instead of seeding tens of thousands of rows.
+ */
+export async function fetchWindowEvents(
+  repo: EventsRepo,
+  userId: string,
+  startIso: string,
+  endIso: string,
+  options: { pageSize?: number; maxEvents?: number } = {},
+): Promise<{ rows: UsageEventRow[]; truncated: boolean }> {
+  const pageSize = options.pageSize ?? EVENTS_PAGE_SIZE;
+  const maxEvents = options.maxEvents ?? MAX_BACKTEST_EVENTS;
+
+  const seen = new Set<string>();
+  const rows: UsageEventRow[] = [];
+  let cursorTo = endIso;
+
+  while (rows.length < maxEvents) {
+    const page = await repo.listEvents(userId, {
+      from: startIso,
+      to: cursorTo,
+      limit: pageSize,
+    });
+    if (page.length === 0) {
+      return { rows, truncated: false }; // window exhausted, nothing left
+    }
+
+    let addedAny = false;
+    for (const row of page) {
+      if (seen.has(row.eventId)) continue;
+      seen.add(row.eventId);
+      rows.push(row);
+      addedAny = true;
+    }
+
+    if (page.length < pageSize) {
+      return { rows, truncated: false }; // this page didn't fill — nothing older remains
+    }
+    if (!addedAny) {
+      // A full page that added nothing new means every row in it was
+      // already seen — a same-instant cluster exactly straddling the
+      // cursor with no forward progress possible. Stop rather than loop.
+      return { rows, truncated: false };
+    }
+
+    cursorTo = page[page.length - 1]!.timestamp.toISOString();
+  }
+
+  // Hit the cap with more of the window potentially unread — confirm there
+  // really is more beyond it rather than guessing.
+  const probe = await repo.listEvents(userId, {
+    from: startIso,
+    to: cursorTo,
+    limit: pageSize,
+  });
+  const hasMore = probe.some((row) => !seen.has(row.eventId));
+  return { rows, truncated: hasMore };
+}
 
 export const recommendationsRoutes = new Hono<{
   Variables: RecommendationsRouteVariables;
@@ -79,7 +176,12 @@ recommendationsRoutes.get("/backtest", requireUser, async (c) => {
   const startIso = start.toISOString();
   const endIso = end.toISOString();
 
-  const rows = await repo.listEvents(userId, { from: startIso, to: endIso });
+  const { rows, truncated } = await fetchWindowEvents(
+    repo,
+    userId,
+    startIso,
+    endIso,
+  );
   const events = rows
     .map(rowToUsageEvent)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
@@ -93,7 +195,7 @@ recommendationsRoutes.get("/backtest", requireUser, async (c) => {
     windowEnd: endIso,
   });
 
-  return c.json(result);
+  return c.json({ ...result, eventsScanned: rows.length, truncated });
 });
 
 /** Dashboard: dismiss a recommendation. */
