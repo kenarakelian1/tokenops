@@ -939,6 +939,9 @@ export function watchClaudeSessions(
   let timer: NodeJS.Timeout | null = null;
   let emitted = 0;
   let ceilingLogged = false;
+  /** One live parser per file, so a prompt read in one poll still pairs with
+   *  the assistant turn that arrives in the next. */
+  const parsers = new Map<string, ReturnType<typeof createSessionParser>>();
 
   const scan = (): void => {
     if (stopped) return;
@@ -963,10 +966,24 @@ export function watchClaudeSessions(
       if (st.size < offset) offset = 0;
       if (st.size === offset) continue;
 
-      const parser = createSessionParser({
-        machineId: opts.machineId,
-        machineName: opts.machineName,
-      });
+      // One parser per FILE, kept alive across scans — not per scan.
+      //
+      // The parser carries the pending user prompt forward to the assistant
+      // turn that follows it. A user line and its assistant reply routinely
+      // land in different polls (the poll interval is far shorter than a
+      // turn), so recreating the parser each scan would zero `promptChars`
+      // for a large share of live turns — and promptChars is exactly what
+      // full_document_io and context_bloat gate on. A Map keyed by path
+      // keeps the pairing intact for the process's lifetime.
+      let parser = parsers.get(path);
+      if (!parser || offset === 0) {
+        // offset === 0 means first read or a rotation: start clean.
+        parser = createSessionParser({
+          machineId: opts.machineId,
+          machineName: opts.machineName,
+        });
+        parsers.set(path, parser);
+      }
 
       const next = readFrom(path, offset, st.size, parser, (event) => {
         if (emitted >= ceiling) {
@@ -1014,7 +1031,71 @@ export function watchClaudeSessions(
 Run: `pnpm --filter @tokenops/agent exec vitest run src/adapters/claude-session-watcher.test.ts`
 Expected: PASS, 7 tests.
 
-A parser instance is created per file per scan, which resets `pendingPrompt`. That is correct for resumed tails: the prompt for a turn read after a restart is not available, so `promptChars` reflects only what this scan saw. If the "picks up appended turns" test shows a surprising `promptChars`, that is why — assert on tokens there, not features.
+**Add one more test**, since keeping parsers alive across scans is the whole point of the `parsers` Map:
+
+```ts
+  it("pairs a prompt read in one poll with the reply that arrives in the next", () => {
+    const s = scratch();
+    const file = join(s.projectDir, "session.jsonl");
+    const db = join(s.base, "o.db");
+
+    // Poll 1 sees only the user line.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: "user",
+        uuid: "u1",
+        sessionId: "s1",
+        timestamp: "2026-08-09T12:00:00.000Z",
+        message: { role: "user", content: "z".repeat(30_000) },
+      }) + "\n",
+    );
+    // Reuse ONE watcher across both polls — a fresh watcher per poll would
+    // defeat the Map this test exists to pin.
+    const events: UsageEvent[] = [];
+    const offsets = new SessionOffsets(db);
+    const handle = watchClaudeSessions({
+      rootDir: s.root,
+      offsets,
+      machineId: "m1",
+      machineName: "laptop",
+      onEvent: (e) => events.push(e),
+      pollMs: 0,
+      backfillDays: 3650,
+    });
+    expect(events).toHaveLength(0);
+
+    // Poll 2 sees the assistant reply.
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        uuid: "a1",
+        requestId: "r1",
+        sessionId: "s1",
+        timestamp: "2026-08-09T12:00:01.000Z",
+        message: {
+          role: "assistant",
+          model: "claude-opus-5[1m]",
+          content: "ok",
+          usage: { input_tokens: 5, output_tokens: 6 },
+        },
+      }) + "\n",
+    );
+    handle.rescan();
+
+    expect(events).toHaveLength(1);
+    // The prompt arrived in the PREVIOUS poll. Without a live parser this is 0.
+    expect(events[0]!.features.promptChars).toBe(30_000);
+
+    handle.stop();
+    offsets.close();
+  });
+```
+
+This requires the returned handle to expose `rescan(): void` alongside `stop()` — add it, calling the same `scan` function the interval calls. It is the seam that makes multi-poll behavior testable without waiting on a timer.
+
+Verify this test fails if the parser is recreated per scan.
 
 - [ ] **Step 6: Commit**
 
