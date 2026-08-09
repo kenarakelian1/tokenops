@@ -604,7 +604,7 @@ git commit -m "feat(agent): persist per-file session read offsets"
 
 **Interfaces:**
 - Consumes: `createSessionParser` (Task 1), `SessionOffsets` (Task 2).
-- Produces: `watchClaudeSessions(opts): { stop(): void }` where
+- Produces: `watchClaudeSessions(opts): { rescan(): void; stop(): void }` where
   ```ts
   type WatchClaudeSessionsOptions = {
     rootDir: string;
@@ -929,7 +929,7 @@ function readFrom(
  */
 export function watchClaudeSessions(
   opts: WatchClaudeSessionsOptions,
-): { stop(): void } {
+): { rescan(): void; stop(): void } {
   const backfillDays = opts.backfillDays ?? DEFAULT_BACKFILL_DAYS;
   const ceiling = opts.maxBackfillEvents ?? MAX_BACKFILL_EVENTS;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
@@ -1018,9 +1018,15 @@ export function watchClaudeSessions(
   }
 
   return {
+    /** Run one scan now. The seam that makes multi-poll behavior testable
+     *  without waiting on a timer. */
+    rescan(): void {
+      scan();
+    },
     stop(): void {
       stopped = true;
       if (timer) clearInterval(timer);
+      parsers.clear();
     },
   };
 }
