@@ -43,8 +43,22 @@ export type SessionParser = {
   parseLine(raw: string): UsageEvent | null;
 };
 
-/** Flatten Claude's content union (string | array of blocks) to plain text. */
-function contentToText(content: unknown): string {
+/** Bounds recursion in contentToText against pathological/malformed nesting. */
+const MAX_CONTENT_DEPTH = 8;
+
+/**
+ * Flatten Claude's content union (string | array of blocks) to plain text.
+ *
+ * `tool_result` blocks routinely carry their own `content` as an array of
+ * blocks rather than a string (e.g. a file read's output) — that shape must
+ * be recursed into, not dropped, or promptChars silently loses a third of
+ * real prompt text (measured against real session files), which makes
+ * full_document_io and context_bloat under-fire on exactly the file dumps
+ * they exist to catch. Depth is bounded so a malformed or adversarially deep
+ * line still returns partial text rather than hanging or blowing the stack.
+ */
+function contentToText(content: unknown, depth = 0): string {
+  if (depth > MAX_CONTENT_DEPTH) return "";
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
@@ -53,8 +67,13 @@ function contentToText(content: unknown): string {
       parts.push(block);
     } else if (block && typeof block === "object") {
       const b = block as Record<string, unknown>;
-      if (typeof b.text === "string") parts.push(b.text);
-      else if (typeof b.content === "string") parts.push(b.content);
+      if (typeof b.text === "string") {
+        parts.push(b.text);
+      } else if (typeof b.content === "string") {
+        parts.push(b.content);
+      } else if (Array.isArray(b.content)) {
+        parts.push(contentToText(b.content, depth + 1));
+      }
     }
   }
   return parts.join("");
@@ -74,8 +93,19 @@ function contentToText(content: unknown): string {
 export function createSessionParser(
   opts: SessionParserOptions,
 ): SessionParser {
+  // Mainline and sidechain (subagent/Task-tool) turns are tracked with
+  // separate prompt state. A subagent turn has its own independent context;
+  // in real session files it's either isolated to its own subagents/*.jsonl
+  // file, or (defensively, since the format isn't a published contract)
+  // could be interleaved inline. Either way it must never overwrite the
+  // mainline's pendingPrompt/priorPromptChars — that would corrupt the next
+  // mainline turn's newContentRatio, which context_bloat gates on, with an
+  // unrelated subagent prompt size. Each chain still gets its own prompt
+  // correctly paired with its own reply.
   let pendingPrompt = "";
   let priorPromptChars: number | undefined;
+  let pendingSidechainPrompt = "";
+  let priorSidechainPromptChars: number | undefined;
 
   return {
     parseLine(raw: string): UsageEvent | null {
@@ -87,8 +117,17 @@ export function createSessionParser(
         return null;
       }
 
+      // Verified against real session files: every line belonging to a
+      // subagent turn — including `user` lines — reliably carries
+      // `isSidechain: true`, so this is a safe, non-guessed signal.
+      const isSidechain = line.isSidechain === true;
+
       if (line.type === "user") {
-        pendingPrompt = contentToText(line.message?.content);
+        if (isSidechain) {
+          pendingSidechainPrompt = contentToText(line.message?.content);
+        } else {
+          pendingPrompt = contentToText(line.message?.content);
+        }
         return null;
       }
 
@@ -114,16 +153,25 @@ export function createSessionParser(
       const outputTokens = usage.output_tokens ?? 0;
 
       const responseText = contentToText(line.message?.content);
+      const prompt = isSidechain ? pendingSidechainPrompt : pendingPrompt;
+      const priorChars = isSidechain
+        ? priorSidechainPromptChars
+        : priorPromptChars;
       const features = extractFeatures({
         model,
-        requestMessages: [{ role: "user", content: pendingPrompt }],
+        requestMessages: [{ role: "user", content: prompt }],
         responseText,
-        sessionPriorPromptChars: priorPromptChars,
+        sessionPriorPromptChars: priorChars,
       });
       features.modelTier = getModelTier(model);
 
-      priorPromptChars = pendingPrompt.length;
-      pendingPrompt = "";
+      if (isSidechain) {
+        priorSidechainPromptChars = prompt.length;
+        pendingSidechainPrompt = "";
+      } else {
+        priorPromptChars = prompt.length;
+        pendingPrompt = "";
+      }
 
       const eventId = buildEventId({
         machineId: opts.machineId,
@@ -154,7 +202,7 @@ export function createSessionParser(
       // whose measurement is "input grew relative to the session's FIRST
       // request". Omitting sessionId lets contextBloatRule's existing guard
       // exclude it, while the tokens still reach the ledger as real spend.
-      if (line.sessionId && line.isSidechain !== true) {
+      if (line.sessionId && !isSidechain) {
         event.sessionId = line.sessionId;
       }
       if (cacheReadTokens !== undefined) {

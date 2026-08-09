@@ -169,4 +169,46 @@ describe("createSessionParser", () => {
     // ~5% new content between 10000 and 10500 chars
     expect(ev.features.newContentRatio!).toBeLessThan(0.25);
   });
+
+  it("recurses into tool_result content arrays instead of dropping them", () => {
+    // Real Claude Code transcripts routinely carry tool_result.content as an
+    // array of blocks (e.g. file reads), not a string. Losing those chars
+    // makes full_document_io's 20k-char threshold under-fire.
+    const p = parser();
+    const dump = "d".repeat(20_000);
+    p.parseLine(
+      userLine("", {
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", content: [{ type: "text", text: dump }] },
+          ],
+        },
+      }),
+    );
+    const ev = p.parseLine(assistantLine())!;
+    expect(ev.features.promptChars).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it("does not let a sidechain turn pollute the mainline's newContentRatio state", () => {
+    const p = parser();
+    const mainPrompt1 = "m".repeat(10_000);
+    p.parseLine(userLine(mainPrompt1));
+    p.parseLine(assistantLine()); // mainline turn 1
+
+    // Sidechain (subagent) turn: unrelated, much smaller prompt. If this
+    // were allowed to overwrite priorPromptChars, the next mainline turn's
+    // newContentRatio would spike toward 1 (reads as "all new content").
+    p.parseLine(userLine("s", { uuid: "side-u", isSidechain: true }));
+    p.parseLine(assistantLine({ uuid: "side-a", isSidechain: true }));
+
+    const mainPrompt2 = "m".repeat(10_500);
+    p.parseLine(userLine(mainPrompt2, { uuid: "u-2" }));
+    const ev = p.parseLine(assistantLine({ uuid: "a-2" }))!;
+
+    // newContentRatio must be computed against mainPrompt1 (10000 chars),
+    // not the subagent's 1-char prompt.
+    expect(ev.features.newContentRatio).toBeDefined();
+    expect(ev.features.newContentRatio!).toBeLessThan(0.25);
+  });
 });
