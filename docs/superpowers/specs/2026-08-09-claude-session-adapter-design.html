@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Code session adapter — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="claude-code-session-adapter-—-design">Claude Code session adapter — design</h1>
+<p><strong>Date:</strong> 2026-08-09
+<strong>Status:</strong> Approved, not yet implemented
+<strong>Supersedes the capture half of:</strong> <code>2026-08-05-recommendation-evidence-design.md</code></p>
+<h2 id="problem">Problem</h2>
+<p>TokenOps&#39; three per-request rules — <code>frontier_trivial</code>, <code>full_document_io</code>,
+<code>context_bloat</code> — fire on nothing in production. Every event in the ledger
+arrives through the OTLP receiver as <code>grain: &quot;aggregate&quot;</code>, and <code>runRules</code>
+gates aggregates away because each request rule reads features an aggregate
+cannot have.</p>
+<p>Worse, the features those events carry are fabricated. A production event
+reads:</p>
+<pre><code class="language-json">{&quot;promptChars&quot;:54,&quot;messageCount&quot;:1,&quot;largePasteScore&quot;:0.00135,&quot;modelTier&quot;:&quot;frontier&quot;}
+</code></pre>
+<p><code>54</code> is the length of <code>[otel] claude_code.token.usage model=claude-opus-5[1m]</code>
+— the synthetic string the OTEL adapter measures, because
+<code>claude_code.token.usage</code> carries only <code>type</code> and <code>model</code> attributes. There
+are no prompts, no responses, and no request boundary in an OTLP metric.
+Nothing can be derived from it, and no UI change can conjure it.</p>
+<p>Meanwhile Claude Code writes the data on disk. Verified on this machine:
+<strong>1,527 session files under <code>~/.claude/projects/</code>, 1.38 GB, the largest
+32 MB.</strong> Each <code>type: &quot;assistant&quot;</code> line carries a real per-turn usage record:</p>
+<pre><code class="language-json">{&quot;input_tokens&quot;:2,&quot;cache_creation_input_tokens&quot;:28890,
+ &quot;cache_read_input_tokens&quot;:26048,&quot;output_tokens&quot;:229,...}
+</code></pre>
+<p>plus <code>sessionId</code>, <code>requestId</code>, <code>uuid</code>, <code>parentUuid</code>, <code>timestamp</code>, <code>cwd</code>,
+<code>gitBranch</code>, and the message content itself. One 3.2 MB session held 1,227
+lines, 532 of them assistant turns.</p>
+<p>The data has been there all along; the agent was watching
+<code>~/.tokenops/claude-code-usage.jsonl</code>, a path nothing writes.</p>
+<h2 id="decision">Decision</h2>
+<p><strong>Read Claude Code&#39;s own session JSONL, derive features locally, and ship
+only numbers.</strong></p>
+<p>Three decisions distinguish this from the earlier evidence spec:</p>
+<ol>
+<li><strong>No content leaves the machine.</strong> <code>extractFeatures</code> runs on the agent.
+<code>promptChars</code>, <code>fileDumpScore</code>, <code>largePasteScore</code>, <code>codeFenceCount</code> and
+<code>messageCount</code> are computed from the real prompt text on disk and shipped
+as integers. The permanent redacted-skeleton store the earlier spec
+proposed is <strong>dropped entirely</strong> — it was that spec&#39;s own
+highest-risk component, requiring an adversarial test suite because a
+single heuristic miss writes PII into permanent storage under a field
+name asserting it is safe. It is not needed to make the rules fire, which
+is the goal here.</li>
+<li><strong>OTEL stays.</strong> The earlier spec decided &quot;OTEL is replaced, not
+supplemented.&quot; That is reversed: the OTLP receiver keeps serving every
+emitter <em>except</em> Claude Code, per the split-by-source rule in
+<code>2026-08-05-recommendation-credibility-design.md</code>.</li>
+<li><strong>Bounded backfill.</strong> First run reads a configurable window (default 7
+days), not 1.38 GB.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<ul>
+<li><strong>Cloud content and redaction.</strong> Dropped, per Decision 1. If raw evidence
+on a card is wanted later it gets its own spec, with the adversarial
+redaction suite the earlier design correctly demanded.</li>
+<li><strong>Backfilling all history.</strong> ~230,000 assistant turns extrapolated from
+measured density. The back-test caps at 20,000 events per window, so most
+of it could not reach the headline figure anyway.</li>
+<li><strong>Changing the default privacy mode.</strong> <code>local</code> stays. This design needs no
+privacy change at all, because it ships no content.</li>
+<li><strong>Removing the 712 existing OTEL events.</strong> They are real spend history and
+the ledger must remain continuous.</li>
+<li><strong>New rules.</strong> This makes the existing rules see real data.</li>
+</ul>
+<h2 id="architecture">Architecture</h2>
+<h3 id="capture">Capture</h3>
+<p>A new adapter, <code>apps/agent/src/adapters/claude-session.ts</code>, alongside the
+existing ones.</p>
+<p><strong>Watches</strong> <code>~/.claude/projects/**/*.jsonl</code>. <code>sources.claude_code_path</code>
+already accepts a file or a directory; its default changes from the
+never-written <code>~/.tokenops/claude-code-usage.jsonl</code> to the directory Claude
+Code actually writes.</p>
+<p><strong>Emits</strong> one <code>UsageEvent</code> per <code>type: &quot;assistant&quot;</code> line carrying a
+<code>message.usage</code>. All other line types are skipped: <code>user</code>, <code>attachment</code>,
+<code>system</code>, <code>file-history-snapshot</code>, <code>file-history-delta</code>, <code>mode</code>,
+<code>last-prompt</code>, <code>ai-title</code>, <code>queue-operation</code>, <code>pr-link</code>.</p>
+<p><strong>Grain</strong> is <code>&quot;request&quot;</code>. This is the entire point: request rules evaluate
+these and skip the OTEL-derived aggregates.</p>
+<p><strong>Idempotence</strong> uses the turn&#39;s own stable identifiers:</p>
+<pre><code class="language-ts">buildEventId({
+  machineId,
+  app: &quot;claude-code&quot;,
+  providerRequestId: line.requestId,
+  fingerprint: line.uuid,
+  timeBucketSec: Math.floor(Date.parse(line.timestamp) / 1000),
+})
+</code></pre>
+<p><code>uuid</code> is stable per turn and survives re-reads, so resuming from a stale
+offset after a crash cannot double-count.</p>
+<h3 id="token-accounting">Token accounting</h3>
+<p>Folded, per the <code>UsageEvent</code> schema&#39;s stated invariant that cache tokens are
+subsets of <code>inputTokens</code>:</p>
+<pre><code>inputTokens         = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+cacheReadTokens     = cache_read_input_tokens
+cacheCreationTokens = cache_creation_input_tokens
+outputTokens        = output_tokens
+costUsd             = null
+</code></pre>
+<p>The measured sample becomes <code>inputTokens: 54_940</code>, <code>cacheRead: 26_048</code>,
+<code>cacheCreation: 28_890</code>, <code>output: 229</code>.</p>
+<p>Folding is not cosmetic. Unfolded, that turn would enter the ledger as 2
+input tokens for a request billed roughly 55,000 — and
+<code>cache_efficiency</code> would compute a read ratio of 26048/2, which is
+meaningless. <code>cacheRead + cacheCreation ≤ inputTokens</code> is the property
+<code>checkCacheEfficiency</code> and <code>trimCacheTokens</code> both assume, and it holds by
+construction here.</p>
+<p><code>costUsd</code> is <code>null</code> because a Max subscription has no per-request cost.
+Nothing downstream needs it: savings estimate both sides through
+<code>estimateCostUsd</code> and never read a reported cost.</p>
+<h3 id="features">Features</h3>
+<p>Derived by the existing <code>extractFeatures</code>, fed the turn&#39;s own message content
+plus the prior turn&#39;s <code>promptChars</code> as <code>sessionPriorPromptChars</code> (which is
+what produces <code>newContentRatio</code>, the signal <code>context_bloat</code> gates on).</p>
+<p>No new feature code. This is the function whose output was fabricated under
+OTEL; feeding it real text is the fix.</p>
+<h3 id="what-this-will-actually-surface">What this will actually surface</h3>
+<p>Stated plainly so the result is not a surprise:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>On real Claude Code data</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>context_bloat</code></td>
+<td>Fires. Long sessions grow input while adding little new text.</td>
+</tr>
+<tr>
+<td><code>full_document_io</code></td>
+<td>Fires. Claude Code pastes file contents constantly, and <code>fileDumpScore</code> keys on code fences and path density.</td>
+</tr>
+<tr>
+<td><code>frontier_trivial</code></td>
+<td><strong>Never fires.</strong> It caps at 200 total tokens; real turns are ~55,000. A Claude Code turn is never trivial.</td>
+</tr>
+<tr>
+<td><code>cache_efficiency</code></td>
+<td>Borderline — the measured sample is 26,048/54,940 = <strong>47.4%</strong>, just under the 50% threshold.</td>
+</tr>
+</tbody></table>
+<p><code>cache_efficiency</code> is the one to watch. Counting cache <em>creation</em> inside
+<code>inputTokens</code> drags the read ratio down even when reuse is healthy, so the
+rule may fire on every window, which is noise rather than a finding. This is
+the first real use for the back-test: change
+<code>CACHE_EFFICIENCY_MIN_READ_RATIO</code>, replay a window, and see whether the card
+count and dollars move sensibly. Tuning it by guesswork is what the back-test
+exists to replace.</p>
+<h3 id="the-otel-guard">The OTel guard</h3>
+<p>When the session adapter is enabled, the OTLP receiver drops metrics whose
+name begins with <code>claude_code.</code>, and logs once at startup:</p>
+<pre><code>otel: claude_code.* metrics ignored — session JSONL adapter owns this source
+</code></pre>
+<p>Every other OTLP emitter continues to work. The drop lives at the receiver,
+not in config resolution, so &quot;both sources ingesting Claude Code&quot; is not a
+state a user can configure their way into. Double-counting is the one
+failure this cutover cannot recover from — a gap is re-readable from disk, a
+doubled ledger is not.</p>
+<h3 id="scale-and-offsets">Scale and offsets</h3>
+<p>A per-file record — path, size, offset, last-seen mtime — in the agent&#39;s
+existing SQLite.</p>
+<ul>
+<li><strong>Skip by mtime.</strong> Files older than the backfill cutoff are never opened,
+so 1.38 GB is never parsed.</li>
+<li><strong>Read from the offset</strong>, never the whole file. The largest is 32 MB.</li>
+<li><strong>First-run ceiling</strong>, <code>MAX_BACKFILL_EVENTS = 20_000</code>. If the backfill
+would exceed it, emit up to the cap, stop, and log the number of turns
+skipped and the timestamp reached. A silent truncation reads as &quot;captured
+everything&quot; when it did not — the same disclosure rule the back-test
+endpoint follows with <code>truncated</code>. 20,000 matches the back-test&#39;s own
+<code>MAX_BACKTEST_EVENTS</code>, so a full backfill is exactly what one back-test
+window can consume; a larger ceiling would ship events the headline figure
+could never reach.</li>
+<li><strong>Partial final line.</strong> Claude Code appends while the adapter reads, so a
+truncated last line is normal. It is skipped <strong>and the offset is not
+advanced past it</strong>, so the complete line is read next poll. Advancing past
+it silently drops one turn per poll on an active session.</li>
+</ul>
+<p>Config gains <code>sources.claude_code_backfill_days</code> (default 7).</p>
+<h2 id="migration">Migration</h2>
+<p>The 712 OTEL-derived events stay, remain <code>aggregate</code>, and continue to feed
+the aggregate rules. Historical totals must not move.</p>
+<p>Cutover order: land the adapter with the OTel guard in the same change. The
+guard makes the ordering safe rather than something an operator has to
+sequence correctly.</p>
+<h2 id="testing">Testing</h2>
+<ul>
+<li>A fixture session file yields one event per assistant turn and zero for
+every other line type.</li>
+<li><strong>Features are real</strong>: <code>promptChars</code> equals the actual prompt length, not a
+synthetic string. Pin this explicitly — it is the regression that started
+this work.</li>
+<li>Token folding on the measured sample: <code>inputTokens === 54_940</code>, and
+<code>cacheRead + cacheCreation &lt;= inputTokens</code>.</li>
+<li>Re-reading a file produces no duplicate events.</li>
+<li>A truncated final line is skipped, the offset is not advanced, and the
+complete line is emitted on the next poll.</li>
+<li>Offsets resume correctly across a restart.</li>
+<li>Files older than the backfill cutoff are not opened.</li>
+<li>The first-run ceiling logs what it dropped.</li>
+<li>The OTel guard drops <code>claude_code.*</code> and passes every other metric.</li>
+<li>Windows paths resolve — sessions live under <code>C--Users-Ken-…</code> directory
+names, and nothing may assume POSIX separators.</li>
+</ul>
+<h2 id="risks">Risks</h2>
+<ol>
+<li><p><strong>The JSONL format is not a published contract</strong> and can change in any
+Claude Code release. The adapter tolerates unknown fields and skips
+unparseable turns rather than failing a file. The failure mode must be
+missing data, never a crashed agent.</p>
+</li>
+<li><p><strong><code>cache_efficiency</code> may become noise</strong> at ~47% on healthy usage. Named
+above; the back-test is the tuning instrument.</p>
+</li>
+<li><p><strong>Volume is unknown until it runs.</strong> Seven days of heavy use could be
+thousands of events. The ceiling and the first-run log make that visible
+before it becomes an ingest problem.</p>
+</li>
+<li><p><strong>Sidechain turns.</strong> Assistant lines carry <code>isSidechain</code>, marking subagent
+turns that share the parent&#39;s <code>sessionId</code>. Interleaving them into the
+parent&#39;s session context would corrupt <code>context_bloat</code>, whose whole
+measurement is &quot;input grew relative to the session&#39;s first request&quot; — a
+subagent&#39;s independent context makes that growth meaningless.</p>
+<p><strong>Decision: emit sidechain turns as events with <code>sessionId</code> omitted.</strong>
+Their tokens are real spend and must reach the ledger and the aggregate
+rules; but <code>contextBloatRule</code> returns null without a <code>sessionId</code>, so they
+are excluded from session reasoning by the rule&#39;s existing guard rather
+than by a special case in the adapter. Tested by asserting a sidechain
+turn produces an event whose tokens count and whose <code>sessionId</code> is absent.</p>
+</li>
+</ol>
+<h2 id="follow-ups">Follow-ups</h2>
+<ul>
+<li>Tune <code>CACHE_EFFICIENCY_MIN_READ_RATIO</code> against real data using the
+back-test, once a week of events exists.</li>
+<li>Retire the unused <code>~/.tokenops/claude-code-usage.jsonl</code> path and the
+adapter that watches it, once this one is proven.</li>
+<li>Cloud evidence with redaction, if raw prompt quotes on a card are ever
+wanted — its own spec, with the adversarial suite.</li>
+</ul>
+</main>
+</body>
+</html>
