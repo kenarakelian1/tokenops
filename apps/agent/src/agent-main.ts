@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { UsageEvent } from "@tokenops/shared";
 import {
   defaultConfigPath,
@@ -80,7 +79,9 @@ export async function runAgent(
   };
 
   let proxyServer: Awaited<ReturnType<typeof startProxy>> | null = null;
-  let claudeClose: (() => void) | null = null;
+  let sessionWatcher: { rescan(): void; stop(): void } | null = null;
+  let sessionOffsets: import("./adapters/session-offsets.js").SessionOffsets | null =
+    null;
   let otelServer: import("node:http").Server | null = null;
 
   if (config.sources.openaiProxy) {
@@ -112,13 +113,24 @@ export async function runAgent(
   }
 
   if (config.sources.claudeCode) {
-    claudeClose = await maybeStartClaudeAdapter({
-      onEvent,
+    const { SessionOffsets } = await import("./adapters/session-offsets.js");
+    const { watchClaudeSessions } = await import(
+      "./adapters/claude-session-watcher.js"
+    );
+    sessionOffsets = new SessionOffsets(
+      join(tokenopsDir, "session-offsets.db"),
+    );
+    sessionWatcher = watchClaudeSessions({
+      rootDir: config.sources.claudeCodePath,
+      offsets: sessionOffsets,
       machineId: identity.machineId,
       machineName: identity.machineName,
-      tokenopsDir,
-      claudeCodePath: config.sources.claudeCodePath,
+      onEvent,
+      backfillDays: config.sources.claudeCodeBackfillDays,
     });
+    console.log(
+      `[tokenops] claude-code session watcher watching ${config.sources.claudeCodePath}`,
+    );
   }
 
   const otelListen = config.sources.claudeCodeOtelListen?.trim();
@@ -132,6 +144,7 @@ export async function runAgent(
         machineId: identity.machineId,
         machineName: identity.machineName,
         onEvent,
+        ignoreClaudeCodeMetrics: config.sources.claudeCode,
       });
       console.log(
         `[tokenops] Claude Code OTEL metrics listening on ${otelListen} (use OTEL_EXPORTER_OTLP_PROTOCOL=http/json)`,
@@ -187,8 +200,10 @@ export async function runAgent(
   const stop = async (): Promise<void> => {
     stopped = true;
     clearInterval(timer);
-    claudeClose?.();
-    claudeClose = null;
+    sessionWatcher?.stop();
+    sessionWatcher = null;
+    sessionOffsets?.close();
+    sessionOffsets = null;
     // closeAllConnections() *before* close(): Node's Server#close() only
     // stops accepting new connections and waits for every in-flight one to
     // end on its own -- and server.timeout is 0 (never set), so a client
@@ -235,79 +250,6 @@ export async function runAgent(
     stop,
     tick,
   };
-}
-
-/**
- * Optionally load Claude Code adapter if Task 11 module is present.
- * No-op when the file does not exist.
- */
-async function maybeStartClaudeAdapter(args: {
-  onEvent: (e: UsageEvent) => void;
-  machineId: string;
-  machineName: string;
-  tokenopsDir: string;
-  /** From config `sources.claude_code_path`; empty uses default under tokenops dir. */
-  claudeCodePath?: string;
-}): Promise<(() => void) | null> {
-  const adapterJs = fileURLToPath(
-    new URL("./adapters/claude-code.js", import.meta.url),
-  );
-  const adapterTs = join(
-    fileURLToPath(new URL(".", import.meta.url)),
-    "adapters",
-    "claude-code.ts",
-  );
-  if (!existsSync(adapterJs) && !existsSync(adapterTs)) {
-    console.log(
-      "[tokenops] claude_code source enabled but adapter not installed yet; skipping",
-    );
-    return null;
-  }
-
-  try {
-    const mod = (await import(
-      /* webpackIgnore: true */ new URL(
-        "./adapters/claude-code.js",
-        import.meta.url,
-      ).href
-    )) as {
-      watchClaudeCodeLog?: (
-        path: string,
-        onEvent: (e: UsageEvent) => void,
-        opts?: { machineId: string; machineName: string },
-      ) => { close: () => void };
-    };
-
-    if (typeof mod.watchClaudeCodeLog !== "function") {
-      console.log(
-        "[tokenops] claude-code adapter has no watchClaudeCodeLog; skipping",
-      );
-      return null;
-    }
-
-    const configured = args.claudeCodePath?.trim();
-    const logPath =
-      configured && configured.length > 0
-        ? configured
-        : join(args.tokenopsDir, "claude-code-usage.jsonl");
-    if (!existsSync(logPath)) {
-      console.log(
-        `[tokenops] claude-code adapter ready; waiting for log at ${logPath}`,
-      );
-    }
-    const handle = mod.watchClaudeCodeLog(logPath, args.onEvent, {
-      machineId: args.machineId,
-      machineName: args.machineName,
-    });
-    console.log(`[tokenops] claude-code adapter watching ${logPath}`);
-    return () => handle.close();
-  } catch (err) {
-    console.warn(
-      "[tokenops] failed to start claude-code adapter:",
-      err instanceof Error ? err.message : err,
-    );
-    return null;
-  }
 }
 
 export { defaultConfigPath, defaultOutboxPath, defaultTokenopsDir };

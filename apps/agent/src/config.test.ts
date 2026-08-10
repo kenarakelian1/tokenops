@@ -126,3 +126,27 @@ name = "desktop-main"
     ]);
   });
 });
+
+describe("session adapter config", () => {
+  it("defaults claudeCodePath to the real Claude Code projects directory", () => {
+    const c = defaultConfig();
+    expect(c.sources.claudeCodePath).toMatch(/[\\/]\.claude[\\/]projects$/);
+  });
+
+  it("defaults the backfill window to 7 days", () => {
+    expect(defaultConfig().sources.claudeCodeBackfillDays).toBe(7);
+  });
+
+  it("reads claude_code_backfill_days from TOML", () => {
+    const path = join(tmpDir(), "config.toml");
+    writeFileSync(
+      path,
+      `
+[sources]
+claude_code_backfill_days = 30
+`,
+      "utf8",
+    );
+    expect(loadConfig(path).sources.claudeCodeBackfillDays).toBe(30);
+  });
+});

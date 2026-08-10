@@ -7,7 +7,7 @@ TokenOps answers: *where did my tokens go, across apps and computers — and wha
 Phase 1 includes:
 
 - **Unified ledger** — tokens and **estimated** USD by time, machine, app, model, and source
-- **Two capture paths** — OpenAI-compatible local proxy + Claude Code JSONL adapter
+- **Two capture paths** — OpenAI-compatible local proxy + Claude Code session-file adapter (reads Claude Code's own `~/.claude/projects` transcripts, nothing to install)
 - **Five rule-based recommendations, in two classes** — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see [Recommendation rules](#recommendation-rules)
 - **Privacy controls** — metadata always; raw content optional (`off` / `local` / `cloud_ttl`)
 - **Self-hostable** — MIT license, Docker Compose, Railway-ready
@@ -148,8 +148,10 @@ upstream = "https://api.openai.com"
 [sources]
 openai_proxy = true
 claude_code = true
-# optional: override Claude Code JSONL path (file or directory)
-# claude_code_path = "/path/to/claude-code-usage.jsonl"
+# claude_code_path defaults to ~/.claude/projects (what Claude Code already
+# writes); override only if your sessions live somewhere else
+# claude_code_path = "/path/to/.claude/projects"
+claude_code_backfill_days = 7   # days of existing session history to read on first run
 
 [machine]
 name = "desktop"
@@ -231,13 +233,58 @@ const res = await client.chat.completions.create({
 - Optional `session_id` / `sessionId` / `metadata.session_id` / OpenAI `user` → event `sessionId`
 - If the cloud is down, events stay in the local SQLite outbox and flush when connectivity returns
 
-## Claude Code (JSONL + OpenTelemetry)
+## Claude Code (session files, default) + OpenTelemetry (other emitters)
 
-### Preferred: OpenTelemetry metrics (official Claude Code telemetry)
+### Default: Claude Code's own session files
 
-With the agent running (`tokenops agent run`), default OTLP HTTP listen is **`127.0.0.1:4318`**.
+When `sources.claude_code = true` (the default), the agent watches Claude
+Code's own session transcripts — the `*.jsonl` files Claude Code already
+writes on every session. There is nothing to configure or install: no
+telemetry env vars, no collector, no separate usage log to point at.
 
-In the shell where you launch Claude Code (use **HTTP JSON**, not gRPC — TokenOps does not speak OTLP/gRPC yet):
+- **Default path:** `~/.claude/projects`. **Override:** `sources.claude_code_path` in config, to any directory Claude Code writes sessions under.
+- The watcher recurses into every `*.jsonl` under that root and emits one event per completed assistant turn (`app=claude-code`, `grain: "request"`).
+- **First run:** reads `sources.claude_code_backfill_days` (default **7**) of existing history by file mtime, capped at **20,000 events** in that first pass so a large `~/.claude/projects` (easily upward of a gigabyte across a thousand-plus session files) can't stall startup. Anything the cap defers is retried, uncapped, on the very next poll — deferred, never lost.
+- Per-file read offsets are persisted (`~/.tokenops/session-offsets.db`), so a restart resumes tailing instead of re-reading everything.
+
+**Privacy — this is the property that matters most, so it's stated plainly
+rather than left for you to infer:** the per-request features this adapter
+reports (prompt length, message count, paste/file-dump score, model tier,
+and so on) are all computed **on your machine**, from the session text on
+disk. The adapter never attaches raw prompt or response text to an event —
+`hasContent` is always `false` and no `content` field is ever set. Only the
+derived integers and token counts leave the device. This holds **regardless
+of `[privacy].content_mode`** — `content_mode` governs whether this agent
+*additionally* ships raw content it captured, and this adapter never
+captures any raw content to begin with, so there is nothing for that setting
+to gate here.
+
+### Which recommendation rules this makes live — and which it doesn't
+
+Session-file events carry real per-request features, which is what makes
+the per-request rules capable of firing at all (see [Recommendation
+rules](#recommendation-rules) for the full list):
+
+- **`context_bloat`** fires — it reads a session's input-token growth across turns, which `sessionId` + per-turn `inputTokens` from session files supply directly.
+- **`full_document_io`** fires — it reads prompt length and file-dump score, both derived from the real message text on disk.
+- **`frontier_trivial` will not fire on Claude Code data, by design.** It requires a request at or under **200 total tokens**; a real Claude Code turn — system prompt, tool definitions, conversation history — runs on the order of **55,000 tokens**. No genuine Claude Code session gets small enough to cross that threshold. If you install this adapter and wait for a `frontier_trivial` card from Claude Code usage, none will arrive — that's the rule correctly staying silent on data it structurally cannot apply to, not a bug in the tool. (`frontier_share`, the window-aggregate rule that asks a similar question at the 7-day-total level instead of per-request, is unaffected and still runs.)
+
+### OpenTelemetry stays available — scoped to other emitters
+
+With the agent running (`tokenops agent run`), the OTLP HTTP metrics
+receiver still listens by default on **`127.0.0.1:4318`**, and is still
+useful for anything else that speaks OTLP/HTTP JSON (Codex, Gemini, a
+collector forwarding other tools' metrics). But **while `sources.claude_code
+= true`, every `claude_code.*` metric arriving at that receiver is dropped
+at the door** (logged once at startup), so the same Claude Code turns are
+never counted twice — once from the session file, once from OTEL. This is
+enforced in code, not left to configuration, because a doubled ledger is the
+one failure this cutover cannot recover from.
+
+If you want Claude Code's own OTEL metrics instead of the session-file
+adapter (coarser: aggregate-only, no per-request features), turn off
+`sources.claude_code` and point Claude Code's telemetry at the agent (use
+**HTTP JSON**, not gRPC — TokenOps does not speak OTLP/gRPC yet):
 
 ```bash
 # Windows PowerShell
@@ -261,51 +308,35 @@ Config (`~/.tokenops/config.toml`):
 
 ```toml
 [sources]
-claude_code = true
-claude_code_otel_listen = "127.0.0.1:4318"   # empty string disables OTEL receiver
+claude_code = false                          # let OTEL own capture instead of session files
+claude_code_otel_listen = "127.0.0.1:4318"   # empty string disables the OTEL receiver
 ```
 
-Metrics mapped into the ledger (`app=claude-code`):
+Metrics mapped into the ledger (`app=claude-code`, `grain: "aggregate"`):
 
 | Metric | Use |
 |--------|-----|
 | `claude_code.token.usage` | Input/output/cache tokens → usage events (counter deltas) |
 | `claude_code.cost.usage` | Session cost when present (else price-table estimate) |
 
+OTEL-only events carry no per-request features (only `modelTier`), so only
+`frontier_share` and `cache_efficiency` — the window-aggregate rules — can
+fire from them; see [Why per-request rules don't fire for OTEL-only
+users](#why-per-request-rules-dont-fire-for-otel-only-users).
+
 > Your snippet with `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and port **4317** is the default OTEL collector setup. Point Claude at **TokenOps** with **`http/json` + 4318** instead, or run an OTEL Collector that forwards metrics to TokenOps HTTP.
 
-### Fallback: JSONL path
+### Legacy fallback: custom usage JSONL (no caller today)
 
-When `sources.claude_code = true`, the agent also watches a usage JSONL file and maps each line into the shared event schema (`app=claude-code`).
-
-**Default path:** `~/.tokenops/claude-code-usage.jsonl`  
-**Override:** set `sources.claude_code_path` in config (absolute path to a file or directory).
-
-Each line is one JSON object. Required fields: `model`, `inputTokens` (or `input_tokens`), `outputTokens` (or `output_tokens`). Optional: `timestamp`, `sessionId`, `requestPreview` / `responsePreview`.
-
-Example line:
-
-```json
-{"timestamp":"2026-07-27T10:00:00.000Z","model":"claude-sonnet-4","inputTokens":1200,"outputTokens":350,"sessionId":"sess-1","requestPreview":"…","responsePreview":"…"}
-```
-
-### End-to-end fixture path
-
-A checked-in sample log for tests and manual smoke:
-
-```
-apps/agent/test/fixtures/claude-code-usage.jsonl
-```
-
-To exercise the adapter against a running agent without live Claude Code:
-
-```bash
-# Agent must be running (tokenops agent run)
-cp apps/agent/test/fixtures/claude-code-usage.jsonl ~/.tokenops/claude-code-usage.jsonl
-# Or append more lines — the watcher tails the file
-```
-
-Then open the dashboard Explore view (or query `GET /v1/events`) after the next outbox flush (~5s).
+Before the session-file adapter existed, the agent could tail a bespoke
+`~/.tokenops/claude-code-usage.jsonl` file — a format nothing writes out of
+the box. That code
+(`apps/agent/src/adapters/claude-code.ts`, fixture at
+`apps/agent/test/fixtures/claude-code-usage.jsonl`) is kept in the tree and
+its tests still run, but `agent-main.ts` no longer calls it: the session-file
+adapter above is what actually runs when `sources.claude_code = true`. See
+the retention comment at the top of that file for why it's kept rather than
+deleted.
 
 ## Privacy modes
 
@@ -379,8 +410,8 @@ trusting each rule to opt out on its own.
 
 Of TokenOps' capture paths, two produce per-request events and can trigger
 these three rules: the **OpenAI-compatible local proxy** and the **Claude
-Code JSONL adapter** (both build full `features` per call — see
-`apps/agent/src/adapters/claude-code.ts` and the proxy under
+Code session-file adapter** (both build full `features` per call — see
+`apps/agent/src/adapters/claude-session.ts` and the proxy under
 `apps/agent/src/proxy/`). The **Claude Code OTEL metrics receiver**
 (`apps/agent/src/adapters/claude-otel.ts`) cannot: Claude Code's
 `claude_code.token.usage` counter carries only a token `type` and `model`,
@@ -389,7 +420,11 @@ is stamped `grain: "aggregate"` and is gated out.
 
 This means **a user whose only capture path is Claude Code OTEL will never
 see `frontier_trivial`, `full_document_io`, or `context_bloat` fire** — that
-is expected, not a bug. They still get `frontier_share` and
+is expected, not a bug. Note this is a stricter gap than the session-file
+adapter's own `frontier_trivial` gap described above: OTEL loses all three
+per-request rules to missing features, where the session-file adapter has
+real features but still can't cross `frontier_trivial`'s 200-token cap with
+genuine Claude Code turn sizes. They still get `frontier_share` and
 `cache_efficiency`: those two rules run hourly against 7-day per-model token
 totals built from every ingested event regardless of grain or capture path
 (`apps/api/src/jobs/aggregate-rules.ts`), so OTEL-only usage still populates
