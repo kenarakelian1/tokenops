@@ -128,9 +128,25 @@ export async function runAgent(
       onEvent,
       backfillDays: config.sources.claudeCodeBackfillDays,
     });
-    console.log(
-      `[tokenops] claude-code session watcher watching ${config.sources.claudeCodePath}`,
-    );
+    if (existsSync(config.sources.claudeCodePath)) {
+      console.log(
+        `[tokenops] claude-code session watcher watching ${config.sources.claudeCodePath}`,
+      );
+    } else {
+      // Not fatal: a machine that has never run Claude Code has no
+      // ~/.claude/projects yet, and the directory may appear later (the
+      // watcher keeps polling). But an unconditional "watching <path>" log
+      // here would read as success while silently capturing nothing --
+      // exactly the failure mode a misconfigured or blanked
+      // claude_code_path produces. Naming the config key, not just the
+      // path, is what makes this actionable.
+      console.warn(
+        `[tokenops] claude-code session watcher: directory not found at ` +
+          `${config.sources.claudeCodePath} -- no Claude Code usage will be ` +
+          `captured until it exists. If your sessions live elsewhere, set ` +
+          `sources.claude_code_path in config.toml.`,
+      );
+    }
   }
 
   const otelListen = config.sources.claudeCodeOtelListen?.trim();

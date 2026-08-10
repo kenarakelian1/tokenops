@@ -244,7 +244,7 @@ telemetry env vars, no collector, no separate usage log to point at.
 
 - **Default path:** `~/.claude/projects`. **Override:** `sources.claude_code_path` in config, to any directory Claude Code writes sessions under.
 - The watcher recurses into every `*.jsonl` under that root and emits one event per completed assistant turn (`app=claude-code`, `grain: "request"`).
-- **First run:** reads `sources.claude_code_backfill_days` (default **7**) of existing history by file mtime, capped at **20,000 events** in that first pass so a large `~/.claude/projects` (easily upward of a gigabyte across a thousand-plus session files) can't stall startup. Anything the cap defers is retried, uncapped, on the very next poll — deferred, never lost.
+- **First run:** reads `sources.claude_code_backfill_days` (default **7**) of existing history by file mtime, capped at **20,000 events** per scan so a large `~/.claude/projects` (easily upward of a gigabyte across a thousand-plus session files) can't stall startup. Anything the cap defers is retried on the very next poll with a fresh 20,000-event budget — deferred, never lost, though a backlog larger than one poll's budget can take more than one poll to fully catch up.
 - Per-file read offsets are persisted (`~/.tokenops/session-offsets.db`), so a restart resumes tailing instead of re-reading everything.
 
 **Privacy — this is the property that matters most, so it's stated plainly

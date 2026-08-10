@@ -134,7 +134,8 @@ function fromToml(raw: TomlRoot): TokenOpsConfig {
       openaiProxy: raw.sources?.openai_proxy ?? base.sources.openaiProxy,
       claudeCode: raw.sources?.claude_code ?? base.sources.claudeCode,
       claudeCodePath:
-        typeof raw.sources?.claude_code_path === "string"
+        typeof raw.sources?.claude_code_path === "string" &&
+        raw.sources.claude_code_path.trim() !== ""
           ? raw.sources.claude_code_path
           : base.sources.claudeCodePath,
       claudeCodeOtelListen:
