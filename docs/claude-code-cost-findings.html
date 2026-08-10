@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>What Claude Code usage actually costs — measured</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="what-claude-code-usage-actually-costs-—-measured">What Claude Code usage actually costs — measured</h1>
+<p><strong>Date:</strong> 2026-08-10
+<strong>Status:</strong> Findings. No design decision taken.
+<strong>Source:</strong> <code>~/.claude/projects</code>, 200 session files modified in a trailing 7-day window, 13,682 unique API responses, deduplicated by <code>message.id</code>.</p>
+<h2 id="why-this-exists">Why this exists</h2>
+<p>The <code>feat/claude-session-adapter</code> branch was built to make three per-request efficiency rules — <code>frontier_trivial</code>, <code>full_document_io</code>, <code>context_bloat</code> — fire on real Claude Code data instead of on the fabricated features an OTLP metric produces. It succeeded at reading the data and failed at the premise: run over a real week, the rules yield roughly <strong>24 findings from 14,546 turns</strong>.</p>
+<p>That is not a threshold-tuning problem. The rules were designed for API-style traffic — pick a cheaper model, send excerpts instead of whole documents, trim conversation history — and a coding agent&#39;s economics are different in kind. These are the measurements that show how.</p>
+<h2 id="the-measurements">The measurements</h2>
+<h3 id="where-the-input-tokens-go">Where the input tokens go</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th align="right">Tokens</th>
+<th align="right">Share of tokens</th>
+<th>Billed at</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Raw (uncached) input</td>
+<td align="right">109,464</td>
+<td align="right"><strong>0.0%</strong></td>
+<td>1.00×</td>
+</tr>
+<tr>
+<td>Cache <strong>read</strong></td>
+<td align="right">4,294,512,099</td>
+<td align="right">96.7%</td>
+<td>0.10×</td>
+</tr>
+<tr>
+<td>Cache <strong>creation</strong></td>
+<td align="right">145,374,357</td>
+<td align="right">3.3%</td>
+<td>1.25×</td>
+</tr>
+</tbody></table>
+<p>Converting to effective cost units (tokens × multiplier):</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th align="right">Share of input cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cache read</td>
+<td align="right">70.3%</td>
+</tr>
+<tr>
+<td><strong>Cache creation</strong></td>
+<td align="right"><strong>29.7%</strong></td>
+</tr>
+<tr>
+<td>Raw input</td>
+<td align="right">0.0%</td>
+</tr>
+</tbody></table>
+<h3 id="context-size-per-response">Context size per response</h3>
+<table>
+<thead>
+<tr>
+<th>Percentile</th>
+<th align="right">Tokens</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>p50</td>
+<td align="right">233,438</td>
+</tr>
+<tr>
+<td>p90</td>
+<td align="right">721,478</td>
+</tr>
+<tr>
+<td>p99</td>
+<td align="right">943,266</td>
+</tr>
+<tr>
+<td>max</td>
+<td align="right">998,027</td>
+</tr>
+</tbody></table>
+<h3 id="other-structure">Other structure</h3>
+<ul>
+<li><strong>Subagent share:</strong> 4,423 of 13,682 responses are sidechains — <strong>32.3%</strong> of all API responses.</li>
+<li><strong>Model mix:</strong> <code>claude-opus-5</code> 63%, <code>claude-sonnet-5</code> 24%, <code>claude-opus-4-8</code> 11%, <code>claude-haiku-4-5</code> 2%.</li>
+<li><strong>Cache read ratio:</strong> p10 = 0.983, <strong>p50 = 0.997</strong>.</li>
+</ul>
+<h2 id="what-this-means-for-the-five-existing-rules">What this means for the five existing rules</h2>
+<p><strong><code>cache_efficiency</code> is dead for this workload.</strong> It fires when the cache-read ratio falls below 0.50. The measured median is <strong>0.997</strong>. The 47.4% sample that motivated the threshold was a single cold-cache turn; steady state is near-perfect. This rule cannot fire and no threshold tuning saves it — the behavior it looks for does not occur.</p>
+<p><strong><code>full_document_io</code> is advising against something that is already free.</strong> It fires on prompts above 20,000 characters with a high file-dump score, on the theory that pasting whole documents wastes input tokens. But <strong>raw uncached input is 0.0% of the bill</strong>. A pasted document costs full rate exactly once and is then read from cache at 0.1× forever. Only 40 of 14,546 turns even reached the character gate, and <code>fileDumpScore</code>&#39;s p90 is 0.301 against a 0.55 threshold — Read output carries no code fences, which is most of what the score keys on.</p>
+<p><strong><code>context_bloat</code> measures the wrong growth.</strong> Its gate is &quot;input grew 1.8× since the session&#39;s baseline while little new content was added.&quot; With a cache-dominated context that grows gradually and a baseline that is in practice 20 turns back rather than the session&#39;s first turn, the growth gate passed 20 times in 14,302 turns. The underlying concern — enormous contexts — is real (p90 is 721k tokens), but 1.8× growth is not how it shows up.</p>
+<p><strong><code>frontier_trivial</code> cannot fire, correctly.</strong> It caps at 200 total tokens; the median turn carries 233,438. A coding-agent turn is never trivial.</p>
+<p><strong><code>frontier_share</code> is the one that transfers.</strong> 63% of responses are <code>claude-opus-5</code>, and that is a real, actionable mix question.</p>
+<h2 id="where-the-money-actually-is">Where the money actually is</h2>
+<p>Three signals the current rules do not look at:</p>
+<p><strong>1. Cache creation is 3.3% of tokens and 29.7% of the input bill.</strong> Every cache write costs 12.5× a cache read. High creation relative to read means the cached prefix keeps getting invalidated — by edits to files already in context, by tool output landing mid-prefix, by anything that changes the front of the conversation. This is the single largest addressable line item, and nothing currently measures it.</p>
+<p><strong>2. Context size is the volume driver.</strong> At p90 the context is 721,478 tokens, re-read every turn at 0.1×. On <code>claude-opus-5</code> that is roughly $0.36 per turn in cache reads alone before the model writes a word. The actionable question is not &quot;did the context grow 1.8× since turn one&quot; but &quot;is this session carrying a context far larger than the work requires.&quot;</p>
+<p><strong>3. A third of spend is invisible.</strong> 32.3% of API responses are subagent turns. They share the parent&#39;s <code>sessionId</code> but have independent context, and nothing attributes cost to the subagent that incurred it or to the task that spawned it.</p>
+<h2 id="the-honest-conclusion">The honest conclusion</h2>
+<p>The adapter&#39;s mechanics are sound and its measurements are trustworthy — the offset handling, UTF-8 correctness, truncation-race guard and OTLP scoping all survived adversarial review. What did not survive is the assumption that rules written for API traffic describe a coding agent&#39;s costs.</p>
+<p>A rule set fitted to this workload would look at cache churn, absolute context size, and subagent attribution. That is a different design, not a retune, and it should start from these numbers rather than from the existing rules.</p>
+<h2 id="reproducing-this">Reproducing this</h2>
+<p>The measurements come from reading <code>~/.claude/projects/**/*.jsonl</code>, filtering to <code>type: &quot;assistant&quot;</code> lines carrying <code>message.usage</code>, and <strong>deduplicating by <code>message.id</code></strong> — Claude Code writes one line per content block, so a naive per-line count inflates everything by ~2.1×. That inflation is itself the critical defect that stopped the branch; see the branch&#39;s review record.</p>
+</main>
+</body>
+</html>
