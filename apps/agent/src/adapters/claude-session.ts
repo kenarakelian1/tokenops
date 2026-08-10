@@ -23,6 +23,14 @@ export type ClaudeSessionLine = {
   message?: {
     role?: string;
     model?: string;
+    /**
+     * Identifies the real API response. Claude Code writes one JSONL line
+     * per assistant *content block*, not per response — a text block plus
+     * three tool_use blocks is four lines sharing one `message.id`, one
+     * `requestId`, and byte-identical `usage`. This is the id we coalesce
+     * and fingerprint on.
+     */
+    id?: string;
     content?: unknown;
     usage?: {
       input_tokens?: number;
@@ -107,6 +115,13 @@ export function createSessionParser(
   let pendingSidechainPrompt = "";
   let priorSidechainPromptChars: number | undefined;
 
+  // Last-seen message.id per chain, for coalescing multi-block responses
+  // into a single event (see the `message.id` doc comment above). Kept
+  // separate per chain for the same reason pendingPrompt is: a sidechain
+  // message.id must never suppress the next mainline line, or vice versa.
+  let lastMessageId: string | undefined;
+  let lastSidechainMessageId: string | undefined;
+
   return {
     parseLine(raw: string): UsageEvent | null {
       let line: ClaudeSessionLine;
@@ -141,6 +156,23 @@ export function createSessionParser(
       const uuid = line.uuid;
       if (!model || !timestamp || !uuid) return null;
 
+      const messageId = line.message?.id;
+
+      // Coalesce: keep only the first line of each response. Lines 2..n of
+      // the same message.id carry byte-identical usage, so nothing is lost
+      // from the token counts by dropping them — and dropping them here,
+      // before pendingPrompt is touched below, is what makes pendingPrompt
+      // get consumed exactly once per response instead of once per line.
+      const priorMessageId = isSidechain ? lastSidechainMessageId : lastMessageId;
+      if (messageId !== undefined && messageId === priorMessageId) {
+        return null;
+      }
+      if (isSidechain) {
+        lastSidechainMessageId = messageId;
+      } else {
+        lastMessageId = messageId;
+      }
+
       // Absent means "not recorded" and stays undefined on the event; a
       // recorded 0 stays 0. Folding uses ?? 0 for the TOTAL only — no cache
       // fields simply means no cache tokens contributed to it.
@@ -152,6 +184,14 @@ export function createSessionParser(
         (cacheCreationTokens ?? 0);
       const outputTokens = usage.output_tokens ?? 0;
 
+      // Deliberate trade-off: since only the first line of a multi-block
+      // response is processed, responseText/features.responseChars reflects
+      // only that first block, not the full reply. The alternative —
+      // buffering blocks until the message boundary — needs a flush at
+      // chunk end and at EOF, and a message split across a poll boundary
+      // then has to survive in state the offset store doesn't carry. No
+      // rule gates on responseChars; every rule gates on prompt-side
+      // features and token counts, both of which this approach gets right.
       const responseText = contentToText(line.message?.content);
       const prompt = isSidechain ? pendingSidechainPrompt : pendingPrompt;
       const priorChars = isSidechain
@@ -173,11 +213,14 @@ export function createSessionParser(
         pendingPrompt = "";
       }
 
+      // message.id identifies the real API response and is stable across
+      // re-reads, unlike uuid (one per line). Fall back to uuid when
+      // message.id is absent — the format isn't a published contract.
       const eventId = buildEventId({
         machineId: opts.machineId,
         app: APP,
         providerRequestId: line.requestId,
-        fingerprint: uuid,
+        fingerprint: messageId ?? uuid,
         timeBucketSec: Math.floor(Date.parse(timestamp) / 1000),
       });
 

@@ -1,5 +1,32 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { createSessionParser } from "./claude-session.js";
+
+const FIXTURES_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "test",
+  "fixtures",
+);
+
+function loadFixtureLines(name: string): string[] {
+  return readFileSync(path.join(FIXTURES_DIR, name), "utf8")
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+}
+
+function parseFixture(name: string) {
+  const p = createSessionParser({ machineId: "m1", machineName: "laptop" });
+  const events = [];
+  for (const line of loadFixtureLines(name)) {
+    const ev = p.parseLine(line);
+    if (ev) events.push(ev);
+  }
+  return events;
+}
 
 const parser = () =>
   createSessionParser({ machineId: "m1", machineName: "laptop" });
@@ -210,5 +237,91 @@ describe("createSessionParser", () => {
     // not the subagent's 1-char prompt.
     expect(ev.features.newContentRatio).toBeDefined();
     expect(ev.features.newContentRatio!).toBeLessThan(0.25);
+  });
+
+  // Real fixtures, cut from actual Claude Code session files with content
+  // scrubbed. Claude Code writes one JSONL line per assistant content
+  // block, not per API response — these fixtures reproduce that shape
+  // (multiple assistant lines sharing one message.id, one requestId, and
+  // byte-identical usage) so the coalescing fix is exercised against real
+  // structure, not a hand-written idealization of it.
+
+  it("mainline: coalesces 22 assistant lines across 8 message ids into 8 events", () => {
+    const events = parseFixture("claude-session-mainline.jsonl");
+    expect(events).toHaveLength(8);
+  });
+
+  it("sidechain: coalesces 8 assistant lines across 3 message ids into 3 events", () => {
+    const events = parseFixture("claude-session-real.jsonl");
+    expect(events).toHaveLength(3);
+  });
+
+  it("mainline: does not multiply tokens across coalesced blocks", () => {
+    const events = parseFixture("claude-session-mainline.jsonl");
+    const totalInput = events.reduce((sum, ev) => sum + ev.inputTokens, 0);
+    // Sum of (input_tokens + cache_read_input_tokens +
+    // cache_creation_input_tokens) over the fixture's 8 distinct message
+    // ids, computed by hand from the raw fixture (not via the parser):
+    //   msg_0012: 2 + 25480 + 27276 = 52758
+    //   msg_0022: 2 + 52756 +   925 = 53683
+    //   msg_0032: 2 + 53681 +  1428 = 55111
+    //   msg_0038: 2 + 55109 +   257 = 55368
+    //   msg_0044: 2 + 55366 +  6837 = 62205
+    //   msg_0052: 1 + 62203 +  4113 = 66317
+    //   msg_0059: 2 + 66316 +   786 = 67104
+    //   msg_0065: 2 + 67102 +   557 = 67661
+    // total                        = 480207
+    expect(totalInput).toBe(480_207);
+  });
+
+  it("mainline: no event has a zero prompt when a user line preceded its message", () => {
+    // Every message in the fixture is preceded by a non-empty user/
+    // tool_result line, so under correct once-per-message consumption none
+    // of the 8 events should see an empty prompt. Before the fix, 3 of the
+    // 4 lines per message (blocks 2..n) read pendingPrompt after it had
+    // already been cleared by block 1.
+    const events = parseFixture("claude-session-mainline.jsonl");
+    for (const ev of events) {
+      expect(ev.features.promptChars).toBeGreaterThan(0);
+    }
+  });
+
+  it("is idempotent: two independent parser instances agree on the eventId set", () => {
+    const idsA = parseFixture("claude-session-mainline.jsonl").map(
+      (ev) => ev.eventId,
+    );
+    const idsB = parseFixture("claude-session-mainline.jsonl").map(
+      (ev) => ev.eventId,
+    );
+    expect(new Set(idsA)).toEqual(new Set(idsB));
+    expect(idsA).toHaveLength(8);
+    // All distinct: message.id is a real fingerprint, not a constant.
+    expect(new Set(idsA).size).toBe(8);
+  });
+
+  it("produces an event fingerprinted on uuid when message.id is absent", () => {
+    // assistantLine()'s default message object carries no `id` field, i.e.
+    // exactly the "format isn't a published contract" case the fallback
+    // exists for.
+    const p = parser();
+    p.parseLine(userLine("hello"));
+    const withoutId = p.parseLine(assistantLine())!;
+
+    expect(withoutId).not.toBeNull();
+    expect(withoutId.inputTokens).toBe(54_940);
+
+    // Fingerprinting on uuid (not a constant) means two different lines
+    // with no message.id still get two different eventIds.
+    const q = parser();
+    q.parseLine(userLine("hello"));
+    const other = q.parseLine(assistantLine({ uuid: "a-2" }))!;
+    expect(other.eventId).not.toBe(withoutId.eventId);
+
+    // And fingerprinting is still uuid-stable: replaying the identical line
+    // yields the identical eventId (the general idempotence property).
+    const r = parser();
+    r.parseLine(userLine("hello"));
+    const replay = r.parseLine(assistantLine())!;
+    expect(replay.eventId).toBe(withoutId.eventId);
   });
 });
