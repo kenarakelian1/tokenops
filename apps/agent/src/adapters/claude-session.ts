@@ -52,10 +52,18 @@ export type SessionParser = {
   parseLine(raw: string): UsageEvent | null;
   /**
    * Drain the one message still buffered awaiting its next `message.id`
-   * boundary, if any. Production (the watcher) never calls this — see the
-   * "do not flush at EOF" trade-off documented on `createSessionParser`.
-   * It exists so a one-shot parse of a finite fixture or file can still
-   * observe its last message, which would otherwise sit unflushed forever.
+   * boundary, if any. Safe to call at any time — including repeatedly — and
+   * a no-op (`null`) whenever nothing is buffered, since it clears its own
+   * state before returning.
+   *
+   * NOT safe to call at every chunk end or EOF: a message split across a
+   * poll boundary would flush with only its early blocks, reintroducing
+   * the output under-count buffering exists to fix. The watcher (see
+   * `claude-session-watcher.ts`) calls this only once a file is confirmed
+   * IDLE — unchanged since the previous scan — which is the one condition
+   * that proves no more blocks are coming. A one-shot parse of a finite
+   * fixture or file (tests, an offline audit) is a degenerate case of the
+   * same idea: nothing further will ever arrive, so it's always safe.
    */
   flushPending(): UsageEvent | null;
 };
@@ -185,15 +193,20 @@ type PendingMessage = CapturedTurn & { messageId: string };
  *    `responseChars` reflects the full reply, not just its first block.
  *
  *    Trade-off, deliberately accepted: a message is held until the NEXT
- *    message's first block arrives, never at end-of-file/end-of-poll. The
- *    parser instance (and so the buffered message) survives across polls
- *    in the real watcher, so an in-flight message just waits — seconds, in
- *    a live session — for its own boundary. The cost is that the single
- *    most-recent message of a file is never flushed by a process that
- *    restarts mid-message; that loss is bounded to one message per file,
- *    versus the systematic 27% under-count buffering fixes. `flushPending`
- *    exists solely so a one-shot parse (tests, an offline audit) can still
- *    observe that last message — production code never calls it.
+ *    message's first block arrives, never at end-of-file/end-of-poll from
+ *    inside the parser itself — a message split across a poll boundary
+ *    would otherwise flush with only its early blocks, reintroducing the
+ *    very under-count buffering fixes. Instead, the watcher (not this
+ *    parser) supplies the one condition that safely substitutes for a
+ *    boundary: a file confirmed IDLE — unchanged since the previous scan —
+ *    can have no more blocks coming, so calling `flushPending()` there is
+ *    exactly as safe as a real message.id boundary, never earlier. Before
+ *    that watcher-side check existed, this was a real, accepted gap (one
+ *    message per file lost on EVERY idle/ended session, not just a
+ *    restart) — it is now bounded to the much narrower case of a process
+ *    restart between an idle-triggered flush and its offset ever being
+ *    persisted, since the flushed event's bytes were already durably
+ *    offset-tracked on an earlier scan.
  *
  *    A line whose `message.id` is absent (rare; the format isn't a
  *    contract) can't be matched against anything, so it is treated as a
@@ -215,7 +228,12 @@ export function createSessionParser(
   // share this one slot because a chain switch is always also a
   // message.id change, so it already forces a flush on its own — a second,
   // chain-keyed slot would never hold anything the id check didn't already
-  // catch.
+  // catch. This rests on "one chain per file": measured across 1,483 real
+  // session files, zero mix mainline and sidechain assistant lines in the
+  // same file — the invariant holds by file structure today, not by luck
+  // of id-collision odds. `claude-session.test.ts` also pins the resulting
+  // behavior directly with a synthetic interleaved sequence, in case that
+  // file-structure invariant ever stops holding.
   let pending: PendingMessage | undefined;
 
   /** Capture a turn's data from its first block, consuming this chain's
