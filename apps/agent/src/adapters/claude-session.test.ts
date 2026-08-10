@@ -25,6 +25,14 @@ function parseFixture(name: string) {
     const ev = p.parseLine(line);
     if (ev) events.push(ev);
   }
+  // The fixture's last message is never superseded by a following
+  // message.id within the file, so under "hold until the next boundary"
+  // it would otherwise sit buffered forever. flushPending() is exactly the
+  // test/one-shot-parse escape hatch documented on SessionParser for this —
+  // production (the watcher) never calls it, since its parser instance
+  // survives across polls and the in-flight message just waits.
+  const trailing = p.flushPending();
+  if (trailing) events.push(trailing);
   return events;
 }
 
@@ -57,6 +65,31 @@ const assistantLine = (over: Record<string, unknown> = {}) =>
         cache_creation_input_tokens: 28_890,
         cache_read_input_tokens: 26_048,
         output_tokens: 229,
+      },
+    },
+    ...over,
+  });
+
+const assistantLineWithId = (
+  messageId: string,
+  over: Record<string, unknown> = {},
+) =>
+  JSON.stringify({
+    type: "assistant",
+    uuid: `u-${messageId}`,
+    requestId: `req-${messageId}`,
+    sessionId: "s-1",
+    timestamp: "2026-08-09T12:00:01.000Z",
+    message: {
+      role: "assistant",
+      model: "claude-opus-5[1m]",
+      id: messageId,
+      content: [{ type: "text", text: "hi" }],
+      usage: {
+        input_tokens: 2,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 200,
+        output_tokens: 10,
       },
     },
     ...over,
@@ -323,5 +356,112 @@ describe("createSessionParser", () => {
     r.parseLine(userLine("hello"));
     const replay = r.parseLine(assistantLine())!;
     expect(replay.eventId).toBe(withoutId.eventId);
+  });
+
+  // --- Round 2: output_tokens is NOT identical across a message's blocks
+  // (round 1's premise, disproved). Keeping the first block undercounted
+  // output by ~27% in aggregate; the fix buffers a message's blocks and
+  // takes the max of output_tokens seen, flushing only once a DIFFERENT
+  // message.id proves the message is complete.
+
+  it("sidechain: outputTokens sums to 172 across the fixture's 3 messages, not 12", () => {
+    // Regression test for the round-1 defect: keeping only the first block
+    // of each message summed FIRST-block output_tokens (5 + 5 + 2 = 12).
+    // The true total is each message's MAX output_tokens, derived by hand
+    // from the raw fixture (not via the parser):
+    //   msg_0006: blocks report 5, 165                    -> max 165
+    //   msg_0012: blocks report 5, 5, 5                    -> max   5
+    //   msg_0021: blocks report 2, 2, 2                    -> max   2
+    //   total                                              =    172
+    // msg_0006 block 2's usage.output_tokens is 165 with
+    // iterations[0].output_tokens also 165 — the real counterexample cited
+    // in review: block 1 alone (round-1 behavior) reports only 5.
+    const events = parseFixture("claude-session-real.jsonl");
+    const totalOutput = events.reduce((sum, ev) => sum + ev.outputTokens, 0);
+    expect(totalOutput).toBe(172);
+  });
+
+  it("mainline: outputTokens sums to the max-per-message total, not the first-block total", () => {
+    // Derived by hand from the raw fixture's 8 distinct message ids, each
+    // message's max output_tokens across its blocks (this fixture's
+    // messages happen to report the same output_tokens on every block, so
+    // max here also equals "first block" and "last block" — the point of
+    // this test is the derivation method, exercised for real divergence by
+    // the sidechain fixture above):
+    //   msg_0012: 342, msg_0022: 411, msg_0032: 129, msg_0038: 142,
+    //   msg_0044: 1346, msg_0052: 388, msg_0059: 192, msg_0065: 1203
+    //   total = 342+411+129+142+1346+388+192+1203 = 4153
+    const events = parseFixture("claude-session-mainline.jsonl");
+    const totalOutput = events.reduce((sum, ev) => sum + ev.outputTokens, 0);
+    expect(totalOutput).toBe(4_153);
+  });
+
+  it("mainline: responseChars is nonzero for a multi-block message whose later blocks carry text", () => {
+    // msg_0012 (the fixture's first message) is thinking + text + tool_use
+    // + tool_use. Its first block (thinking) is an empty string in this
+    // scrubbed fixture — exactly the shape that made round 1's
+    // first-block-only responseText read as "" (84.6% of emitted events,
+    // measured against real files). Accumulating every block's text across
+    // the whole buffered message must recover the text block's content.
+    const events = parseFixture("claude-session-mainline.jsonl");
+    const first = events[0]!;
+    expect(first.features.responseChars).toBeGreaterThan(0);
+  });
+
+  it("sidechain: zero-prompt events are limited to the known tool_reference gap, not systemic", () => {
+    // Unlike the mainline fixture, the sidechain fixture's msg_0012 is
+    // preceded by a tool_result whose nested content is bare
+    // {"type":"tool_reference"} blocks with no text field — contentToText
+    // has nothing to extract there, and nothing to reasonably substitute.
+    // That is a genuine data gap, not a bug, so this property is scoped
+    // (not asserted as "> 0 for every event", which would be false here)
+    // rather than silently extended to imply a universal guarantee the
+    // mainline-only test doesn't actually establish.
+    const events = parseFixture("claude-session-real.jsonl");
+    const zeroPrompt = events.filter((ev) => ev.features.promptChars === 0);
+    expect(zeroPrompt).toHaveLength(1);
+    // The other 2 of 3 messages still have their prompt correctly paired.
+    expect(events.length - zeroPrompt.length).toBe(2);
+  });
+
+  it("keeps mainline and sidechain buffers independent across an interleaved sequence", () => {
+    // Pins the property no prior test distinguishes: a single-slot buffer
+    // is safe because a chain switch (mainline <-> sidechain) is always
+    // also a message.id change, so the id check alone already forces a
+    // flush at the right point — mainline-a1, then sidechain-b1 (which
+    // flushes a1), then mainline-a2 (which flushes b1).
+    const p = parser();
+
+    p.parseLine(userLine("mainline prompt one"));
+    const r1 = p.parseLine(assistantLineWithId("A1"));
+    expect(r1).toBeNull(); // buffered; nothing to flush yet
+
+    p.parseLine(
+      userLine("side prompt", { uuid: "su-1", isSidechain: true }),
+    );
+    const r2 = p.parseLine(
+      assistantLineWithId("B1", { isSidechain: true }),
+    );
+    // A1's boundary: B1's different message.id proves A1 is complete.
+    expect(r2).not.toBeNull();
+
+    p.parseLine(userLine("mainline prompt two", { uuid: "u-2" }));
+    const r3 = p.parseLine(assistantLineWithId("A2"));
+    // B1's boundary: A2's different message.id proves B1 is complete —
+    // even though A2 is back on the OTHER chain from B1.
+    expect(r3).not.toBeNull();
+
+    const emitted = [r1, r2, r3].filter(
+      (e): e is NonNullable<typeof e> => e !== null,
+    );
+    expect(emitted).toHaveLength(2);
+    expect(new Set(emitted.map((e) => e.eventId)).size).toBe(2);
+
+    // A2 is still buffered (nothing followed it in this sequence) — drain
+    // it explicitly, the same escape hatch parseFixture() uses.
+    const r4 = p.flushPending();
+    expect(r4).not.toBeNull();
+    expect(r4!.eventId).not.toBe(r2!.eventId);
+    expect(r4!.eventId).not.toBe(r3!.eventId);
   });
 });
