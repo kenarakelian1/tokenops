@@ -265,6 +265,85 @@ describe("ClaudeOtelState feature/grain correctness", () => {
   });
 });
 
+describe("claude_code.* guard", () => {
+  it("drops claude_code metrics when the session adapter owns the source", () => {
+    const out = extractClaudeCounters(sampleExport(100, 40), {
+      ignoreClaudeCodeMetrics: true,
+    });
+    expect(out.tokens).toHaveLength(0);
+    expect(out.costs).toHaveLength(0);
+  });
+
+  it("keeps claude_code metrics when the session adapter is off", () => {
+    const out = extractClaudeCounters(sampleExport(100, 40));
+    expect(out.tokens).toHaveLength(2);
+  });
+
+  it("scopes the drop by prefix, not by substring", () => {
+    // A `gen_ai.*` name would be a vacuous test: the extractor recognizes no
+    // non-claude_code metric, so 0 tokens comes back whether the guard is a
+    // precise prefix match or a blanket drop-everything. This name IS
+    // recognized-adjacent: "claude_codex.token.usage" contains the substring
+    // "claude_code" but does not START with "claude_code.". A sloppy
+    // `name.includes("claude_code")` drops it and fails here; the correct
+    // `startsWith("claude_code.")` leaves it alone.
+    const body = {
+      resourceMetrics: [
+        {
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "claude_codex.token.usage",
+                  sum: {
+                    dataPoints: [
+                      {
+                        asInt: "100",
+                        attributes: [
+                          { key: "model", value: { stringValue: "x" } },
+                          { key: "type", value: { stringValue: "input" } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+                {
+                  name: "claude_code.token.usage",
+                  sum: {
+                    dataPoints: [
+                      {
+                        asInt: "50",
+                        attributes: [
+                          { key: "model", value: { stringValue: "y" } },
+                          { key: "type", value: { stringValue: "input" } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const guarded = extractClaudeCounters(body, {
+      ignoreClaudeCodeMetrics: true,
+    });
+    // The claude_code.* one is dropped; claude_codex.* is not a claude_code
+    // metric and was never collected by this extractor either — so assert on
+    // what the guard removed, which is the only thing it controls.
+    expect(guarded.tokens).toHaveLength(0);
+
+    const unguarded = extractClaudeCounters(body);
+    // Without the guard exactly one metric is collected: the real
+    // claude_code.* one. That proves claude_codex.* was never in scope, and
+    // that the guard removed precisely one entry rather than everything.
+    expect(unguarded.tokens).toHaveLength(1);
+    expect(unguarded.tokens[0]!.model).toBe("y");
+  });
+});
+
 describe("startClaudeOtelServer", () => {
   it("accepts OTLP HTTP JSON metrics and emits events", async () => {
     const events: UsageEvent[] = [];

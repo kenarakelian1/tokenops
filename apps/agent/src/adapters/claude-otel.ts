@@ -32,6 +32,14 @@ export type ClaudeOtelServerOptions = {
   machineId: string;
   machineName: string;
   onEvent: (event: UsageEvent) => void;
+  /**
+   * Drop every `claude_code.*` metric at the receiver. Set when the
+   * session-JSONL adapter owns Claude Code capture, so the same turns are
+   * never ingested twice — a doubled ledger is the one failure this cutover
+   * cannot recover from. The OTLP receiver keeps working for every other
+   * emitter (Codex, Gemini, anything else pointed at it via a collector).
+   */
+  ignoreClaudeCodeMetrics?: boolean;
 };
 
 type AttrMap = Record<string, string>;
@@ -87,11 +95,27 @@ export type ParsedCostDelta = {
   deltaUsd: number;
 };
 
+export type ExtractCountersOptions = {
+  /**
+   * Drop every `claude_code.*` metric. Set when the session-JSONL adapter
+   * owns Claude Code capture.
+   *
+   * Both sources ingesting the same turns is the one failure this cutover
+   * cannot recover from — a gap is re-readable from disk, a doubled ledger is
+   * not. Enforcing it here rather than in config resolution means it is not a
+   * state a user can configure their way into.
+   */
+  ignoreClaudeCodeMetrics?: boolean;
+};
+
 /**
  * Parse OTLP ExportMetricsServiceRequest (JSON) and return cumulative counter values.
  * Caller tracks previous values to compute deltas.
  */
-export function extractClaudeCounters(body: unknown): {
+export function extractClaudeCounters(
+  body: unknown,
+  options: ExtractCountersOptions = {},
+): {
   tokens: Array<{ key: string; model: string; type: string; value: number }>;
   costs: Array<{ key: string; model: string; value: number }>;
 } {
@@ -119,6 +143,9 @@ export function extractClaudeCounters(body: unknown): {
       const metrics = (sm.metrics ?? []) as Array<Record<string, unknown>>;
       for (const m of metrics) {
         const name = String(m.name ?? "");
+        if (options.ignoreClaudeCodeMetrics && name.startsWith("claude_code.")) {
+          continue;
+        }
         const sum = (m.sum ?? m.gauge) as Record<string, unknown> | undefined;
         if (!sum) continue;
         const dps = (sum.dataPoints ??
@@ -166,11 +193,12 @@ export class ClaudeOtelState {
   constructor(
     private readonly machineId: string,
     private readonly machineName: string,
+    private readonly extractOptions: ExtractCountersOptions = {},
   ) {}
 
   /** Ingest one OTLP metrics export; returns zero or more usage events. */
   ingest(body: unknown): UsageEvent[] {
-    const { tokens, costs } = extractClaudeCounters(body);
+    const { tokens, costs } = extractClaudeCounters(body, this.extractOptions);
     const costDeltas = new Map<string, number>();
 
     for (const t of tokens) {
@@ -319,7 +347,15 @@ export async function startClaudeOtelServer(
   opts: ClaudeOtelServerOptions,
 ): Promise<http.Server> {
   const { host, port } = parseListen(opts.listen);
-  const state = new ClaudeOtelState(opts.machineId, opts.machineName);
+  const state = new ClaudeOtelState(opts.machineId, opts.machineName, {
+    ignoreClaudeCodeMetrics: opts.ignoreClaudeCodeMetrics,
+  });
+
+  if (opts.ignoreClaudeCodeMetrics) {
+    console.info(
+      "[tokenops] otel: claude_code.* metrics ignored — session JSONL adapter owns this source",
+    );
+  }
 
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && (req.url === "/health" || req.url === "/")) {
