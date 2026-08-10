@@ -109,6 +109,23 @@ export type ExtractCountersOptions = {
 };
 
 /**
+ * Whether this OTLP metric belongs to the source the session-JSONL adapter
+ * owns. Prefix-scoped on purpose: a substring match would also swallow an
+ * unrelated emitter whose name merely CONTAINS "claude_code".
+ *
+ * Exported so the scoping is directly testable — it cannot be observed
+ * through extractClaudeCounters, which only ever collects on exact name
+ * equality, so a wrongly-dropped foreign metric and a correctly-ignored one
+ * are indistinguishable in its output.
+ */
+export function shouldDropMetric(
+  name: string,
+  options: ExtractCountersOptions,
+): boolean {
+  return Boolean(options.ignoreClaudeCodeMetrics) && name.startsWith("claude_code.");
+}
+
+/**
  * Parse OTLP ExportMetricsServiceRequest (JSON) and return cumulative counter values.
  * Caller tracks previous values to compute deltas.
  */
@@ -143,7 +160,7 @@ export function extractClaudeCounters(
       const metrics = (sm.metrics ?? []) as Array<Record<string, unknown>>;
       for (const m of metrics) {
         const name = String(m.name ?? "");
-        if (options.ignoreClaudeCodeMetrics && name.startsWith("claude_code.")) {
+        if (shouldDropMetric(name, options)) {
           continue;
         }
         const sum = (m.sum ?? m.gauge) as Record<string, unknown> | undefined;
