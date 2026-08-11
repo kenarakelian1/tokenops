@@ -105,8 +105,8 @@ function isSonnet5IntroActive(now: Date): boolean {
  * claude-otel.ts), so pricing must carve them back out of the full-rate
  * portion rather than charging for them twice.
  */
-const CACHE_READ_PRICE_MULTIPLIER = 0.1;
-const CACHE_CREATION_PRICE_MULTIPLIER = 1.25;
+export const CACHE_READ_PRICE_MULTIPLIER = 0.1;
+export const CACHE_CREATION_PRICE_MULTIPLIER = 1.25;
 
 /**
  * Optional cache-token breakdown for `estimateCostUsd`. Both fields are
