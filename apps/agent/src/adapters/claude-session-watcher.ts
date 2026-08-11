@@ -157,36 +157,7 @@ export function watchClaudeSessions(
         // A file smaller than its recorded offset was rotated or replaced.
         let offset = prior ? prior.offset : 0;
         if (st.size < offset) offset = 0;
-        if (st.size === offset) {
-          // Idle: nothing new on disk since the last scan. createSessionParser
-          // deliberately never flushes a buffered message at a chunk/EOF
-          // boundary — a message split across two polls would otherwise
-          // flush with only its early blocks, reintroducing the output
-          // under-count buffering exists to fix. An IDLE file is the one
-          // case where that risk doesn't apply: nothing more is coming, so
-          // whatever is buffered is provably the complete message, not a
-          // truncated one. This is checked before the "no parser yet"
-          // shortcut below on purpose — a file with no entry in `parsers`
-          // has nothing buffered and is skipped for free either way, but
-          // one already being tracked may be sitting on exactly the final
-          // message this exists to recover.
-          //
-          // The flushed event's bytes were already durably offset-tracked
-          // on an earlier scan (this poll found no new bytes to persist),
-          // so a restart between this flush and the next successful one
-          // loses at most this one message — the same bound an in-flight
-          // restart already has, not a new exposure.
-          const trailing = parsers.get(path)?.flushPending();
-          if (trailing) {
-            if (emitted < ceiling) {
-              opts.onEvent(trailing);
-              emitted += 1;
-            } else {
-              skipped += 1;
-            }
-          }
-          continue;
-        }
+        if (st.size === offset) continue;
 
         // One parser per FILE, kept alive across scans — not per scan.
         //
