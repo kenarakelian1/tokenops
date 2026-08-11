@@ -111,14 +111,21 @@ describe("createSessionParser", () => {
     ).toBeLessThanOrEqual(ev.inputTokens);
   });
 
-  it("emits request grain with no content and no cost", () => {
+  it("emits request grain with no content, but with an estimated cost", () => {
     const p = parser();
     p.parseLine(userLine("hello"));
     const ev = p.parseLine(assistantLine())!;
     expect(ev.grain).toBe("request");
     expect(ev.hasContent).toBe(false);
     expect(ev.content).toBeUndefined();
-    expect(ev.costUsd).toBeNull();
+    // Deliberate change: this previously asserted `costUsd` was null, on the
+    // reasoning that a Claude Code subscription has no per-request charge.
+    // That made every Claude Code dollar read as $0, because ingest does
+    // `event.costUsd ?? 0` before rolling daily aggregates — and it was a
+    // regression against the OTEL receiver this adapter supersedes, which
+    // did price its events. See the "cost estimation" block below for the
+    // hand-derived figure.
+    expect(ev.costUsd).not.toBeNull();
     expect(ev.app).toBe("claude-code");
     expect(ev.provider).toBe("anthropic");
   });
@@ -463,5 +470,98 @@ describe("createSessionParser", () => {
     expect(r4).not.toBeNull();
     expect(r4!.eventId).not.toBe(r2!.eventId);
     expect(r4!.eventId).not.toBe(r3!.eventId);
+  });
+});
+
+describe("cost estimation", () => {
+  // Every figure below is derived by hand from packages/shared/src/pricing.ts,
+  // never read back from the implementation. claude-opus-5 is $5/$25 per MTok;
+  // cache reads bill at 0.1x the input rate, cache creations at 1.25x.
+  //
+  // The default fixture is the real measured turn: 2 raw input, 26,048 cache
+  // read, 28,890 cache creation, 229 output — folded inputTokens 54,940.
+  //
+  //   raw      2      / 1e6 * 5          = 0.0000100
+  //   read     26,048 / 1e6 * 5 * 0.10   = 0.0130240
+  //   create   28,890 / 1e6 * 5 * 1.25   = 0.1805625
+  //   output   229    / 1e6 * 25         = 0.0057250
+  //                                        ---------
+  //                                        0.1993215
+  const EXPECTED_USD = 0.1993215;
+
+  it("prices the event instead of leaving cost null", () => {
+    const p = parser();
+    p.parseLine(userLine("hello"));
+    const ev = p.parseLine(assistantLine())!;
+    // Ingest does `event.costUsd ?? 0`, so a null here reads as $0 spend
+    // across the whole dashboard — the regression this test exists to pin.
+    expect(ev.costUsd).not.toBeNull();
+    expect(ev.costUsd!).toBeCloseTo(EXPECTED_USD, 6);
+  });
+
+  it("carves cache tokens out at their own multipliers, not the full input rate", () => {
+    const p = parser();
+    p.parseLine(userLine("hello"));
+    const ev = p.parseLine(assistantLine())!;
+    // Charging all 54,940 input tokens at the full $5 rate would give
+    // 54_940/1e6*5 + 229/1e6*25 = 0.2804250 — 1.41x the correct figure on
+    // this turn, and ~7x corpus-wide where cache is 96.7% of input.
+    const fullRate = (54_940 / 1e6) * 5 + (229 / 1e6) * 25;
+    expect(ev.costUsd!).toBeLessThan(fullRate);
+    expect(ev.costUsd!).toBeCloseTo(EXPECTED_USD, 6);
+  });
+
+  it("prices a backfilled turn at ITS OWN date, not today's rate card", () => {
+    // claude-sonnet-5 carries an introductory $2/$10 rate that expires
+    // 2026-08-31. A 7-day backfill straddles that cutoff, so the same
+    // history must not cost a different amount depending on when the agent
+    // read it. 1M input at the intro rate = $2.00; at the standard $3 rate
+    // = $3.00.
+    const sonnet = (ts: string) =>
+      JSON.stringify({
+        type: "assistant",
+        uuid: `a-${ts}`,
+        requestId: "req_s",
+        sessionId: "s-1",
+        timestamp: ts,
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-5",
+          content: "ok",
+          usage: { input_tokens: 1_000_000, output_tokens: 0 },
+        },
+      });
+
+    // These lines carry no `message.id`, so the parser treats each as a
+    // complete standalone turn and emits it immediately rather than
+    // buffering — hence reading the return of parseLine, not flushPending.
+    const before = parser();
+    before.parseLine(userLine("hi"));
+    const intro = before.parseLine(sonnet("2026-08-15T00:00:00.000Z"))!;
+
+    const after = parser();
+    after.parseLine(userLine("hi"));
+    const standard = after.parseLine(sonnet("2026-09-15T00:00:00.000Z"))!;
+
+    expect(intro.costUsd!).toBeCloseTo(2, 6);
+    expect(standard.costUsd!).toBeCloseTo(3, 6);
+  });
+
+  it("leaves cost null for a model the price table cannot price", () => {
+    const p = parser();
+    p.parseLine(userLine("hi"));
+    const ev = p.parseLine(
+      assistantLine({
+        message: {
+          role: "assistant",
+          model: "some-unreleased-model-xyz",
+          content: "ok",
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
+      }),
+    )!;
+    // Null means "unknown", which materiality treats differently from zero.
+    // Guessing a price would be worse than admitting we don't have one.
+    expect(ev.costUsd).toBeNull();
   });
 });

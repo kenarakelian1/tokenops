@@ -1,5 +1,6 @@
 import {
   buildEventId,
+  estimateCostUsd,
   extractFeatures,
   getModelTier,
   type UsageEvent,
@@ -321,7 +322,46 @@ export function createSessionParser(
       model: turn.model,
       inputTokens: turn.inputTokens,
       outputTokens: turn.maxOutputTokens,
-      costUsd: null,
+      // A Claude Code subscription has no per-request charge, so there is no
+      // reported cost to carry — but leaving this null is NOT free. Ingest
+      // does `event.costUsd ?? 0` before rolling daily aggregates, so a null
+      // here makes every Claude Code dollar read as $0 across the dashboard,
+      // the budget check and the top-models sort. The OTEL receiver this
+      // adapter supersedes priced its events; shipping null would have been
+      // a regression, trading fabricated features for zero spend.
+      //
+      // Priced at the TURN'S OWN timestamp, not wall-clock now — unlike
+      // claude-otel.ts, which passes `undefined` because its events are
+      // always live counters. This adapter backfills up to
+      // `claude_code_backfill_days` of history, and estimateCostUsd is
+      // date-gated (the Claude Sonnet 5 introductory rate expires
+      // 2026-08-31), so pricing a week-old turn at today's rate card would
+      // make the same history cost a different amount depending on when the
+      // agent happened to read it.
+      //
+      // cacheReadTokens/cacheCreationTokens are already folded into
+      // inputTokens above; passing them again lets estimateCostUsd carve
+      // them back out at their own multipliers (0.1x read, 1.25x creation)
+      // rather than charging every token the full input rate. Measured
+      // across a week of real traffic, cache reads are 96.7% of input
+      // tokens and creations 3.3%, giving an effective input multiplier of
+      // 0.138 — so omitting the breakdown would overstate input cost by
+      // roughly 7x corpus-wide.
+      //
+      // Stays null for a model absent from the price table. That is the
+      // honest answer, and materiality already treats a null cost as
+      // "unknown" rather than "zero".
+      costUsd: estimateCostUsd(
+        turn.model,
+        turn.inputTokens,
+        turn.maxOutputTokens,
+        undefined,
+        new Date(turn.timestamp),
+        {
+          cacheReadTokens: turn.cacheReadTokens ?? null,
+          cacheCreationTokens: turn.cacheCreationTokens ?? null,
+        },
+      ),
       grain: "request",
       features,
       hasContent: false,
