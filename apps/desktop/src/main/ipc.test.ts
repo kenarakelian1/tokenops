@@ -20,11 +20,23 @@ vi.mock("@tokenops/agent", () => ({
   })),
   defaultOutboxPath: vi.fn(() => "C:/fake/.tokenops/outbox.db"),
   defaultTokenopsDir: vi.fn(() => "C:/fake/.tokenops"),
+  // The disk fallback openDashboard() uses when there is no live AgentHandle
+  // (main/ipc.ts) -- throws by default, matching the real loadConfig()
+  // throwing when ~/.tokenops/config.toml doesn't exist. Individual tests
+  // override this with mockReturnValue to exercise the fallback itself.
+  loadConfig: vi.fn(() => {
+    throw new Error("Config not found (test default -- no config.toml)");
+  }),
 }));
 
 import { ipcMain, shell } from "electron";
-import { readLocalStats, defaultOutboxPath, defaultTokenopsDir } from "@tokenops/agent";
-import { registerIpc } from "./ipc.js";
+import {
+  readLocalStats,
+  defaultOutboxPath,
+  defaultTokenopsDir,
+  loadConfig,
+} from "@tokenops/agent";
+import { registerIpc, openDashboard } from "./ipc.js";
 
 type Handler = (...args: unknown[]) => unknown;
 
@@ -77,6 +89,16 @@ function fakeAgent(over?: {
 }
 
 describe("registerIpc", () => {
+  // vi.clearAllMocks() (not vi.resetAllMocks()) on purpose: several mocks in
+  // the @tokenops/agent factory above are defined with a default
+  // implementation (readLocalStats's zero-value stats, defaultOutboxPath,
+  // defaultTokenopsDir) that other tests in this file rely on surviving
+  // across tests -- resetAllMocks() would wipe those back to "returns
+  // undefined" and break them. The tradeoff: clearAllMocks() does NOT reset
+  // a mockReturnValue/mockImplementation override a single test applies (see
+  // the "no config on disk" test below, which learned this the hard way) --
+  // any test that overrides loadConfig's implementation must explicitly
+  // restore it, not rely on this beforeEach to do so.
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.OPENAI_API_KEY;
@@ -194,9 +216,67 @@ describe("registerIpc", () => {
     expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
-  it("tokenops:open-dashboard does nothing when the agent has not started", () => {
+  it("tokenops:open-dashboard falls back to the URL from config on disk when there is no agent handle", async () => {
+    // The window is at its most dead-end exactly when there's no live
+    // AgentHandle (agent not started / failed / not running) -- that's
+    // precisely when "Open dashboard" needs to still work. loadConfig()
+    // reads the same ~/.tokenops/config.toml the agent itself would load.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: { url: "https://cloud.example", ingestToken: "" },
+    } as never);
     registerIpc(() => null);
+
     listenerFor("tokenops:open-dashboard")({});
+
+    await vi.waitFor(() => {
+      expect(shell.openExternal).toHaveBeenCalledWith("https://cloud.example");
+    });
+  });
+
+  it("tokenops:open-dashboard never forwards a malformed or non-http(s) cloud.url read from disk to the OS shell", async () => {
+    // Same file, same attack surface, whether it's read via a live agent's
+    // config or via this disk fallback -- the isSafeExternalUrl check must
+    // apply to both paths, not just the live-agent one.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: { url: "file:///C:/Windows/System32/calc.exe", ingestToken: "" },
+    } as never);
+    registerIpc(() => null);
+
+    await openDashboard(() => null);
+
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("tokenops:open-dashboard does nothing when there is no agent handle and no config on disk", async () => {
+    // Explicit reset, not a reliance on the mock module's default: the
+    // beforeEach above only calls vi.clearAllMocks(), which clears call
+    // history but does NOT clear a mockReturnValue set by an earlier test
+    // (vi.resetAllMocks() would, but see this file's beforeEach comment for
+    // why that's not used here). Without this line, this test would silently
+    // inherit the previous test's `file:///...` override instead of
+    // exercising the "no config.toml at all" path it's named for.
+    //
+    // What this test actually proves (verified by mutation, not assumed):
+    // deleting ipc.ts's whole `try { ... } catch { return; }` around
+    // `loadConfig()` -- letting the throw propagate out of openDashboard --
+    // turns this into an uncaught rejection and fails this test. Deleting
+    // *only* the bare `return;` inside the catch does NOT fail this test:
+    // when loadConfig() throws, the `url = loadConfig().cloud.url`
+    // assignment never completes, so `url` is still undefined either way,
+    // and the `if (url && isSafeExternalUrl(url))` guard below already
+    // no-ops on that. That `return;` is therefore redundant as currently
+    // written -- this test (and no behavioral test could) doesn't and can't
+    // distinguish its presence from its absence. What matters, and what this
+    // test actually guards, is the try/catch as a whole: without it, a
+    // missing config.toml (arguably the single most common trigger of the
+    // dead-end bug this whole fix addresses) would throw out of
+    // `ipcMain.on("tokenops:open-dashboard", ...)`'s fire-and-forget `void
+    // openDashboard(getAgent)` call with nothing to catch it.
+    vi.mocked(loadConfig).mockImplementation(() => {
+      throw new Error("Config not found (test -- no config.toml)");
+    });
+    registerIpc(() => null);
+    await openDashboard(() => null);
     expect(shell.openExternal).not.toHaveBeenCalled();
   });
 

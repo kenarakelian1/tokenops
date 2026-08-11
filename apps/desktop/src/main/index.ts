@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, type Tray } from "electron";
 import type { AgentHandle } from "@tokenops/agent";
 import { createMainWindow } from "./window.js";
 import { createTray, setTrayStatus } from "./tray.js";
-import { registerIpc } from "./ipc.js";
+import { registerIpc, openDashboard } from "./ipc.js";
 import { getQuitPhase, beginStopping, markStopped } from "./quit-state.js";
 
 let agent: AgentHandle | null = null;
@@ -124,6 +124,15 @@ if (!gotSingleInstanceLock) {
       onShow: () => {
         win?.show();
         win?.focus();
+      },
+      // Shares main/ipc.ts's openDashboard rather than duplicating the
+      // resolution/validation logic -- see that function's comment. `()
+      // => agent` is a closure for the same reason registerIpc's getAgent
+      // is: it must see the current value of the module-level `agent`
+      // variable, not whatever it was when the tray was created (which is
+      // always null -- the tray is built before startDesktopAgent resolves).
+      onOpenDashboard: () => {
+        void openDashboard(() => agent);
       },
       onQuit: () => {
         // No need to touch quit-state here: app.quit() below always emits

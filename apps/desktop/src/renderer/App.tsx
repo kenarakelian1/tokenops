@@ -110,7 +110,11 @@ export function App() {
     };
   }, []);
 
-  if (!stats || !status) {
+  // A genuine initial load: stats hasn't resolved even once yet. getStats()
+  // never throws (it reads the outbox file directly, see the poll comment
+  // above), so this is only ever the brief moment before that first
+  // resolution -- never an indefinite state.
+  if (!stats) {
     return (
       <div>
         <h1>TokenOps</h1>
@@ -125,29 +129,42 @@ export function App() {
     <div>
       <header>
         <h1>TokenOps</h1>
-        <p>
-          {status.machineName} — {status.cloudUrl}
-        </p>
+        {status ? (
+          <p>
+            {status.machineName} — {status.cloudUrl}
+          </p>
+        ) : (
+          // getStatus() throws until the agent has actually started (see the
+          // poll comment above) -- that's a real, recoverable state (agent
+          // still starting, or not running at all), not a loading spinner.
+          // Say what's known and stop there: don't guess a specific cause.
+          <p role="status">
+            Agent not running — the data below may be stale, and live status
+            is unavailable.
+          </p>
+        )}
       </header>
 
-      <section>
-        <h2>Capture</h2>
-        <ul>
-          <li>
-            Proxy: {status.proxyListen ?? "disabled"}
-            {status.proxyListen && !status.upstreamKeyPresent && (
-              <strong> — no upstream API key — upstream calls will fail auth</strong>
-            )}
-          </li>
-          <li>OTEL (Claude Code metrics): {status.otelListen ?? "disabled"}</li>
-          <li>
-            Claude Code JSONL: {status.claudeCodeWatching ? "watching" : "disabled"}
-          </li>
-        </ul>
-        {!status.ingestTokenPresent && (
-          <p>not shipping to the cloud — no ingest token</p>
-        )}
-      </section>
+      {status && (
+        <section>
+          <h2>Capture</h2>
+          <ul>
+            <li>
+              Proxy: {status.proxyListen ?? "disabled"}
+              {status.proxyListen && !status.upstreamKeyPresent && (
+                <strong> — no upstream API key — upstream calls will fail auth</strong>
+              )}
+            </li>
+            <li>OTEL (Claude Code metrics): {status.otelListen ?? "disabled"}</li>
+            <li>
+              Claude Code JSONL: {status.claudeCodeWatching ? "watching" : "disabled"}
+            </li>
+          </ul>
+          {!status.ingestTokenPresent && (
+            <p>not shipping to the cloud — no ingest token</p>
+          )}
+        </section>
+      )}
 
       <section aria-label="Today">
         <h2>Today</h2>

@@ -120,13 +120,53 @@
 <ul>
 <li><strong>Unified ledger</strong> — tokens and <strong>estimated</strong> USD by time, machine, app, model, and source</li>
 <li><strong>Two capture paths</strong> — OpenAI-compatible local proxy + Claude Code session-file adapter (reads Claude Code&#39;s own <code>~/.claude/projects</code> transcripts, nothing to install)</li>
-<li><strong>Five rule-based recommendations, in two classes</strong> — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see <a href="#recommendation-rules">Recommendation rules</a></li>
+<li><strong>Five rule-based recommendations, in two classes</strong> — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see <a href="#recommendation-rules">Recommendation rules</a>. <strong>Four of the five do not fire on real Claude Code usage</strong> — see <a href="#what-works-today">What works today</a> before relying on them</li>
 <li><strong>Privacy controls</strong> — metadata always; raw content optional (<code>off</code> / <code>local</code> / <code>cloud_ttl</code>)</li>
 <li><strong>Self-hostable</strong> — MIT license, Docker Compose, Railway-ready</li>
 </ul>
 <blockquote>
 <p>Money in the UI is always labeled <strong>estimated</strong>. Provider API keys never leave your machine.</p>
 </blockquote>
+<h2 id="what-works-today">What works today</h2>
+<p>Being straight about it, because the honest answer is more useful than the pitch:</p>
+<p><strong>Works.</strong> The ledger — capture, storage, and a dashboard showing tokens and estimated spend by time, machine, app, model and source. The OpenAI-compatible proxy. Privacy: features are derived on your machine, and prompt text never leaves it unless you explicitly opt in.</p>
+<p><strong>Does not work yet: the recommendations, on Claude Code.</strong> Four of the five efficiency rules cannot meaningfully fire against real coding-agent usage. This isn&#39;t a bug — the rules encode advice written for API traffic (&quot;use a cheaper model&quot;, &quot;send excerpts not whole files&quot;, &quot;trim your history&quot;), and a coding agent breaks every one of those assumptions.</p>
+<p>I measured a week of my own usage — 13,682 API responses — to check:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Measured</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Raw, uncached input</td>
+<td><strong>0.0%</strong> of the bill</td>
+</tr>
+<tr>
+<td>Cache reads</td>
+<td>70.3% of cost (96.7% of tokens, at 0.1×)</td>
+</tr>
+<tr>
+<td>Cache creation</td>
+<td><strong>29.7%</strong> of cost (3.3% of tokens, at 1.25×)</td>
+</tr>
+<tr>
+<td>Context per response</td>
+<td>p50 <strong>233,438</strong> tokens, p90 721,478</td>
+</tr>
+<tr>
+<td>Subagent share</td>
+<td><strong>32.3%</strong> of responses</td>
+</tr>
+<tr>
+<td>Cache-read ratio</td>
+<td>p50 <strong>0.997</strong></td>
+</tr>
+</tbody></table>
+<p>So <code>full_document_io</code> warns against pasting documents when raw input is 0.0% of the bill; <code>cache_efficiency</code> triggers below a 0.50 read ratio against a measured median of 0.997; <code>frontier_trivial</code> caps at 200 tokens against a 233k median. Only <code>frontier_share</code> transfers.</p>
+<p>Full method and numbers: <a href="docs/claude-code-cost-findings.md">What Claude Code usage actually costs</a>.</p>
+<p><strong>What&#39;s next.</strong> The levers those measurements point at — cache churn, absolute context size, and subagent attribution — are what the next rule set should measure. That work hasn&#39;t started. If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.</p>
 <h2 id="architecture">Architecture</h2>
 <pre><code>┌─────────────────────────────┐
 │  Claude Code / OpenAI SDK   │

@@ -8,11 +8,36 @@ Phase 1 includes:
 
 - **Unified ledger** — tokens and **estimated** USD by time, machine, app, model, and source
 - **Two capture paths** — OpenAI-compatible local proxy + Claude Code session-file adapter (reads Claude Code's own `~/.claude/projects` transcripts, nothing to install)
-- **Five rule-based recommendations, in two classes** — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see [Recommendation rules](#recommendation-rules)
+- **Five rule-based recommendations, in two classes** — three per-request rules (frontier-for-trivial, full-document I/O, context bloat) plus two window-aggregate rules (frontier-heavy token mix, low cache reuse); see [Recommendation rules](#recommendation-rules). **Four of the five do not fire on real Claude Code usage** — see [What works today](#what-works-today) before relying on them
 - **Privacy controls** — metadata always; raw content optional (`off` / `local` / `cloud_ttl`)
 - **Self-hostable** — MIT license, Docker Compose, Railway-ready
 
 > Money in the UI is always labeled **estimated**. Provider API keys never leave your machine.
+
+## What works today
+
+Being straight about it, because the honest answer is more useful than the pitch:
+
+**Works.** The ledger — capture, storage, and a dashboard showing tokens and estimated spend by time, machine, app, model and source. The OpenAI-compatible proxy. Privacy: features are derived on your machine, and prompt text never leaves it unless you explicitly opt in.
+
+**Does not work yet: the recommendations, on Claude Code.** Four of the five efficiency rules cannot meaningfully fire against real coding-agent usage. This isn't a bug — the rules encode advice written for API traffic ("use a cheaper model", "send excerpts not whole files", "trim your history"), and a coding agent breaks every one of those assumptions.
+
+I measured a week of my own usage — 13,682 API responses — to check:
+
+| | Measured |
+|---|---|
+| Raw, uncached input | **0.0%** of the bill |
+| Cache reads | 70.3% of cost (96.7% of tokens, at 0.1×) |
+| Cache creation | **29.7%** of cost (3.3% of tokens, at 1.25×) |
+| Context per response | p50 **233,438** tokens, p90 721,478 |
+| Subagent share | **32.3%** of responses |
+| Cache-read ratio | p50 **0.997** |
+
+So `full_document_io` warns against pasting documents when raw input is 0.0% of the bill; `cache_efficiency` triggers below a 0.50 read ratio against a measured median of 0.997; `frontier_trivial` caps at 200 tokens against a 233k median. Only `frontier_share` transfers.
+
+Full method and numbers: [What Claude Code usage actually costs](docs/claude-code-cost-findings.md).
+
+**What's next.** The levers those measurements point at — cache churn, absolute context size, and subagent attribution — are what the next rule set should measure. That work hasn't started. If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.
 
 ## Architecture
 
