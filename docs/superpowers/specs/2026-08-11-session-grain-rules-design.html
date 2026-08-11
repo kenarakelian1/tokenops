@@ -113,47 +113,45 @@
 </head>
 <body>
 <main>
-<h1>Session-grain recommendation rules — design</h1>
+<h1 id="session-grain-recommendation-rules-—-design">Session-grain recommendation rules — design</h1>
 <p><strong>Date:</strong> 2026-08-11
 <strong>Status:</strong> Approved design. Implementation not started.
 <strong>Supersedes the conclusion of:</strong> <code>docs/claude-code-cost-findings.md</code> (see &quot;Correction&quot; below)</p>
-<h2>Why this exists</h2>
-<p>TokenOps' five rules produce roughly <strong>24 findings from 14,546 turns</strong> of real
+<h2 id="why-this-exists">Why this exists</h2>
+<p>TokenOps&#39; five rules produce roughly <strong>24 findings from 14,546 turns</strong> of real
 Claude Code usage. That is not a tuning problem. The rules encode API-traffic
 advice — pick a cheaper model, send excerpts instead of whole documents, trim
 conversation history — and a coding agent violates all three premises. The
 adapter that feeds them is accurate; the rules are aimed at a workload that
 does not exist here.</p>
 <p>This design replaces them with rules fitted to the measured workload.</p>
-<h2>Correction to the prior findings</h2>
+<h2 id="correction-to-the-prior-findings">Correction to the prior findings</h2>
 <p><code>docs/claude-code-cost-findings.md</code> named cache creation &quot;the single largest
 addressable line item.&quot; Measured per session, that is wrong.</p>
 <table>
 <thead>
 <tr>
 <th>slice</th>
-<th style="text-align:right">share of consumption</th>
+<th align="right">share of consumption</th>
 </tr>
 </thead>
-<tbody>
-<tr>
+<tbody><tr>
 <td>top 1 session</td>
-<td style="text-align:right">19.6%</td>
+<td align="right">19.6%</td>
 </tr>
 <tr>
 <td>top 5 sessions</td>
-<td style="text-align:right">55.7%</td>
+<td align="right">55.7%</td>
 </tr>
 <tr>
 <td><strong>top 10 sessions</strong></td>
-<td style="text-align:right"><strong>80.1%</strong></td>
+<td align="right"><strong>80.1%</strong></td>
 </tr>
 <tr>
 <td>top 25 sessions</td>
-<td style="text-align:right">91.0%</td>
+<td align="right">91.0%</td>
 </tr>
-</tbody>
-</table>
+</tbody></table>
 <p>The ten sessions that make up 80% of consumption have cache-churn shares of
 13–33% — <strong>below</strong> the 45.4% median. The 90 sessions above 45% churn are
 together only <strong>8.2% of burn</strong>. Cache churn is 29.7% of the input bill in
@@ -164,38 +162,36 @@ would have optimized the part that does not hurt.</p>
 <thead>
 <tr>
 <th>context band</th>
-<th style="text-align:right">% of turns</th>
-<th style="text-align:right"><strong>% of all cache-read tokens</strong></th>
+<th align="right">% of turns</th>
+<th align="right"><strong>% of all cache-read tokens</strong></th>
 </tr>
 </thead>
-<tbody>
-<tr>
+<tbody><tr>
 <td>0–100k</td>
-<td style="text-align:right">21.3%</td>
-<td style="text-align:right">4.1%</td>
+<td align="right">21.3%</td>
+<td align="right">4.1%</td>
 </tr>
 <tr>
 <td>100–200k</td>
-<td style="text-align:right">21.9%</td>
-<td style="text-align:right">9.0%</td>
+<td align="right">21.9%</td>
+<td align="right">9.0%</td>
 </tr>
 <tr>
 <td>200–400k</td>
-<td style="text-align:right">18.6%</td>
-<td style="text-align:right">15.7%</td>
+<td align="right">18.6%</td>
+<td align="right">15.7%</td>
 </tr>
 <tr>
 <td>400–600k</td>
-<td style="text-align:right">17.1%</td>
-<td style="text-align:right">24.3%</td>
+<td align="right">17.1%</td>
+<td align="right">24.3%</td>
 </tr>
 <tr>
 <td><strong>600k+</strong></td>
-<td style="text-align:right"><strong>21.1%</strong></td>
-<td style="text-align:right"><strong>46.9%</strong></td>
+<td align="right"><strong>21.1%</strong></td>
+<td align="right"><strong>46.9%</strong></td>
 </tr>
-</tbody>
-</table>
+</tbody></table>
 <p>A fifth of turns consume nearly half of all cache reads. Holding context at
 300k would have cut cache-read tokens <strong>39.3%</strong>, and cache reads are 70.3% of
 the input bill. That is roughly 4× the entire churn opportunity.</p>
@@ -204,18 +200,18 @@ trailing 7 days as of 2026-08-11, 13,766 API responses deduplicated by
 <code>message.id</code>, 180 sessions of ≥5 turns. Consumption units are
 <code>creation×1.25 + read×0.10 + output×5.00</code>, the cache-aware effective-token
 weighting.</p>
-<h2>What the rules optimize</h2>
+<h2 id="what-the-rules-optimize">What the rules optimize</h2>
 <p>Rules compute in <strong>tokens</strong>. Currency is a rendering decision, not a rule
 decision: the same waste is one number in two currencies, and a subscription
-user's constraint is limit headroom while an API user's is dollars. Making the
+user&#39;s constraint is limit headroom while an API user&#39;s is dollars. Making the
 engine token-native keeps TokenOps useful to both without duplicating rules.</p>
 <p>Cards render <strong>tokens as the primary figure</strong> and <code>≈ $X API-equivalent</code> as
 secondary. There is deliberately no billing-mode setting: a toggle adds
 persistence, config surface, and a failure mode to buy a label change. It can
 be layered on later without touching the rules.</p>
-<h2>The rule set</h2>
-<h3><code>session_context_ceiling</code> — severity <code>warn</code></h3>
-<p>Fires when a session's turns above a target context size carried material
+<h2 id="the-rule-set">The rule set</h2>
+<h3 id="session_context_ceiling-—-severity-warn"><code>session_context_ceiling</code> — severity <code>warn</code></h3>
+<p>Fires when a session&#39;s turns above a target context size carried material
 cache-read tokens.</p>
 <p><strong>Constants</strong> (exported from the rule module):</p>
 <pre><code class="language-ts">export const SESSION_CONTEXT_TARGET_TOKENS = 300_000;  // a CONTEXT_BAND_EDGES value
@@ -248,7 +244,7 @@ equal on both sides so they cancel out of the subtraction):</p>
 <code>(readsAbove − target × turnsAbove) × cacheReadPrice</code>.</p>
 <p><strong>Known conservatism.</strong> A turn in the 300–400k band has context ≥ 300k but
 cache <em>reads</em> slightly below it, since part of its input is cache creation.
-<code>target × turnsAbove</code> can therefore marginally exceed that band's actual
+<code>target × turnsAbove</code> can therefore marginally exceed that band&#39;s actual
 reads. The effect pushes savings <strong>down</strong>, and <code>priceCounterfactual</code> already
 clamps at zero. Understating is the correct direction for a bound; do not
 &quot;fix&quot; it by inflating the counterfactual.</p>
@@ -259,8 +255,8 @@ leading &quot;Assumes&quot;):</p>
 <p>This is the claim a user may legitimately dispute — resetting costs rework —
 and it belongs on the card. The rule reports a <strong>bound, not a promise</strong>: it
 states what the above-target turns cost, not that resetting is free.</p>
-<h3><code>session_cache_churn</code> — severity <code>info</code></h3>
-<p>Fires when cache creation dominates a session's input cost, meaning the cached
+<h3 id="session_cache_churn-—-severity-info"><code>session_cache_churn</code> — severity <code>info</code></h3>
+<p>Fires when cache creation dominates a session&#39;s input cost, meaning the cached
 prefix keeps invalidating.</p>
 <p><strong>Constants:</strong></p>
 <pre><code class="language-ts">export const SESSION_CHURN_MIN_COST_SHARE = 0.45;
@@ -286,7 +282,7 @@ Counterfactual: { inputTokens: T, cacheReadTokens: T - T*0.026, cacheCreationTok
 </code></pre>
 <p><strong>Both rules require <code>cacheReadTokens !== null</code> and <code>cacheCreationTokens !== null</code>.</strong> <code>null</code> means no cache breakdown was ever recorded, and a rule that
 treats it as <code>0</code> produces a confidently wrong finding. Stay silent instead.</p>
-<h3>Deliberately not built</h3>
+<h3 id="deliberately-not-built">Deliberately not built</h3>
 <ul>
 <li><strong>A concentration rule.</strong> Cards already sort by savings, so
 <code>session_context_ceiling</code> surfaces the top-burn sessions on its own. A
@@ -298,7 +294,7 @@ usually wrong advice. This is reporting, not a recommendation.</li>
 pain and worth building, but it is a forecasting subsystem rather than a
 rule. Separate spec.</li>
 </ul>
-<h3>Retirement</h3>
+<h3 id="retirement">Retirement</h3>
 <p><code>cache_efficiency</code> is retired, not retargeted. Its gate (cache-read ratio
 below 0.50) cannot fire on this workload — the measured median is 0.997.
 Reusing its id for churn would silently change what already-stored historical
@@ -308,7 +304,7 @@ transfers, and 63% <code>claude-opus-5</code> is a real mix question.</p>
 <p><code>frontier_trivial</code>, <code>full_document_io</code>, and <code>context_bloat</code> are left in place
 for now: they are correct for API-style traffic, which other users may have.
 They simply stay silent here.</p>
-<h2>Data shape</h2>
+<h2 id="data-shape">Data shape</h2>
 <p><code>SessionRollup</code> is a sibling of <code>AggregateWindow</code>, not a replacement.</p>
 <pre><code class="language-ts">/** Band edges owned by the rules module; the rollup builder imports them. */
 export const CONTEXT_BAND_EDGES = [0, 100_000, 200_000, 300_000, 400_000, 600_000] as const;
@@ -339,13 +335,13 @@ history.</p>
 <p>The <code>number | null</code> discipline is carried over verbatim from
 <code>ModelWindowTotals</code>: summing <code>null</code> as <code>0</code> collapses &quot;unknown&quot; into &quot;checked,
 and zero&quot;, which produces a wrong finding in either direction.</p>
-<h2>Wiring</h2>
+<h2 id="wiring">Wiring</h2>
 <p><strong>Runner.</strong> <code>runSessionRules(rollup, now, priceOverrides)</code> in
 <code>packages/shared/src/rules/session/index.ts</code>, hand-wired the same way
 <code>runAggregateRules</code> is, reusing <code>priceFinding</code> and <code>isMaterial</code> so savings
 assembly stays in exactly one place.</p>
 <p><strong>Job.</strong> Dedupe key is <code>`${ruleId}|${sessionId}`</code> — a session is a
-naturally stable key, unlike the aggregate job's window start, which advances
+naturally stable key, unlike the aggregate job&#39;s window start, which advances
 daily and required superseding to avoid minting a card per day. Two
 differences from the aggregate job:</p>
 <ul>
@@ -360,11 +356,11 @@ larger savings — cannot crowd churn cards out of the panel entirely.</li>
 silent truncation reads as full coverage.</li>
 </ul>
 <p><strong>Unattributed consumption.</strong> Sidechain turns omit <code>sessionId</code> by the
-adapter's design, so subagent consumption — 11.2% of the weighted total — rolls
+adapter&#39;s design, so subagent consumption — 11.2% of the weighted total — rolls
 into no session. Session rollups undercount by approximately that much. The
 rollup set carries an explicit unattributed total so the panel can state it,
 rather than presenting 89% of usage as 100%.</p>
-<h2>Error handling</h2>
+<h2 id="error-handling">Error handling</h2>
 <ul>
 <li>A rollup with <code>turnCount &lt; SESSION_MIN_TURNS</code> produces no finding. Short
 sessions have no reset decision to make.</li>
@@ -376,14 +372,14 @@ floor, as it already does elsewhere.</li>
 programming error in the rollup builder, not user data: throw rather than
 silently truncate.</li>
 </ul>
-<h2>Testing</h2>
+<h2 id="testing">Testing</h2>
 <p>Per-rule unit tests: band arithmetic, <code>null</code> vs <code>0</code>, materiality floors,
 threshold edges on both sides, and the pinned-assumption-string test the
 existing five rules already have.</p>
 <p><strong>Fixtures come from real sessions, scrubbed</strong> via the existing
 <code>scrub-fixture.py</code>, never hand-written from this spec. Hand-written fixtures
 are what allowed a 2.109× double-count to sit underneath 358 green tests: every
-fixture encoded the spec's assumptions rather than the data's actual shape.</p>
+fixture encoded the spec&#39;s assumptions rather than the data&#39;s actual shape.</p>
 <p><strong>The acceptance gate is a back-test replay over real history, and it is a
 requirement rather than a nice-to-have.</strong> The rule set is done when the replay
 produces a bounded, sane finding count — on the order of 10–30 cards covering
