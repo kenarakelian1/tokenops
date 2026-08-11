@@ -228,6 +228,39 @@ type TotalRow = {
 };
 
 /**
+ * SQL condition: this row belongs to an actual session. An empty string
+ * counts as "no session" the same as NULL. assembleSessionRollups below
+ * already drops falsy sessionIds (`if (!row.sessionId) continue`), so a
+ * scope that admitted `""` here would let those turns disappear from BOTH
+ * the rollup and sessionCoverage's unattributed figures — exactly the
+ * blind spot sessionCoverage exists to close. sessionId is
+ * `z.string().optional()` with no `.min(1)` on ingest
+ * (packages/shared/src/schema/event.ts), so an empty string is a reachable
+ * client input, not a hypothetical. Shared by sessionRollups and
+ * sessionCoverage so the two queries cannot drift on what counts as "has a
+ * session".
+ */
+function hasSessionIdSql() {
+  return and(isNotNull(usageEvents.sessionId), ne(usageEvents.sessionId, ""));
+}
+
+/** The complement of hasSessionIdSql — rows with no real session. */
+function noSessionIdSql() {
+  return or(isNull(usageEvents.sessionId), eq(usageEvents.sessionId, ""));
+}
+
+/**
+ * The in-memory-repo equivalent of hasSessionIdSql/noSessionIdSql: true iff
+ * this event belongs to an actual session. A type guard so callers get a
+ * narrowed `string` sessionId back, not `string | null`.
+ */
+function hasSessionId(
+  sessionId: string | null | undefined,
+): sessionId is string {
+  return sessionId != null && sessionId !== "";
+}
+
+/**
  * Fold per-(session, band) and per-(session, model) rows into one rollup per
  * session. Shared by both repo implementations so the memory repo used in
  * tests and the Drizzle repo the server runs cannot diverge in shape.
@@ -516,7 +549,7 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         eq(usageEvents.userId, userId),
         gte(usageEvents.timestamp, since),
         lt(usageEvents.timestamp, until),
-        isNotNull(usageEvents.sessionId),
+        hasSessionIdSql(),
         or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
       );
 
@@ -571,7 +604,7 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
       const [sessions] = await db
         .select({ n: sql<string>`COUNT(DISTINCT ${usageEvents.sessionId})` })
         .from(usageEvents)
-        .where(and(inWindow, isNotNull(usageEvents.sessionId)));
+        .where(and(inWindow, hasSessionIdSql()));
 
       const [orphans] = await db
         .select({
@@ -579,7 +612,7 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
           inputTokens: sql<string>`COALESCE(SUM(${usageEvents.inputTokens}), 0)`,
         })
         .from(usageEvents)
-        .where(and(inWindow, isNull(usageEvents.sessionId)));
+        .where(and(inWindow, noSessionIdSql()));
 
       return {
         sessionsConsidered: Number(sessions?.n ?? 0),
@@ -966,16 +999,18 @@ export function createMemoryEventsRepo(): EventsRepo {
       const since = new Date(sinceIso);
       const until = new Date(untilIso);
 
-      // Only request-grain events with a sessionId participate — same scope
-      // as the Drizzle implementation's `scope`. `e.grain !== "aggregate"`
-      // is correct here (unlike the raw SQL `<>`) because both `null` and
-      // `undefined` compare `!== "aggregate"` as true in JS.
+      // Only request-grain events with a real session participate — same
+      // scope as the Drizzle implementation's `scope`. `e.grain !==
+      // "aggregate"` is correct here (unlike the raw SQL `<>`) because both
+      // `null` and `undefined` compare `!== "aggregate"` as true in JS.
+      // `hasSessionId` treats "" the same as null/undefined — see its doc
+      // comment for why an empty string must not slip through here.
       const scoped = [...eventMap.values()].filter(
         (e) =>
           e.userId === userId &&
           e.timestamp >= since &&
           e.timestamp < until &&
-          e.sessionId != null &&
+          hasSessionId(e.sessionId) &&
           e.grain !== "aggregate",
       );
 
@@ -1075,7 +1110,7 @@ export function createMemoryEventsRepo(): EventsRepo {
       let unattributedTurns = 0;
       let unattributedInputTokens = 0;
       for (const e of inWindow) {
-        if (e.sessionId != null) {
+        if (hasSessionId(e.sessionId)) {
           sessionIds.add(e.sessionId);
         } else {
           unattributedTurns += 1;

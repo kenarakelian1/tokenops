@@ -561,4 +561,34 @@ describe("sessionCoverage", () => {
     expect(coverage.unattributedTurns).toBe(2);
     expect(coverage.unattributedInputTokens).toBe(1_000_000);
   });
+
+  it("treats an empty-string sessionId as no session, so its tokens land in the unattributed figures instead of vanishing", async () => {
+    // Fix round 1 regression: assembleSessionRollups already drops falsy
+    // sessionIds (including ""), but the scope predicates admitted "" as
+    // if it were a real session, and sessionCoverage counted it as a
+    // "considered session" rather than unattributed. An event with
+    // sessionId: "" therefore produced no rollup AND was not counted as
+    // unattributed either — its tokens were in no rollup and no
+    // unattributed figure, the exact blind spot sessionCoverage exists to
+    // close. sessionId is optional with no .min(1) on ingest, so "" is a
+    // reachable client input, not a hypothetical.
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-g", model: "claude-opus-5", inputTokens: 100_000, outputTokens: 100, cacheReadTokens: 90_000, cacheCreationTokens: 100 });
+    await insertEvent(repo, { userId: "u1", sessionId: "", model: "claude-opus-5", inputTokens: 500_000, outputTokens: 100, cacheReadTokens: 490_000, cacheCreationTokens: 100 });
+
+    // The empty-string turn must not produce a rollup of its own, and must
+    // not silently merge into "sess-g" either.
+    const rollups = await repo.sessionRollups("u1", SINCE, UNTIL);
+    expect(rollups).toHaveLength(1);
+    expect(rollups[0]!.sessionId).toBe("sess-g");
+    expect(rollups[0]!.inputTokens).toBe(100_000);
+
+    // sessionsConsidered must be unaffected by the empty-string row — it is
+    // not a second session — while its turn and tokens must show up as
+    // unattributed, same as a row with no sessionId at all.
+    const coverage = await repo.sessionCoverage("u1", SINCE, UNTIL);
+    expect(coverage.sessionsConsidered).toBe(1);
+    expect(coverage.unattributedTurns).toBe(1);
+    expect(coverage.unattributedInputTokens).toBe(500_000);
+  });
 });
