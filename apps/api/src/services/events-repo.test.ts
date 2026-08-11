@@ -1,6 +1,65 @@
 import { describe, it, expect } from "vitest";
-import type { UsageEvent } from "@tokenops/shared";
-import { createMemoryEventsRepo } from "./events-repo.js";
+import {
+  CONTEXT_BAND_EDGES,
+  type EventGrain,
+  type UsageEvent,
+} from "@tokenops/shared";
+import { createMemoryEventsRepo, type EventsRepo } from "./events-repo.js";
+
+// Window bounds for the sessionRollups/sessionCoverage tests below — wide
+// enough to contain every generated timestamp with room either side.
+const SINCE = "2026-07-31T00:00:00.000Z";
+const UNTIL = "2026-08-10T00:00:00.000Z";
+const SESSION_TEST_BASE_MS = Date.parse("2026-08-01T00:00:00.000Z");
+
+function makeMemoryRepo(): EventsRepo {
+  return createMemoryEventsRepo();
+}
+
+let sessionTestEventSeq = 0;
+
+/**
+ * Insert one request-grain (unless overridden) usage event for the
+ * sessionRollups/sessionCoverage tests. Mirrors the shape the rest of this
+ * file already builds by hand, just parameterized to the fields those tests
+ * vary: model, token counts, sessionId, and grain.
+ */
+async function insertEvent(
+  repo: EventsRepo,
+  opts: {
+    userId: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    sessionId?: string;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    grain?: EventGrain;
+  },
+): Promise<void> {
+  sessionTestEventSeq += 1;
+  const event: UsageEvent = {
+    eventId: `evt-session-test-${sessionTestEventSeq}`,
+    timestamp: new Date(
+      SESSION_TEST_BASE_MS + sessionTestEventSeq * 1_000,
+    ).toISOString(),
+    machineId: "machine-1",
+    machineName: "ci-runner",
+    app: "claude-code",
+    provider: "anthropic",
+    model: opts.model,
+    inputTokens: opts.inputTokens,
+    outputTokens: opts.outputTokens,
+    costUsd: null,
+    grain: opts.grain,
+    features: { modelTier: "unknown" },
+    hasContent: false,
+    cacheReadTokens: opts.cacheReadTokens,
+    cacheCreationTokens: opts.cacheCreationTokens,
+    sessionId: opts.sessionId,
+  };
+  await repo.insertEventIfNew(opts.userId, event);
+}
 
 describe("events-repo", () => {
   it("does not let one user's heartbeat mutate another user's machine row", async () => {
@@ -416,5 +475,90 @@ describe("events-repo", () => {
       "cache_efficiency",
       "frontier_trivial",
     ]);
+  });
+});
+
+describe("sessionRollups", () => {
+  it("buckets each turn into the band its context size falls in", async () => {
+    const repo = makeMemoryRepo();
+    const base = {
+      userId: "u1",
+      model: "claude-opus-5",
+      outputTokens: 1_000,
+      sessionId: "sess-a",
+    };
+    // inputTokens IS the context size: cache tokens are folded into it.
+    await insertEvent(repo, { ...base, inputTokens: 50_000, cacheReadTokens: 40_000, cacheCreationTokens: 1_000 });
+    await insertEvent(repo, { ...base, inputTokens: 350_000, cacheReadTokens: 340_000, cacheCreationTokens: 2_000 });
+    await insertEvent(repo, { ...base, inputTokens: 700_000, cacheReadTokens: 690_000, cacheCreationTokens: 3_000 });
+
+    const [rollup] = await repo.sessionRollups("u1", SINCE, UNTIL);
+    expect(rollup!.sessionId).toBe("sess-a");
+    expect(rollup!.turnCount).toBe(3);
+    // bands: 50k -> 0, 350k -> 3, 700k -> 5
+    expect(rollup!.turnsByContextBand).toEqual([1, 0, 0, 1, 0, 1]);
+    expect(rollup!.cacheReadByContextBand).toEqual([40_000, 0, 0, 340_000, 0, 690_000]);
+    expect(rollup!.cacheReadTokens).toBe(1_070_000);
+    expect(rollup!.cacheCreationTokens).toBe(6_000);
+    expect(rollup!.inputTokens).toBe(1_100_000);
+  });
+
+  it("reports null cache totals when ANY turn in the session lacks a breakdown", async () => {
+    // Summing a missing breakdown as 0 would turn "we don't know" into "we
+    // checked and it's zero", which both session rules act on differently.
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-b", model: "claude-opus-5", inputTokens: 500_000, outputTokens: 1_000, cacheReadTokens: 490_000, cacheCreationTokens: 1_000 });
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-b", model: "claude-opus-5", inputTokens: 500_000, outputTokens: 1_000 });
+
+    const [rollup] = await repo.sessionRollups("u1", SINCE, UNTIL);
+    expect(rollup!.cacheReadTokens).toBeNull();
+    expect(rollup!.cacheCreationTokens).toBeNull();
+  });
+
+  it("picks the dominant model by input tokens", async () => {
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-c", model: "claude-haiku-4-5", inputTokens: 100_000, outputTokens: 100, cacheReadTokens: 90_000, cacheCreationTokens: 100 });
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-c", model: "claude-opus-5", inputTokens: 900_000, outputTokens: 100, cacheReadTokens: 890_000, cacheCreationTokens: 100 });
+
+    const [rollup] = await repo.sessionRollups("u1", SINCE, UNTIL);
+    expect(rollup!.model).toBe("claude-opus-5");
+    expect(rollup!.modelTier).toBe("frontier");
+  });
+
+  it("emits band arrays of exactly the published length", async () => {
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-d", model: "claude-opus-5", inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 9_000, cacheCreationTokens: 100 });
+    const [rollup] = await repo.sessionRollups("u1", SINCE, UNTIL);
+    expect(rollup!.turnsByContextBand).toHaveLength(CONTEXT_BAND_EDGES.length);
+    expect(rollup!.cacheReadByContextBand).toHaveLength(CONTEXT_BAND_EDGES.length);
+  });
+
+  it("excludes events with no sessionId", async () => {
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", model: "claude-opus-5", inputTokens: 500_000, outputTokens: 100, cacheReadTokens: 490_000, cacheCreationTokens: 100 });
+    expect(await repo.sessionRollups("u1", SINCE, UNTIL)).toEqual([]);
+  });
+
+  it("excludes aggregate-grain events, which have no single request inside them", async () => {
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-e", grain: "aggregate", model: "claude-opus-5", inputTokens: 5_000_000, outputTokens: 100, cacheReadTokens: 4_900_000, cacheCreationTokens: 100 });
+    expect(await repo.sessionRollups("u1", SINCE, UNTIL)).toEqual([]);
+  });
+});
+
+describe("sessionCoverage", () => {
+  it("counts sessions and reports what no session claims", async () => {
+    // Sidechain turns carry no sessionId by the adapter's design, so their
+    // consumption belongs to no rollup. The panel must be able to say so
+    // rather than presenting partial coverage as total.
+    const repo = makeMemoryRepo();
+    await insertEvent(repo, { userId: "u1", sessionId: "sess-f", model: "claude-opus-5", inputTokens: 100_000, outputTokens: 100, cacheReadTokens: 90_000, cacheCreationTokens: 100 });
+    await insertEvent(repo, { userId: "u1", model: "claude-opus-5", inputTokens: 400_000, outputTokens: 100, cacheReadTokens: 390_000, cacheCreationTokens: 100 });
+    await insertEvent(repo, { userId: "u1", model: "claude-opus-5", inputTokens: 600_000, outputTokens: 100, cacheReadTokens: 590_000, cacheCreationTokens: 100 });
+
+    const coverage = await repo.sessionCoverage("u1", SINCE, UNTIL);
+    expect(coverage.sessionsConsidered).toBe(1);
+    expect(coverage.unattributedTurns).toBe(2);
+    expect(coverage.unattributedInputTokens).toBe(1_000_000);
   });
 });

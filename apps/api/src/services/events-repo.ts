@@ -1,9 +1,24 @@
-import { and, desc, eq, gte, lt, lte, ne, sql } from "drizzle-orm";
 import {
+  and,
+  desc,
+  eq,
+  gte,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  CONTEXT_BAND_EDGES,
+  contextBandIndex,
   getModelTier,
   type Counterfactual,
   type EventGrain,
   type ModelWindowTotals,
+  type SessionRollup,
   type UsageEvent,
   type UsageFeatures,
 } from "@tokenops/shared";
@@ -33,6 +48,12 @@ export type EventListFilters = {
 export type AggregateListFilters = {
   from?: string;
   to?: string;
+};
+
+export type SessionCoverage = {
+  sessionsConsidered: number;
+  unattributedTurns: number;
+  unattributedInputTokens: number;
 };
 
 export type RecommendationInsert = {
@@ -99,6 +120,34 @@ export type EventsRepo = {
     sinceIso: string,
     untilIso: string,
   ): Promise<ModelWindowTotals[]>;
+  /**
+   * Per-session totals plus a context-size histogram, for the session rules.
+   *
+   * Only request-grain events with a sessionId participate. Aggregate-grain
+   * rows are time-bucketed sums with no single request inside them, so they
+   * have no context size to band. Events with no sessionId (sidechain /
+   * subagent turns, by the adapter's design) belong to no session — see
+   * sessionCoverage, which reports what they add up to.
+   *
+   * cacheReadTokens/cacheCreationTokens are NULL for the whole session if
+   * ANY turn in it lacks a breakdown, same rule as modelWindowTotals: a
+   * COALESCE-to-0 sum would turn "unknown" into "checked, and zero".
+   */
+  sessionRollups(
+    userId: string,
+    sinceIso: string,
+    untilIso: string,
+  ): Promise<SessionRollup[]>;
+  /**
+   * How much of the window the session rollups actually cover. Lets the UI
+   * state its own blind spot instead of presenting partial coverage as
+   * total.
+   */
+  sessionCoverage(
+    userId: string,
+    sinceIso: string,
+    untilIso: string,
+  ): Promise<SessionCoverage>;
   upsertRecommendation(rec: RecommendationInsert): Promise<void>;
   /**
    * Delete every OPEN recommendation for (userId, ruleId) whose dedupeKey
@@ -163,6 +212,103 @@ export function rowToUsageEvent(row: UsageEventRow): UsageEvent {
     cacheReadTokens: row.cacheReadTokens ?? undefined,
     cacheCreationTokens: row.cacheCreationTokens ?? undefined,
   };
+}
+
+type BandRow = { sessionId: string | null; band: number; turns: string | number; reads: string | number };
+type TotalRow = {
+  sessionId: string | null;
+  model: string;
+  start: string | Date;
+  end: string | Date;
+  turns: string | number;
+  inputTokens: string | number;
+  outputTokens: string | number;
+  cacheReadTokens: string | number | null;
+  cacheCreationTokens: string | number | null;
+};
+
+/**
+ * Fold per-(session, band) and per-(session, model) rows into one rollup per
+ * session. Shared by both repo implementations so the memory repo used in
+ * tests and the Drizzle repo the server runs cannot diverge in shape.
+ *
+ * The dominant model is the one with the most input tokens in the session,
+ * because that is what the counterfactual is priced at — a session that is
+ * 90% Opus and 10% Haiku must not be priced as Haiku.
+ */
+function assembleSessionRollups(
+  bandRows: BandRow[],
+  totalRows: TotalRow[],
+): SessionRollup[] {
+  const n = (v: string | number | null | undefined): number => Number(v ?? 0);
+  const out = new Map<string, SessionRollup>();
+  /**
+   * sessionId -> the input-token count of the model currently holding the
+   * "dominant" slot. Tracked separately because `rollup.inputTokens` is a
+   * running SUM across models and so cannot be compared against a single
+   * model's slice once more than one has been folded in.
+   */
+  const dominantInput = new Map<string, number>();
+
+  for (const row of totalRows) {
+    if (!row.sessionId) continue;
+    const existing = out.get(row.sessionId);
+    const inputTokens = n(row.inputTokens);
+    const start = new Date(row.start).toISOString();
+    const end = new Date(row.end).toISOString();
+
+    if (!existing) {
+      dominantInput.set(row.sessionId, inputTokens);
+      out.set(row.sessionId, {
+        sessionId: row.sessionId,
+        start,
+        end,
+        turnCount: n(row.turns),
+        model: row.model,
+        modelTier: getModelTier(row.model),
+        inputTokens,
+        outputTokens: n(row.outputTokens),
+        cacheReadTokens: row.cacheReadTokens === null ? null : n(row.cacheReadTokens),
+        cacheCreationTokens: row.cacheCreationTokens === null ? null : n(row.cacheCreationTokens),
+        turnsByContextBand: new Array(CONTEXT_BAND_EDGES.length).fill(0),
+        cacheReadByContextBand: new Array(CONTEXT_BAND_EDGES.length).fill(0),
+      });
+      continue;
+    }
+
+    // A model slice with MORE input tokens than the incumbent takes over as
+    // the session's dominant model.
+    if (inputTokens > (dominantInput.get(row.sessionId) ?? 0)) {
+      dominantInput.set(row.sessionId, inputTokens);
+      existing.model = row.model;
+      existing.modelTier = getModelTier(row.model);
+    }
+    existing.turnCount += n(row.turns);
+    existing.inputTokens += inputTokens;
+    existing.outputTokens += n(row.outputTokens);
+    // null wins: if any model-slice of the session lacks a breakdown, the
+    // session as a whole has an unknown one.
+    existing.cacheReadTokens =
+      row.cacheReadTokens === null || existing.cacheReadTokens === null
+        ? null
+        : existing.cacheReadTokens + n(row.cacheReadTokens);
+    existing.cacheCreationTokens =
+      row.cacheCreationTokens === null || existing.cacheCreationTokens === null
+        ? null
+        : existing.cacheCreationTokens + n(row.cacheCreationTokens);
+    if (start < existing.start) existing.start = start;
+    if (end > existing.end) existing.end = end;
+  }
+
+  for (const row of bandRows) {
+    if (!row.sessionId) continue;
+    const rollup = out.get(row.sessionId);
+    if (!rollup) continue;
+    rollup.turnsByContextBand[row.band] += n(row.turns);
+    rollup.cacheReadByContextBand[row.band] += n(row.reads);
+  }
+
+  return [...out.values()];
 }
 
 /** Drizzle-backed EventsRepo for production. */
@@ -357,6 +503,89 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
           r.cacheCreationTokens == null ? null : Number(r.cacheCreationTokens),
         costUsd: r.costUsd == null ? null : Number(r.costUsd),
       }));
+    },
+
+    async sessionRollups(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+      // grain is nullable, and `grain <> 'aggregate'` evaluates to NULL (so
+      // the row is EXCLUDED) wherever grain is NULL, which is the common
+      // case for ordinary request events. Without the `or(isNull(...), ...)`
+      // branch this filter would silently drop nearly every event.
+      const scope = and(
+        eq(usageEvents.userId, userId),
+        gte(usageEvents.timestamp, since),
+        lt(usageEvents.timestamp, until),
+        isNotNull(usageEvents.sessionId),
+        or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
+      );
+
+      // Band index derived from CONTEXT_BAND_EDGES rather than written out,
+      // so the SQL cannot drift from the rule's own edges.
+      const bandCase = sql.raw(
+        `CASE ${CONTEXT_BAND_EDGES.slice(1)
+          .map((edge, i) => `WHEN input_tokens < ${edge} THEN ${i}`)
+          .join(" ")} ELSE ${CONTEXT_BAND_EDGES.length - 1} END`,
+      );
+
+      const bandRows = await db
+        .select({
+          sessionId: usageEvents.sessionId,
+          band: sql<number>`${bandCase}`,
+          turns: sql<string>`COUNT(*)`,
+          reads: sql<string>`COALESCE(SUM(${usageEvents.cacheReadTokens}), 0)`,
+        })
+        .from(usageEvents)
+        .where(scope)
+        .groupBy(usageEvents.sessionId, sql`${bandCase}`);
+
+      const totalRows = await db
+        .select({
+          sessionId: usageEvents.sessionId,
+          model: usageEvents.model,
+          start: sql<string>`MIN(${usageEvents.timestamp})`,
+          end: sql<string>`MAX(${usageEvents.timestamp})`,
+          turns: sql<string>`COUNT(*)`,
+          inputTokens: sql<string>`SUM(${usageEvents.inputTokens})`,
+          outputTokens: sql<string>`SUM(${usageEvents.outputTokens})`,
+          cacheReadTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheReadTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheReadTokens}) END`,
+          cacheCreationTokens: sql<string | null>`CASE WHEN bool_or(${usageEvents.cacheCreationTokens} IS NULL) THEN NULL ELSE SUM(${usageEvents.cacheCreationTokens}) END`,
+        })
+        .from(usageEvents)
+        .where(scope)
+        .groupBy(usageEvents.sessionId, usageEvents.model);
+
+      return assembleSessionRollups(bandRows, totalRows);
+    },
+
+    async sessionCoverage(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+      const inWindow = and(
+        eq(usageEvents.userId, userId),
+        gte(usageEvents.timestamp, since),
+        lt(usageEvents.timestamp, until),
+        or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
+      );
+
+      const [sessions] = await db
+        .select({ n: sql<string>`COUNT(DISTINCT ${usageEvents.sessionId})` })
+        .from(usageEvents)
+        .where(and(inWindow, isNotNull(usageEvents.sessionId)));
+
+      const [orphans] = await db
+        .select({
+          turns: sql<string>`COUNT(*)`,
+          inputTokens: sql<string>`COALESCE(SUM(${usageEvents.inputTokens}), 0)`,
+        })
+        .from(usageEvents)
+        .where(and(inWindow, isNull(usageEvents.sessionId)));
+
+      return {
+        sessionsConsidered: Number(sessions?.n ?? 0),
+        unattributedTurns: Number(orphans?.turns ?? 0),
+        unattributedInputTokens: Number(orphans?.inputTokens ?? 0),
+      };
     },
 
     async upsertRecommendation(rec) {
@@ -731,6 +960,134 @@ export function createMemoryEventsRepo(): EventsRepo {
         cacheCreationTokens: acc.cacheCreationAnyNull ? null : acc.cacheCreationSum,
         costUsd: acc.costAnyNull ? null : acc.costSum,
       }));
+    },
+
+    async sessionRollups(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+
+      // Only request-grain events with a sessionId participate — same scope
+      // as the Drizzle implementation's `scope`. `e.grain !== "aggregate"`
+      // is correct here (unlike the raw SQL `<>`) because both `null` and
+      // `undefined` compare `!== "aggregate"` as true in JS.
+      const scoped = [...eventMap.values()].filter(
+        (e) =>
+          e.userId === userId &&
+          e.timestamp >= since &&
+          e.timestamp < until &&
+          e.sessionId != null &&
+          e.grain !== "aggregate",
+      );
+
+      type BandAcc = { sessionId: string; band: number; turns: number; reads: number };
+      type TotalAcc = {
+        sessionId: string;
+        model: string;
+        start: Date;
+        end: Date;
+        turns: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadSum: number;
+        cacheReadAnyNull: boolean;
+        cacheCreationSum: number;
+        cacheCreationAnyNull: boolean;
+      };
+      const bandMap = new Map<string, BandAcc>();
+      const totalMap = new Map<string, TotalAcc>();
+
+      for (const e of scoped) {
+        const sessionId = e.sessionId!;
+        const band = contextBandIndex(e.inputTokens);
+
+        const bandKey = `${sessionId}|${band}`;
+        const bandAcc = bandMap.get(bandKey);
+        if (bandAcc) {
+          bandAcc.turns += 1;
+          bandAcc.reads += e.cacheReadTokens ?? 0;
+        } else {
+          bandMap.set(bandKey, {
+            sessionId,
+            band,
+            turns: 1,
+            reads: e.cacheReadTokens ?? 0,
+          });
+        }
+
+        const totalKey = `${sessionId}|${e.model}`;
+        const totalAcc = totalMap.get(totalKey);
+        if (totalAcc) {
+          totalAcc.turns += 1;
+          totalAcc.inputTokens += e.inputTokens;
+          totalAcc.outputTokens += e.outputTokens;
+          if (e.cacheReadTokens == null) totalAcc.cacheReadAnyNull = true;
+          else totalAcc.cacheReadSum += e.cacheReadTokens;
+          if (e.cacheCreationTokens == null) totalAcc.cacheCreationAnyNull = true;
+          else totalAcc.cacheCreationSum += e.cacheCreationTokens;
+          if (e.timestamp < totalAcc.start) totalAcc.start = e.timestamp;
+          if (e.timestamp > totalAcc.end) totalAcc.end = e.timestamp;
+        } else {
+          totalMap.set(totalKey, {
+            sessionId,
+            model: e.model,
+            start: e.timestamp,
+            end: e.timestamp,
+            turns: 1,
+            inputTokens: e.inputTokens,
+            outputTokens: e.outputTokens,
+            cacheReadSum: e.cacheReadTokens ?? 0,
+            cacheReadAnyNull: e.cacheReadTokens == null,
+            cacheCreationSum: e.cacheCreationTokens ?? 0,
+            cacheCreationAnyNull: e.cacheCreationTokens == null,
+          });
+        }
+      }
+
+      const bandRows = [...bandMap.values()];
+      const totalRows = [...totalMap.values()].map((r) => ({
+        sessionId: r.sessionId,
+        model: r.model,
+        start: r.start,
+        end: r.end,
+        turns: r.turns,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        cacheReadTokens: r.cacheReadAnyNull ? null : r.cacheReadSum,
+        cacheCreationTokens: r.cacheCreationAnyNull ? null : r.cacheCreationSum,
+      }));
+
+      return assembleSessionRollups(bandRows, totalRows);
+    },
+
+    async sessionCoverage(userId, sinceIso, untilIso) {
+      const since = new Date(sinceIso);
+      const until = new Date(untilIso);
+
+      const inWindow = [...eventMap.values()].filter(
+        (e) =>
+          e.userId === userId &&
+          e.timestamp >= since &&
+          e.timestamp < until &&
+          e.grain !== "aggregate",
+      );
+
+      const sessionIds = new Set<string>();
+      let unattributedTurns = 0;
+      let unattributedInputTokens = 0;
+      for (const e of inWindow) {
+        if (e.sessionId != null) {
+          sessionIds.add(e.sessionId);
+        } else {
+          unattributedTurns += 1;
+          unattributedInputTokens += e.inputTokens;
+        }
+      }
+
+      return {
+        sessionsConsidered: sessionIds.size,
+        unattributedTurns,
+        unattributedInputTokens,
+      };
     },
 
     async upsertRecommendation(rec) {
