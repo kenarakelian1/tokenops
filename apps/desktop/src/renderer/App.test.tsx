@@ -29,6 +29,22 @@ function mockApi(over: Partial<typeof baseStatus> = {}, s = stats) {
   };
 }
 
+/**
+ * Matches the real IPC contract: getStatus() rejects until the agent has
+ * actually started (main/ipc.ts throws "agent not started"), while
+ * getStats() resolves regardless -- readLocalStats never throws. This is
+ * the exact "window shows Loading… forever with no way out" state the fix
+ * addresses.
+ */
+function mockApiNoStatus(s = stats) {
+  (globalThis as never as { tokenops: unknown }).tokenops = {
+    getStats: vi.fn().mockResolvedValue(s),
+    getStatus: vi.fn().mockRejectedValue(new Error("agent not started")),
+    openDashboard: vi.fn(),
+    openConfigFolder: vi.fn(),
+  };
+}
+
 describe("App", () => {
   it("shows today's token totals", async () => {
     mockApi();
@@ -75,5 +91,44 @@ describe("App", () => {
     const button = await screen.findByRole("button", { name: /open config folder/i });
     fireEvent.click(button);
     expect(window.tokenops.openConfigFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders stats and keeps the footer reachable when status is unavailable, instead of blanking to an indefinite Loading…", async () => {
+    mockApiNoStatus();
+    render(<App />);
+
+    // Stats render even though getStatus() never resolves -- this is the
+    // core of the fix: one missing dependency (status) must not hide data
+    // (stats) that's already available.
+    const today = await screen.findByRole("region", { name: "Today" });
+    expect(within(today).getByText(/1,200/)).toBeInTheDocument();
+
+    // A short, honest explanation replaces the indefinite "Loading…" --
+    // not a guess at a specific cause.
+    expect(
+      screen.getByText(/agent not running/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Loading…$/)).not.toBeInTheDocument();
+
+    // Both footer buttons stay reachable -- this is the entire point: the
+    // dashboard link must not disappear exactly when it's most needed.
+    expect(
+      screen.getByRole("button", { name: /open dashboard/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /open config folder/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not throw reading any status-derived field when status is null", async () => {
+    mockApiNoStatus();
+    expect(() => render(<App />)).not.toThrow();
+
+    await screen.findByRole("region", { name: "Today" });
+
+    // Status-gated content (Capture section, machine/cloud URL line) must
+    // simply be absent, not throw mid-render.
+    expect(screen.queryByText(/upstream calls will fail auth/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not shipping to the cloud/i)).not.toBeInTheDocument();
   });
 });

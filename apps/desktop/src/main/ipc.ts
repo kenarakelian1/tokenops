@@ -21,6 +21,41 @@ function loadAgentModule(): Promise<typeof import("@tokenops/agent")> {
 }
 
 /**
+ * Resolves the dashboard URL and opens it -- shared by the
+ * "tokenops:open-dashboard" IPC handler (renderer-triggered) and the tray's
+ * "Open dashboard" item (main-process-triggered, see index.ts), so there is
+ * exactly one place that resolves the URL and exactly one place that
+ * validates it.
+ *
+ * Prefers the live agent's `config.cloud.url` (already in memory, no disk
+ * read). Falls back to reading `~/.tokenops/config.toml` directly via
+ * `loadConfig()` when there is no live `AgentHandle` yet -- e.g. the agent
+ * hasn't started, failed to start, or isn't running, which is exactly the
+ * "window is otherwise a dead end" case this exists to fix. That fallback
+ * file is just as user-editable as the live agent's config (it's the same
+ * file), so the `isSafeExternalUrl` check below applies to *both* paths --
+ * see main/url-safety.ts's comment on why an unvalidated `cloud.url` must
+ * never reach `shell.openExternal`.
+ */
+export async function openDashboard(
+  getAgent: () => AgentHandle | null,
+): Promise<void> {
+  let url = getAgent()?.config.cloud.url;
+  if (!url) {
+    try {
+      const { loadConfig } = await loadAgentModule();
+      url = loadConfig().cloud.url;
+    } catch {
+      // No config on disk (e.g. never ran `tokenops init`) -- nothing to open.
+      return;
+    }
+  }
+  if (url && isSafeExternalUrl(url)) {
+    void shell.openExternal(url);
+  }
+}
+
+/**
  * Registers the desktop app's entire IPC surface. Every channel is
  * enumerated here and in preload/index.ts -- there is no generic
  * `invoke(channel, ...)` passthrough, so the renderer can never reach
@@ -63,17 +98,14 @@ export function registerIpc(getAgent: () => AgentHandle | null): void {
   });
 
   // Argument-less on purpose: the renderer never supplies the URL. Main
-  // already holds it (agent.config.cloud.url, from ~/.tokenops/config.toml)
-  // and validates it the same way window.ts validates every other URL
-  // handed to the OS shell -- http(s) only. Taking a renderer-supplied
-  // string here instead would let a hostile or malformed cloud.url (this
-  // file is user-editable) reach shell.openExternal unchecked, e.g.
-  // file:///... or a registered custom protocol.
+  // resolves it itself (see openDashboard above -- live agent config, or a
+  // disk fallback) and validates it the same way window.ts validates every
+  // other URL handed to the OS shell -- http(s) only. Taking a
+  // renderer-supplied string here instead would let a hostile or malformed
+  // cloud.url (this file is user-editable) reach shell.openExternal
+  // unchecked, e.g. file:///... or a registered custom protocol.
   ipcMain.on("tokenops:open-dashboard", () => {
-    const url = getAgent()?.config.cloud.url;
-    if (url && isSafeExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+    void openDashboard(getAgent);
   });
 
   ipcMain.on("tokenops:open-config", () => {

@@ -20,11 +20,23 @@ vi.mock("@tokenops/agent", () => ({
   })),
   defaultOutboxPath: vi.fn(() => "C:/fake/.tokenops/outbox.db"),
   defaultTokenopsDir: vi.fn(() => "C:/fake/.tokenops"),
+  // The disk fallback openDashboard() uses when there is no live AgentHandle
+  // (main/ipc.ts) -- throws by default, matching the real loadConfig()
+  // throwing when ~/.tokenops/config.toml doesn't exist. Individual tests
+  // override this with mockReturnValue to exercise the fallback itself.
+  loadConfig: vi.fn(() => {
+    throw new Error("Config not found (test default -- no config.toml)");
+  }),
 }));
 
 import { ipcMain, shell } from "electron";
-import { readLocalStats, defaultOutboxPath, defaultTokenopsDir } from "@tokenops/agent";
-import { registerIpc } from "./ipc.js";
+import {
+  readLocalStats,
+  defaultOutboxPath,
+  defaultTokenopsDir,
+  loadConfig,
+} from "@tokenops/agent";
+import { registerIpc, openDashboard } from "./ipc.js";
 
 type Handler = (...args: unknown[]) => unknown;
 
@@ -194,9 +206,40 @@ describe("registerIpc", () => {
     expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
-  it("tokenops:open-dashboard does nothing when the agent has not started", () => {
+  it("tokenops:open-dashboard falls back to the URL from config on disk when there is no agent handle", async () => {
+    // The window is at its most dead-end exactly when there's no live
+    // AgentHandle (agent not started / failed / not running) -- that's
+    // precisely when "Open dashboard" needs to still work. loadConfig()
+    // reads the same ~/.tokenops/config.toml the agent itself would load.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: { url: "https://cloud.example", ingestToken: "" },
+    } as never);
     registerIpc(() => null);
+
     listenerFor("tokenops:open-dashboard")({});
+
+    await vi.waitFor(() => {
+      expect(shell.openExternal).toHaveBeenCalledWith("https://cloud.example");
+    });
+  });
+
+  it("tokenops:open-dashboard never forwards a malformed or non-http(s) cloud.url read from disk to the OS shell", async () => {
+    // Same file, same attack surface, whether it's read via a live agent's
+    // config or via this disk fallback -- the isSafeExternalUrl check must
+    // apply to both paths, not just the live-agent one.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: { url: "file:///C:/Windows/System32/calc.exe", ingestToken: "" },
+    } as never);
+    registerIpc(() => null);
+
+    await openDashboard(() => null);
+
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("tokenops:open-dashboard does nothing when there is no agent handle and no config on disk", async () => {
+    registerIpc(() => null); // loadConfig throws by default (see mock above)
+    await openDashboard(() => null);
     expect(shell.openExternal).not.toHaveBeenCalled();
   });
 

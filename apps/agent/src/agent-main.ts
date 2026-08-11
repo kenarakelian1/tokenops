@@ -310,5 +310,5 @@ async function maybeStartClaudeAdapter(args: {
   }
 }
 
-export { defaultConfigPath, defaultOutboxPath, defaultTokenopsDir };
+export { defaultConfigPath, defaultOutboxPath, defaultTokenopsDir, loadConfig };
 export { readLocalStats, type LocalStats } from "./local-stats.js";
