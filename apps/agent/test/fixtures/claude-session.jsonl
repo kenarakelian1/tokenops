@@ -1,0 +1,5 @@
+{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-08-09T12:00:00.000Z","message":{"role":"user","content":"first prompt"}}
+{"type":"assistant","uuid":"a1","requestId":"r1","sessionId":"s1","timestamp":"2026-08-09T12:00:01.000Z","message":{"role":"assistant","model":"claude-opus-5[1m]","content":"reply one","usage":{"input_tokens":2,"cache_creation_input_tokens":28890,"cache_read_input_tokens":26048,"output_tokens":229}}}
+{"type":"ai-title","uuid":"t1","timestamp":"2026-08-09T12:00:02.000Z"}
+{"type":"user","uuid":"u2","sessionId":"s1","timestamp":"2026-08-09T12:00:03.000Z","message":{"role":"user","content":"second prompt"}}
+{"type":"assistant","uuid":"a2","requestId":"r2","sessionId":"s1","timestamp":"2026-08-09T12:00:04.000Z","message":{"role":"assistant","model":"claude-opus-5[1m]","content":"reply two","usage":{"input_tokens":5,"cache_read_input_tokens":40000,"output_tokens":100}}}

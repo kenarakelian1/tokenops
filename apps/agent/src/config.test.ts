@@ -126,3 +126,50 @@ name = "desktop-main"
     ]);
   });
 });
+
+describe("session adapter config", () => {
+  it("defaults claudeCodePath to the real Claude Code projects directory", () => {
+    const c = defaultConfig();
+    expect(c.sources.claudeCodePath).toMatch(/[\\/]\.claude[\\/]projects$/);
+  });
+
+  it("defaults the backfill window to 7 days", () => {
+    expect(defaultConfig().sources.claudeCodeBackfillDays).toBe(7);
+  });
+
+  it("reads claude_code_backfill_days from TOML", () => {
+    const path = join(tmpDir(), "config.toml");
+    writeFileSync(
+      path,
+      `
+[sources]
+claude_code_backfill_days = 30
+`,
+      "utf8",
+    );
+    expect(loadConfig(path).sources.claudeCodeBackfillDays).toBe(30);
+  });
+
+  it("treats a blank claude_code_path as absent and falls back to the default", () => {
+    // Every config ever written by writeDefaultConfig() before this fix
+    // persisted claude_code_path = "" (the old empty-string default),
+    // serialized unconditionally by toToml(). Without this guard, that
+    // blank string would beat the new ~/.claude/projects default on every
+    // upgrade and silently stop Claude Code capture: readdirSync("") throws,
+    // the watcher's per-file try/catch swallows it, and nothing is logged as
+    // an error.
+    const path = join(tmpDir(), "config.toml");
+    writeFileSync(
+      path,
+      `
+[sources]
+claude_code_path = ""
+`,
+      "utf8",
+    );
+    expect(loadConfig(path).sources.claudeCodePath).toBe(
+      defaultConfig().sources.claudeCodePath,
+    );
+    expect(loadConfig(path).sources.claudeCodePath).not.toBe("");
+  });
+});

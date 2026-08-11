@@ -5,6 +5,7 @@ import type { UsageEvent } from "@tokenops/shared";
 import {
   ClaudeOtelState,
   extractClaudeCounters,
+  shouldDropMetric,
   startClaudeOtelServer,
 } from "./claude-otel.js";
 
@@ -262,6 +263,62 @@ describe("ClaudeOtelState feature/grain correctness", () => {
     expect(e!.cacheReadTokens! + e!.cacheCreationTokens!).toBeLessThanOrEqual(
       e!.inputTokens,
     );
+  });
+});
+
+describe("claude_code.* guard", () => {
+  it("drops claude_code metrics when the session adapter owns the source", () => {
+    const out = extractClaudeCounters(sampleExport(100, 40), {
+      ignoreClaudeCodeMetrics: true,
+    });
+    expect(out.tokens).toHaveLength(0);
+    expect(out.costs).toHaveLength(0);
+  });
+
+  it("keeps claude_code metrics when the session adapter is off", () => {
+    const out = extractClaudeCounters(sampleExport(100, 40));
+    expect(out.tokens).toHaveLength(2);
+    expect(out.costs).toHaveLength(1);
+  });
+
+  describe("shouldDropMetric", () => {
+    // extractClaudeCounters only ever collects on EXACT name equality
+    // (=== "claude_code.token.usage" / "claude_code.cost.usage"), so a name
+    // a substring check would wrongly match but a prefix check would spare
+    // can never equal either literal — it contributes zero entries either
+    // way. That makes the scoping unobservable through extractClaudeCounters
+    // and is why shouldDropMetric is tested directly instead.
+
+    it("drops the exact claude_code prefix when the guard is on", () => {
+      expect(
+        shouldDropMetric("claude_code.token.usage", {
+          ignoreClaudeCodeMetrics: true,
+        }),
+      ).toBe(true);
+    });
+
+    it("does not drop a name that merely contains claude_code as a substring", () => {
+      // This is the case an `includes("claude_code")` implementation gets
+      // wrong: "claude_codex.token.usage" contains "claude_code" but does not
+      // start with "claude_code.".
+      expect(
+        shouldDropMetric("claude_codex.token.usage", {
+          ignoreClaudeCodeMetrics: true,
+        }),
+      ).toBe(false);
+    });
+
+    it("does not drop claude_code metrics when the guard is off", () => {
+      expect(shouldDropMetric("claude_code.token.usage", {})).toBe(false);
+    });
+
+    it("does not drop unrelated metric names when the guard is on", () => {
+      expect(
+        shouldDropMetric("gen_ai.client.token.usage", {
+          ignoreClaudeCodeMetrics: true,
+        }),
+      ).toBe(false);
+    });
   });
 });
 

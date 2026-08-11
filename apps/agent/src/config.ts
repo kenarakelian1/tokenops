@@ -21,13 +21,19 @@ export type TokenOpsConfig = {
   sources: {
     openaiProxy: boolean;
     claudeCode: boolean;
-    /** Path to Claude Code usage JSONL (file or directory). Empty = default under tokenops dir. */
+    /**
+     * Root directory of Claude Code's own session files. Defaults to
+     * `~/.claude/projects` — what Claude Code already writes, nothing to
+     * configure or install. Watched recursively for `*.jsonl`.
+     */
     claudeCodePath: string;
     /**
      * OTLP HTTP metrics listen address for Claude Code telemetry.
      * Empty disables. Example: `127.0.0.1:4318`
      */
     claudeCodeOtelListen: string;
+    /** Days of existing session history to read on first run. 0 disables backfill. */
+    claudeCodeBackfillDays: number;
   };
   machine: {
     name: string;
@@ -64,8 +70,9 @@ export function defaultConfig(): TokenOpsConfig {
     sources: {
       openaiProxy: true,
       claudeCode: true,
-      claudeCodePath: "",
+      claudeCodePath: join(homedir(), ".claude", "projects"),
       claudeCodeOtelListen: "127.0.0.1:4318",
+      claudeCodeBackfillDays: 7,
     },
     machine: {
       name: "desktop",
@@ -81,6 +88,7 @@ type TomlSources = {
   claude_code?: boolean;
   claude_code_path?: string;
   claude_code_otel_listen?: string;
+  claude_code_backfill_days?: number;
 };
 type TomlMachine = { name?: string };
 
@@ -126,13 +134,18 @@ function fromToml(raw: TomlRoot): TokenOpsConfig {
       openaiProxy: raw.sources?.openai_proxy ?? base.sources.openaiProxy,
       claudeCode: raw.sources?.claude_code ?? base.sources.claudeCode,
       claudeCodePath:
-        typeof raw.sources?.claude_code_path === "string"
+        typeof raw.sources?.claude_code_path === "string" &&
+        raw.sources.claude_code_path.trim() !== ""
           ? raw.sources.claude_code_path
           : base.sources.claudeCodePath,
       claudeCodeOtelListen:
         typeof raw.sources?.claude_code_otel_listen === "string"
           ? raw.sources.claude_code_otel_listen
           : base.sources.claudeCodeOtelListen,
+      claudeCodeBackfillDays:
+        typeof raw.sources?.claude_code_backfill_days === "number"
+          ? raw.sources.claude_code_backfill_days
+          : base.sources.claudeCodeBackfillDays,
     },
     machine: {
       name: raw.machine?.name ?? base.machine.name,
@@ -159,6 +172,7 @@ function toToml(config: TokenOpsConfig): string {
       claude_code: config.sources.claudeCode,
       claude_code_path: config.sources.claudeCodePath,
       claude_code_otel_listen: config.sources.claudeCodeOtelListen,
+      claude_code_backfill_days: config.sources.claudeCodeBackfillDays,
     },
     machine: {
       name: config.machine.name,

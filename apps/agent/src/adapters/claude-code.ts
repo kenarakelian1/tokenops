@@ -1,3 +1,15 @@
+/**
+ * RETAINED WITH NO CALLER as of feat/claude-session-adapter.
+ *
+ * Superseded by claude-session-watcher.ts, which reads Claude Code's own
+ * session files instead of a `~/.tokenops/claude-code-usage.jsonl` that
+ * nothing writes. This module is kept as a working fallback until the new
+ * adapter has proven itself against real session data; retiring it is a
+ * follow-up in docs/superpowers/specs/2026-08-09-claude-session-adapter-design.md.
+ *
+ * Its tests still run and must keep passing.
+ */
+
 import { createHash } from "node:crypto";
 import {
   closeSync,

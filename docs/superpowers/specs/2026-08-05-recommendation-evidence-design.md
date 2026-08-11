@@ -1,7 +1,30 @@
 # Recommendation evidence — design
 
 **Date:** 2026-08-05
-**Status:** Approved, not yet implemented
+**Status:** SUPERSEDED IN PART — see below
+
+> **Superseded 2026-08-09.** The capture half of this spec is replaced by
+> [`2026-08-09-claude-session-adapter-design.md`](2026-08-09-claude-session-adapter-design.md),
+> which is the one being implemented. Two decisions here were reversed:
+>
+> 1. **"OTEL is replaced, not supplemented" is wrong.** The OTLP receiver
+>    stays and serves every emitter except Claude Code — the split-by-source
+>    rule established in
+>    [`2026-08-05-recommendation-credibility-design.md`](2026-08-05-recommendation-credibility-design.md).
+>    Reading `~/.claude/projects` is parity with ccusage; accepting OTLP is
+>    something ccusage cannot do at all, so the two are complementary rather
+>    than redundant.
+> 2. **The redaction and cloud-content design is dropped**, not deferred. It
+>    was needed only to quote raw prompts on a card. Features are derived on
+>    the agent and shipped as integers, so the three per-request rules fire
+>    with no content leaving the machine and no redactor to get wrong. This
+>    spec's own assessment — that redaction is its highest-risk component,
+>    where one heuristic miss writes PII into permanent storage under a field
+>    name asserting it is safe — is why it is not being built speculatively.
+>
+> The diagnosis below stands and is still worth reading: the fabricated
+> features, the file nothing writes, and the absence of any request boundary
+> in an OTLP metric are all accurate, and they are what the new spec acts on.
 
 ## Problem
 
