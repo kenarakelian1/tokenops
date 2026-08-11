@@ -37,12 +37,23 @@ function sampleEvent(
 
 function frontierTrivial(eventId: string): UsageEvent {
   return sampleEvent(eventId, {
-    model: "gpt-4o",
+    // claude-opus-4, not gpt-4o: frontier_trivial's savings are priced by
+    // the shared pricer as cost(actual) − cost(counterfactual), both sides
+    // estimated purely from these token counts through the static price
+    // table — costUsd below is never read. cheaperSiblingModel("claude-opus-4")
+    // names "claude-sonnet-5" as the in-vendor sibling. Output-heavy split
+    // (20 in / 180 out — the rule's 200-token cap) so the larger output-rate
+    // delta clears MIN_WASTED_USD; opus-5's much smaller delta to
+    // sonnet-5 could not.
+    // Pricing instant is this event's own timestamp (2026-07-01, fixed by
+    // sampleEvent's default, well inside Sonnet 5's pre-2026-08-31
+    // introductory rate), not wall-clock "now".
+    //   actual: claude-opus-4 $15/$75 per MTok -> 20/1e6*15 + 180/1e6*75 = $0.0138
+    //   counterfactual: claude-sonnet-5 intro $2/$10 per MTok -> 20/1e6*2 + 180/1e6*10 = $0.00184
+    //   savings ≈ $0.01196, clears the $0.01 floor
+    model: "claude-opus-4",
     inputTokens: 20,
-    outputTokens: 10,
-    // Above MIN_WASTED_USD once the cheaper-sibling (gpt-4o-mini) saving is
-    // netted out ($0.05 − $0.000009 ≈ $0.049991), so the finding clears the
-    // materiality floor introduced in Task 4.
+    outputTokens: 180,
     costUsd: 0.05,
     features: {
       promptChars: 40,

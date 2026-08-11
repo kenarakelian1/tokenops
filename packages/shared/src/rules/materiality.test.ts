@@ -10,6 +10,11 @@ const base: RuleHit = {
   estimatedWastedTokens: 0,
   estimatedWastedUsd: null,
   eventIds: ["e1"],
+  // isMaterial only reads estimatedWastedTokens/estimatedWastedUsd; these
+  // two fields are irrelevant to it but required by the RuleHit type since
+  // Task 2 extended it with counterfactual/assumption.
+  counterfactual: null,
+  assumption: null,
 };
 
 describe("isMaterial", () => {

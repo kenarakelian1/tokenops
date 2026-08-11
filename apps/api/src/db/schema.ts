@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { Counterfactual } from "@tokenops/shared";
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -142,6 +143,15 @@ export const recommendations = pgTable(
       scale: 8,
     }),
     eventIds: jsonb("event_ids").notNull().$type<string[]>(),
+    /**
+     * What the rule priced against. Null on rows written before this column
+     * existed — the UI must distinguish "no counterfactual recorded" from
+     * "counterfactual computed and empty", the same absent-vs-zero care the
+     * cache fields take.
+     */
+    counterfactual: jsonb("counterfactual").$type<Counterfactual | null>(),
+    /** Plain-language assumption behind the counterfactual. */
+    assumption: text("assumption"),
     /** Dedupe key: typically first event_id (or hash of event_ids). */
     dedupeKey: text("dedupe_key").notNull(),
     status: text("status").notNull().$type<RecommendationStatus>().default("open"),

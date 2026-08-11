@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt, lte, ne, sql } from "drizzle-orm";
 import {
   getModelTier,
+  type Counterfactual,
   type EventGrain,
   type ModelWindowTotals,
   type UsageEvent,
@@ -44,6 +45,8 @@ export type RecommendationInsert = {
   estimatedWastedUsd: number | null;
   eventIds: string[];
   dedupeKey: string;
+  counterfactual: Counterfactual | null;
+  assumption: string | null;
 };
 
 /** Data access for usage events, aggregates, recommendations, machines. */
@@ -129,7 +132,18 @@ export type EventsRepo = {
   listMachines(userId: string): Promise<Machine[]>;
 };
 
-function rowToUsageEvent(row: UsageEventRow): UsageEvent {
+/**
+ * Map a stored row to the shape rules consume. Carries `grain` through
+ * unchanged — `runRules`' aggregate gate (see @tokenops/shared `isAggregate`)
+ * keys off it, and dropping it here would let request-grain rules evaluate
+ * aggregate rows (whose features are fabricated placeholders) and manufacture
+ * findings from garbage. Also carries `sessionId`, `cacheReadTokens`,
+ * `cacheCreationTokens`, and `features` through unchanged for the same reason
+ * — each feeds a rule or the pricer directly. Exported so callers that need
+ * the same mapping (e.g. the recommendations backtest route) reuse this
+ * instead of writing a second one.
+ */
+export function rowToUsageEvent(row: UsageEventRow): UsageEvent {
   return {
     eventId: row.eventId,
     timestamp: row.timestamp.toISOString(),
@@ -360,10 +374,44 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
               ? String(rec.estimatedWastedUsd)
               : null,
           eventIds: rec.eventIds,
+          counterfactual: rec.counterfactual,
+          assumption: rec.assumption,
           dedupeKey: rec.dedupeKey,
           status: "open",
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [
+            recommendations.userId,
+            recommendations.ruleId,
+            recommendations.dedupeKey,
+          ],
+          // Principle: on conflict, refresh everything the RULE computes;
+          // preserve only what the user or the system owns. A rule that
+          // re-fires against a grown window (e.g. an hourly aggregate job
+          // re-hitting the same UTC-day dedupeKey) recomputes severity,
+          // title, detail, tokens, USD, counterfactual, and eventIds
+          // together as one consistent snapshot — refreshing some of those
+          // fields while leaving others (e.g. `detail`'s interpolated
+          // percentage) at their first-insert values reproduces the exact
+          // "stale narrative beside fresh numbers" bug this task exists to
+          // eliminate. `status` and `createdAt` are deliberately excluded:
+          // status records the USER's dismissal judgement, which a re-fire
+          // must never overturn, and createdAt records when the finding
+          // FIRST appeared, not when it was last recomputed.
+          set: {
+            severity: rec.severity,
+            title: rec.title,
+            detail: rec.detail,
+            estimatedWastedTokens: rec.estimatedWastedTokens,
+            estimatedWastedUsd:
+              rec.estimatedWastedUsd != null
+                ? String(rec.estimatedWastedUsd)
+                : null,
+            eventIds: rec.eventIds,
+            counterfactual: rec.counterfactual,
+            assumption: rec.assumption,
+          },
+        });
     },
 
     async supersedeOpenRecommendations(userId, ruleId, keepDedupeKey) {
@@ -390,7 +438,14 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .select()
         .from(recommendations)
         .where(and(...conditions))
-        .orderBy(desc(recommendations.createdAt));
+        // Savings first, so a $0.94 finding can never sit above a $23 one.
+        // NULLS LAST: an unpriceable finding is not a large one.
+        // estimated_wasted_usd is numeric, so the raw column sorts
+        // numerically (not lexically) — do not cast it to text.
+        .orderBy(
+          sql`${recommendations.estimatedWastedUsd} DESC NULLS LAST`,
+          desc(recommendations.createdAt),
+        );
     },
 
     async dismissRecommendation(userId, id) {
@@ -680,7 +735,27 @@ export function createMemoryEventsRepo(): EventsRepo {
 
     async upsertRecommendation(rec) {
       const key = recDedupeKey(rec.userId, rec.ruleId, rec.dedupeKey);
-      if (recMap.has(key)) return;
+      const existing = recMap.get(key);
+      if (existing) {
+        // Principle: on conflict, refresh everything the RULE computes;
+        // preserve only what the user or the system owns — same reasoning
+        // as the Drizzle onConflictDoUpdate `set` above, kept symmetric so
+        // this fake can't pass a test the real implementation fails.
+        // `status` and `createdAt` are the two exceptions: status is the
+        // user's dismissal judgement (a re-fire must never overturn it),
+        // and createdAt is when the finding first appeared, not when it
+        // was last recomputed — both are left untouched below.
+        existing.severity = rec.severity;
+        existing.title = rec.title;
+        existing.detail = rec.detail;
+        existing.estimatedWastedTokens = rec.estimatedWastedTokens;
+        existing.estimatedWastedUsd =
+          rec.estimatedWastedUsd != null ? String(rec.estimatedWastedUsd) : null;
+        existing.eventIds = rec.eventIds;
+        existing.counterfactual = rec.counterfactual;
+        existing.assumption = rec.assumption;
+        return;
+      }
       recSeq += 1;
       const id = `00000000-0000-4000-8000-${String(recSeq).padStart(12, "0")}`;
       recMap.set(key, {
@@ -696,6 +771,8 @@ export function createMemoryEventsRepo(): EventsRepo {
             ? String(rec.estimatedWastedUsd)
             : null,
         eventIds: rec.eventIds,
+        counterfactual: rec.counterfactual,
+        assumption: rec.assumption,
         dedupeKey: rec.dedupeKey,
         status: "open",
         createdAt: new Date(),
@@ -725,7 +802,19 @@ export function createMemoryEventsRepo(): EventsRepo {
           if (status && r.status !== status) return false;
           return true;
         })
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        .sort((a, b) => {
+          // Mirrors the Drizzle `estimated_wasted_usd DESC NULLS LAST, created_at DESC`
+          // ordering above — kept symmetric so this fake can't pass a test
+          // the real implementation fails. Compared as numbers, not strings:
+          // estimatedWastedUsd is stored as a string, and string comparison
+          // would put "9.00" above "23.00".
+          const au = a.estimatedWastedUsd == null ? null : Number(a.estimatedWastedUsd);
+          const bu = b.estimatedWastedUsd == null ? null : Number(b.estimatedWastedUsd);
+          if (au == null && bu != null) return 1;
+          if (bu == null && au != null) return -1;
+          if (au != null && bu != null && au !== bu) return bu - au;
+          return b.createdAt.getTime() - a.createdAt.getTime();
+        });
     },
 
     async dismissRecommendation(userId, id) {

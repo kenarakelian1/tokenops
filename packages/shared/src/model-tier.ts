@@ -1,7 +1,15 @@
 export type ModelTier = "frontier" | "mid" | "small" | "unknown";
 
-/** Frontier / flagship model name patterns (checked first). */
-const FRONTIER = [
+/**
+ * Frontier / flagship model name patterns (checked first).
+ *
+ * Exported so `pricing.test.ts` can prove its frontier corpus covers every
+ * pattern: a frontier model that `cheaperSiblingModel` gives a target for
+ * must be priceable, or its card ships with no dollar figure. Adding a
+ * pattern here without adding a representative model string there fails that
+ * test.
+ */
+export const FRONTIER_MODEL_PATTERNS = [
   /opus/i,
   /o1(?!\-mini)/i,
   /o3(?!\-mini)/i,
@@ -21,7 +29,7 @@ const SMALL = [/mini/i, /haiku/i, /nano/i, /8b/i, /grok-3-mini/i];
 export function getModelTier(model: string): ModelTier {
   const m = model.trim();
   if (!m) return "unknown";
-  if (FRONTIER.some((re) => re.test(m))) return "frontier";
+  if (FRONTIER_MODEL_PATTERNS.some((re) => re.test(m))) return "frontier";
   if (SMALL.some((re) => re.test(m))) return "small";
   return "mid";
 }

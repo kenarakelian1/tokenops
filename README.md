@@ -385,6 +385,13 @@ Every hit is also subject to a materiality floor (`packages/shared/src/rules/mat
 — by default at least $0.01 estimated waste, or 5,000 tokens when cost is
 unknown — so cheap, noisy findings never reach the panel.
 
+**Writing your own rule:** the rule contract is published, and **outside rule
+contributions are accepted**. See
+[docs/rules/authoring.md](docs/rules/authoring.md)
+([rendered](docs/rules/authoring.html)) for the interface, an annotated
+worked example, how to choose a counterfactual, the invariants a rule must
+not break, the fixture-driven test pattern, and which types are stable.
+
 ### Why per-request rules don't fire for OTEL-only users
 
 `frontier_trivial`, `full_document_io`, and `context_bloat` read a single

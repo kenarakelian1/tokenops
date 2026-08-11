@@ -1,16 +1,19 @@
 import type { ModelTier } from "../../model-tier.js";
+import type { PriceRow } from "../../pricing.js";
+import type { RuleContext } from "../contract.js";
+import { priceFinding } from "../index.js";
 import { isMaterial } from "../materiality.js";
 import type { RuleHit } from "../types.js";
-import { checkCacheEfficiency } from "./cache-efficiency.js";
-import { checkFrontierShare } from "./frontier-share.js";
+import { cacheEfficiencyRule } from "./cache-efficiency.js";
+import { frontierShareRule } from "./frontier-share.js";
 
 export {
   FRONTIER_SHARE_THRESHOLD,
-  checkFrontierShare,
+  frontierShareRule,
 } from "./frontier-share.js";
 export {
   CACHE_EFFICIENCY_MIN_READ_RATIO,
-  checkCacheEfficiency,
+  cacheEfficiencyRule,
 } from "./cache-efficiency.js";
 
 /**
@@ -36,7 +39,7 @@ export const AGGREGATE_RULE_IDS = ["frontier_share", "cache_efficiency"] as cons
  * `undefined`/`null` as `0` collapses "don't know" into "we checked and it's
  * zero", which produces a confidently wrong finding either way (silence
  * when a real zero-cache-usage card is owed, or a false low-reuse card on a
- * window straddling the migration). See checkCacheEfficiency for how this
+ * window straddling the migration). See cacheEfficiencyRule for how this
  * module acts on the distinction.
  */
 export type ModelWindowTotals = {
@@ -66,32 +69,64 @@ export type AggregateWindow = {
  * does for per-event hits — otherwise aggregates would reintroduce the
  * noisy-finding problem in a new place.
  *
- * @param now Comparison instant forwarded to checkFrontierShare for
+ * @param now Comparison instant forwarded to frontierShareRule for
  *   date-gated pricing (e.g. the Claude Sonnet 5 introductory rate).
  *   Defaults to the real current time; tests pass a fixed Date to pin
  *   behavior on either side of a cutoff.
+ * @param priceOverrides User-supplied price table, forwarded to priceFinding
+ *   for both frontierShareRule and cacheEfficiencyRule so aggregate-grain
+ *   rules honour the same table request-grain rules do. An explicit override
+ *   still wins over the date-gated Sonnet 5 introductory rate — that
+ *   precedence lives in estimateCostUsd, not here.
  */
+/**
+ * Is `candidate` a worse (more wasteful) cache_efficiency hit than
+ * `current`? Ranks by highest estimatedWastedUsd — the same currency every
+ * other rule ranks on — falling back to estimatedWastedTokens only when
+ * BOTH sides are unpriced (USD null on both). A null USD never beats a real
+ * one: a model this pricer can't price shouldn't outrank one it can.
+ */
+function isWorseCacheHit(candidate: RuleHit, current: RuleHit): boolean {
+  if (candidate.estimatedWastedUsd == null && current.estimatedWastedUsd == null) {
+    return candidate.estimatedWastedTokens > current.estimatedWastedTokens;
+  }
+  return (candidate.estimatedWastedUsd ?? -Infinity) > (current.estimatedWastedUsd ?? -Infinity);
+}
+
 export function runAggregateRules(
   window: AggregateWindow,
   now: Date = new Date(),
+  priceOverrides?: Record<string, PriceRow>,
 ): RuleHit[] {
   const hits: RuleHit[] = [];
+  const ctx: RuleContext = { now, priceOverrides };
 
-  const frontier = checkFrontierShare(window, now);
-  if (frontier) hits.push(frontier);
+  const finding = frontierShareRule.evaluate(window, ctx);
+  if (finding) {
+    const actual = frontierShareRule.resolveActual!(window, finding);
+    if (actual) hits.push(priceFinding(frontierShareRule, finding, actual, ctx));
+  }
 
-  // checkCacheEfficiency can fire once per model, but its dedupeKey
-  // (ruleId + window start, built by the aggregate-rules job) carries no
-  // model — two hits in the same run collide on that key, and whichever
-  // survives the memory repo's has()/Drizzle's onConflictDoNothing depends
-  // on non-deterministic GROUP BY order. Keep only the worst-offending
-  // model (largest token gap) so the choice is deterministic instead.
+  // cacheEfficiencyRule can fire once per model, but its dedupeKey (ruleId +
+  // window start, built by the aggregate-rules job) carries no model — two
+  // hits in the same run collide on that key, and whichever survives the
+  // memory repo's has()/Drizzle's onConflictDoNothing depends on
+  // non-deterministic GROUP BY order. Keep only the worst-offending model
+  // (see isWorseCacheHit) so the choice is deterministic instead.
   let worstCache: RuleHit | null = null;
   for (const totals of window.byModel) {
-    const cache = checkCacheEfficiency(totals);
-    if (!cache) continue;
-    if (!worstCache || cache.estimatedWastedTokens > worstCache.estimatedWastedTokens) {
-      worstCache = cache;
+    const finding = cacheEfficiencyRule.evaluate(totals, ctx);
+    if (!finding) continue;
+    const actual = {
+      model: totals.model,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      cacheReadTokens: totals.cacheReadTokens,
+      cacheCreationTokens: totals.cacheCreationTokens,
+    };
+    const hit = priceFinding(cacheEfficiencyRule, finding, actual, ctx);
+    if (!worstCache || isWorseCacheHit(hit, worstCache)) {
+      worstCache = hit;
     }
   }
   if (worstCache) hits.push(worstCache);
