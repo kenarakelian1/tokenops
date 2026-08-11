@@ -68,10 +68,13 @@ export const sessionCacheChurnRule: Rule<SessionRollup> = {
     }
 
     const total = read + creation;
+    // The cost-share gate above already guarantees creation > baselineCreation:
+    // clearing SESSION_CHURN_MIN_COST_SHARE (0.45) requires a creation token
+    // share of ~6.14%, well above the 2.6% baseline, so there is no reachable
+    // case where creation could be at or below it here. No separate check.
     const baselineCreation = Math.round(
       total * SESSION_CHURN_BASELINE_TOKEN_SHARE,
     );
-    if (creation <= baselineCreation) return null;
 
     const sharePct = Math.round(churnCostShare(read, creation) * 100);
     return {

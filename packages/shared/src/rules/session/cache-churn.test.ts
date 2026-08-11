@@ -122,15 +122,18 @@ describe("sessionCacheChurnRule", () => {
     ).toBeNull();
   });
 
-  it("stays silent when creation is already at or below baseline", () => {
-    // Below baseline there is no excess to move, even if the share gate
-    // somehow passed.
-    expect(
-      sessionCacheChurnRule.evaluate(
-        rollup({ cacheCreationTokens: 0, cacheReadTokens: 10_000_000 }),
-        ctx,
-      ),
-    ).toBeNull();
+  it("cost-share gate already implies creation is above baseline", () => {
+    // Solving 1.25x / (0.1 + 1.15x) = SESSION_CHURN_MIN_COST_SHARE for the
+    // creation token share x gives x = 0.0614. Anything passing the gate
+    // therefore carries creation well above the 2.6% baseline, so a
+    // separate baseline check would be unreachable code. This test fails
+    // if either constant is ever retuned far enough for them to overlap.
+    const crossover = 0.0614;
+    expect(crossover).toBeGreaterThan(SESSION_CHURN_BASELINE_TOKEN_SHARE);
+    expect(churnCostShare(1 - crossover, crossover)).toBeCloseTo(
+      SESSION_CHURN_MIN_COST_SHARE,
+      3,
+    );
   });
 
   it("resolves the actual to the session's own cache split", () => {
