@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import type { UsageEvent } from "../schema/event.js";
-import { cacheEfficiencyRule } from "./aggregate/cache-efficiency.js";
 import { frontierShareRule } from "./aggregate/frontier-share.js";
 import type { AggregateWindow, ModelWindowTotals } from "./aggregate/index.js";
 import { contextBloatRule } from "./context-bloat.js";
@@ -68,8 +67,6 @@ const ASSUMPTIONS: Record<string, string> = {
     "excerpting removes half the dumped content, leaving the rest of the prompt unchanged",
   context_bloat:
     "context could have stayed at the size of the session's first request",
-  cache_efficiency:
-    "a 50% cache-read ratio is achievable for this workload",
   frontier_share:
     "routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors' frontier tokens are counted in the share but not repriced.",
   session_context_ceiling:
@@ -147,12 +144,6 @@ function assumptionOf(ruleId: keyof typeof ASSUMPTIONS): string {
           ],
         },
       );
-      return finding!.assumption!;
-    }
-    case "cache_efficiency": {
-      // 10M input, 0 recorded reads, 0 recorded creation -> targetReads is
-      // the uncapped 5M, i.e. the stated ratio is the full 50%.
-      const finding = cacheEfficiencyRule.evaluate(totals(), CTX);
       return finding!.assumption!;
     }
     case "session_context_ceiling": {
@@ -234,8 +225,8 @@ describe("rule assumption strings", () => {
   });
 
   it("reads correctly once the card puts its prefix in front", () => {
-    expect(`Assumes: ${assumptionOf("cache_efficiency")}`).toBe(
-      "Assumes: a 50% cache-read ratio is achievable for this workload",
+    expect(`Assumes: ${assumptionOf("context_bloat")}`).toBe(
+      "Assumes: context could have stayed at the size of the session's first request",
     );
   });
 });
