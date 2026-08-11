@@ -71,3 +71,4 @@ export {
   type ModelWindowTotals,
   type AggregateWindow,
 } from "./rules/aggregate/index.js";
+export * from "./rules/session/index.js";

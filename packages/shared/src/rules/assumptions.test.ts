@@ -6,6 +6,9 @@ import type { AggregateWindow, ModelWindowTotals } from "./aggregate/index.js";
 import { contextBloatRule } from "./context-bloat.js";
 import { frontierTrivialRule } from "./frontier-trivial.js";
 import { fullDocumentIoRule } from "./full-document-io.js";
+import { sessionCacheChurnRule } from "./session/cache-churn.js";
+import { sessionContextCeilingRule } from "./session/context-ceiling.js";
+import type { SessionRollup } from "./session/rollup.js";
 
 /**
  * The assumption strings, pinned character for character.
@@ -69,6 +72,10 @@ const ASSUMPTIONS: Record<string, string> = {
     "a 50% cache-read ratio is achievable for this workload",
   frontier_share:
     "routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors' frontier tokens are counted in the share but not repriced.",
+  session_context_ceiling:
+    "resetting context at this size would not have required re-doing work already in it",
+  session_cache_churn:
+    "a stable cached prefix would have re-read this content instead of rewriting it",
 };
 
 function assumptionOf(ruleId: keyof typeof ASSUMPTIONS): string {
@@ -146,6 +153,46 @@ function assumptionOf(ruleId: keyof typeof ASSUMPTIONS): string {
       // 10M input, 0 recorded reads, 0 recorded creation -> targetReads is
       // the uncapped 5M, i.e. the stated ratio is the full 50%.
       const finding = cacheEfficiencyRule.evaluate(totals(), CTX);
+      return finding!.assumption!;
+    }
+    case "session_context_ceiling": {
+      const rollup: SessionRollup = {
+        sessionId: "s1",
+        start: "2026-09-01T00:00:00.000Z",
+        end: "2026-09-01T06:00:00.000Z",
+        turnCount: 100,
+        model: "claude-opus-5",
+        modelTier: "frontier",
+        inputTokens: 60_000_000,
+        outputTokens: 200_000,
+        cacheReadTokens: 59_000_000,
+        cacheCreationTokens: 1_000_000,
+        turnsByContextBand: [20, 20, 20, 10, 10, 20],
+        cacheReadByContextBand: [
+          1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000, 15_000_000,
+        ],
+      };
+      const finding = sessionContextCeilingRule.evaluate(rollup, CTX);
+      return finding!.assumption!;
+    }
+    case "session_cache_churn": {
+      const rollup: SessionRollup = {
+        sessionId: "s2",
+        start: "2026-09-01T00:00:00.000Z",
+        end: "2026-09-01T06:00:00.000Z",
+        turnCount: 100,
+        model: "claude-opus-5",
+        modelTier: "frontier",
+        inputTokens: 10_000_000,
+        outputTokens: 200_000,
+        cacheReadTokens: 8_000_000,
+        cacheCreationTokens: 2_000_000,
+        turnsByContextBand: [20, 20, 20, 10, 10, 20],
+        cacheReadByContextBand: [
+          1_000_000, 1_000_000, 1_000_000, 1_000_000, 2_000_000, 2_000_000,
+        ],
+      };
+      const finding = sessionCacheChurnRule.evaluate(rollup, CTX);
       return finding!.assumption!;
     }
     case "frontier_share": {
