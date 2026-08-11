@@ -5,7 +5,16 @@ export type RuleId =
   | "full_document_io"
   | "context_bloat"
   | "frontier_share"
-  | "cache_efficiency";
+  /**
+   * Retired 2026-08-11: its gate (cache-read ratio below 0.50) cannot fire
+   * on coding-agent traffic, where the measured median is 0.997. The id
+   * stays in the union so historical rows already stored under it still
+   * type-check when read back, and so the retirement sweep in
+   * AGGREGATE_RULE_IDS can clear the cards it left open.
+   */
+  | "cache_efficiency"
+  | "session_context_ceiling"
+  | "session_cache_churn";
 
 /**
  * Named so the published contract has no anonymous field types. Declared per
