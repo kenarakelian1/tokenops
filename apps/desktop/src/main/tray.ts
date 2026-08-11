@@ -25,6 +25,7 @@ export function setTrayStatus(tray: Tray, status: TrayStatus): void {
 
 export function createTray(opts: {
   onShow: () => void;
+  onOpenDashboard: () => void;
   onQuit: () => void;
 }): Tray {
   // Deliberately NOT "../../build/icon.ico": electron-builder's
@@ -46,6 +47,13 @@ export function createTray(opts: {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Show TokenOps", click: opts.onShow },
+      // Above "Open config folder" on purpose: this is the affordance the
+      // main window's footer button normally provides, and the tray is the
+      // one place still reachable when the window itself is a dead end (no
+      // agent handle yet -- see main/ipc.ts's openDashboard, which this
+      // shares). It belongs with the other "get me somewhere useful" items,
+      // not buried below them.
+      { label: "Open dashboard", click: opts.onOpenDashboard },
       {
         label: "Open config folder",
         click: () => void shell.openPath(join(homedir(), ".tokenops")),

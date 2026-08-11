@@ -44,7 +44,10 @@ vi.mock("./tray.js", () => ({
   setTrayStatus: vi.fn(),
 }));
 
-vi.mock("./ipc.js", () => ({ registerIpc: vi.fn() }));
+vi.mock("./ipc.js", () => ({
+  registerIpc: vi.fn(),
+  openDashboard: vi.fn(),
+}));
 
 vi.mock("@tokenops/agent", () => ({ runAgent: vi.fn() }));
 
