@@ -203,7 +203,11 @@ describe("runAggregateRules", () => {
 
 describe("cache_efficiency retirement", () => {
   it("never emits a cache_efficiency hit, even on a window that would have tripped it", () => {
-    // Read ratio 0.10, far below the retired 0.50 gate.
+    // Under the retired rule this window produced a real hit: readRatio =
+    // 10,000 / 1,000,000 = 0.01 (well under the 0.50 gate), readCapacity =
+    // 1,000,000 - 5,000 = 995,000, targetReads = min(500,000, 995,000) =
+    // 500,000, shortfall = 500,000 - 10,000 = 490,000 tokens — comfortably
+    // above the materiality floor. It is silent now.
     const window = {
       start: "2026-08-01T00:00:00.000Z",
       end: "2026-08-08T00:00:00.000Z",
@@ -211,10 +215,10 @@ describe("cache_efficiency retirement", () => {
         {
           model: "claude-opus-5",
           modelTier: "frontier" as const,
-          inputTokens: 10_000_000,
+          inputTokens: 1_000_000,
           outputTokens: 100_000,
-          cacheReadTokens: 1_000_000,
-          cacheCreationTokens: 9_000_000,
+          cacheReadTokens: 10_000,
+          cacheCreationTokens: 5_000,
           costUsd: null,
         },
       ],
