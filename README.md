@@ -20,7 +20,9 @@ Being straight about it, because the honest answer is more useful than the pitch
 
 **Works.** The ledger — capture, storage, and a dashboard showing tokens and estimated spend by time, machine, app, model and source. The OpenAI-compatible proxy. Privacy: features are derived on your machine, and prompt text never leaves it unless you explicitly opt in.
 
-**Does not work yet: the recommendations, on Claude Code.** Four of the five efficiency rules cannot meaningfully fire against real coding-agent usage. This isn't a bug — the rules encode advice written for API traffic ("use a cheaper model", "send excerpts not whole files", "trim your history"), and a coding agent breaks every one of those assumptions.
+**Works as of v0.2.0: recommendations on Claude Code** — via two rules written for this workload rather than for API traffic. See [See your own numbers](#see-your-own-numbers) to run them against your history in about ten seconds, without deploying anything.
+
+**The original five rules still do not fire on Claude Code, and that is correct.** They encode advice written for API traffic ("use a cheaper model", "send excerpts not whole files", "trim your history"), and a coding agent breaks every one of those assumptions. Rather than retune them, v0.2.0 retired `cache_efficiency` outright and added a session grain.
 
 I measured a week of my own usage — 13,682 API responses — to check:
 
@@ -37,7 +39,31 @@ So `full_document_io` warns against pasting documents when raw input is 0.0% of 
 
 Full method and numbers: [What Claude Code usage actually costs](docs/claude-code-cost-findings.md).
 
-**What's next.** The levers those measurements point at — cache churn, absolute context size, and subagent attribution — are what the next rule set should measure. That work hasn't started. If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.
+**What v0.2.0 did about it.** Measuring per *session* rather than per request moved the target, and corrected one of my own conclusions above: cache creation is 29.7% of the input bill, but it concentrates in **cheap** sessions — the 90 highest-churn sessions were only 8.2% of burn. Chasing it would have optimised the part that doesn't hurt.
+
+The cost is in sessions that run for days and never reset. **21.1% of turns ran above 600k context and carried 46.9% of all cache reads**; holding context at 300k would have cut cache-read tokens **39.3%**. So:
+
+- **`session_context_ceiling`** — turns above a 300k context target, priced against the same turns held at the target.
+- **`session_cache_churn`** — cache writes dominating a session's input cost, billed at 12.5× the read rate.
+
+Replayed over a real week: **11 cards from 23 sessions, ~$1,000 API-equivalent**, the largest a single 1,935-turn session alive for 171 hours.
+
+**Two caveats I'd rather state than bury.** `session_context_ceiling` fires on roughly **7 in 10 sessions** — bounded in practice by savings-ranking and a 10-card cap, but weaker signal than a rule with that title implies. And the cards state a **bound, not a promised saving**: resetting a session costs you re-establishing context, which is why the disputable claim rides on each card as its assumption. Subagent turns carry no session id, so ~11% of consumption is attributed to nothing and the panel says so.
+
+If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.
+
+### See your own numbers
+
+No account, no deployment, no data leaving your machine — it reads `~/.claude/projects` directly:
+
+```bash
+pnpm install && pnpm -r build
+node scripts/measure-session-rules.mjs           # summary + pass/fail gate
+node scripts/measure-session-rules.mjs --detail  # every card: which session, what it cost
+WINDOW_DAYS=30 node scripts/measure-session-rules.mjs --detail
+```
+
+`--detail` prints exactly the cards the dashboard would show, ranked by savings. This is also the acceptance gate for the rule set itself: it exits non-zero both when nothing fires *and* when too much does, so an overtuned rule fails the build rather than filling a panel with noise.
 
 ## Architecture
 

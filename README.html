@@ -130,7 +130,8 @@
 <h2 id="what-works-today">What works today</h2>
 <p>Being straight about it, because the honest answer is more useful than the pitch:</p>
 <p><strong>Works.</strong> The ledger — capture, storage, and a dashboard showing tokens and estimated spend by time, machine, app, model and source. The OpenAI-compatible proxy. Privacy: features are derived on your machine, and prompt text never leaves it unless you explicitly opt in.</p>
-<p><strong>Does not work yet: the recommendations, on Claude Code.</strong> Four of the five efficiency rules cannot meaningfully fire against real coding-agent usage. This isn&#39;t a bug — the rules encode advice written for API traffic (&quot;use a cheaper model&quot;, &quot;send excerpts not whole files&quot;, &quot;trim your history&quot;), and a coding agent breaks every one of those assumptions.</p>
+<p><strong>Works as of v0.2.0: recommendations on Claude Code</strong> — via two rules written for this workload rather than for API traffic. See <a href="#see-your-own-numbers">See your own numbers</a> to run them against your history in about ten seconds, without deploying anything.</p>
+<p><strong>The original five rules still do not fire on Claude Code, and that is correct.</strong> They encode advice written for API traffic (&quot;use a cheaper model&quot;, &quot;send excerpts not whole files&quot;, &quot;trim your history&quot;), and a coding agent breaks every one of those assumptions. Rather than retune them, v0.2.0 retired <code>cache_efficiency</code> outright and added a session grain.</p>
 <p>I measured a week of my own usage — 13,682 API responses — to check:</p>
 <table>
 <thead>
@@ -166,7 +167,23 @@
 </tbody></table>
 <p>So <code>full_document_io</code> warns against pasting documents when raw input is 0.0% of the bill; <code>cache_efficiency</code> triggers below a 0.50 read ratio against a measured median of 0.997; <code>frontier_trivial</code> caps at 200 tokens against a 233k median. Only <code>frontier_share</code> transfers.</p>
 <p>Full method and numbers: <a href="docs/claude-code-cost-findings.md">What Claude Code usage actually costs</a>.</p>
-<p><strong>What&#39;s next.</strong> The levers those measurements point at — cache churn, absolute context size, and subagent attribution — are what the next rule set should measure. That work hasn&#39;t started. If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.</p>
+<p><strong>What v0.2.0 did about it.</strong> Measuring per <em>session</em> rather than per request moved the target, and corrected one of my own conclusions above: cache creation is 29.7% of the input bill, but it concentrates in <strong>cheap</strong> sessions — the 90 highest-churn sessions were only 8.2% of burn. Chasing it would have optimised the part that doesn&#39;t hurt.</p>
+<p>The cost is in sessions that run for days and never reset. <strong>21.1% of turns ran above 600k context and carried 46.9% of all cache reads</strong>; holding context at 300k would have cut cache-read tokens <strong>39.3%</strong>. So:</p>
+<ul>
+<li><strong><code>session_context_ceiling</code></strong> — turns above a 300k context target, priced against the same turns held at the target.</li>
+<li><strong><code>session_cache_churn</code></strong> — cache writes dominating a session&#39;s input cost, billed at 12.5× the read rate.</li>
+</ul>
+<p>Replayed over a real week: <strong>11 cards from 23 sessions, ~$1,000 API-equivalent</strong>, the largest a single 1,935-turn session alive for 171 hours.</p>
+<p><strong>Two caveats I&#39;d rather state than bury.</strong> <code>session_context_ceiling</code> fires on roughly <strong>7 in 10 sessions</strong> — bounded in practice by savings-ranking and a 10-card cap, but weaker signal than a rule with that title implies. And the cards state a <strong>bound, not a promised saving</strong>: resetting a session costs you re-establishing context, which is why the disputable claim rides on each card as its assumption. Subagent turns carry no session id, so ~11% of consumption is attributed to nothing and the panel says so.</p>
+<p>If your numbers look different from mine, please open an issue; one week of one developer is not a dataset.</p>
+<h3 id="see-your-own-numbers">See your own numbers</h3>
+<p>No account, no deployment, no data leaving your machine — it reads <code>~/.claude/projects</code> directly:</p>
+<pre><code class="language-bash">pnpm install &amp;&amp; pnpm -r build
+node scripts/measure-session-rules.mjs           # summary + pass/fail gate
+node scripts/measure-session-rules.mjs --detail  # every card: which session, what it cost
+WINDOW_DAYS=30 node scripts/measure-session-rules.mjs --detail
+</code></pre>
+<p><code>--detail</code> prints exactly the cards the dashboard would show, ranked by savings. This is also the acceptance gate for the rule set itself: it exits non-zero both when nothing fires <em>and</em> when too much does, so an overtuned rule fails the build rather than filling a panel with noise.</p>
 <h2 id="architecture">Architecture</h2>
 <pre><code>┌─────────────────────────────┐
 │  Claude Code / OpenAI SDK   │
