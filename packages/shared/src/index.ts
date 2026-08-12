@@ -64,10 +64,9 @@ export {
 export {
   runAggregateRules,
   frontierShareRule,
-  cacheEfficiencyRule,
   FRONTIER_SHARE_THRESHOLD,
-  CACHE_EFFICIENCY_MIN_READ_RATIO,
   AGGREGATE_RULE_IDS,
   type ModelWindowTotals,
   type AggregateWindow,
 } from "./rules/aggregate/index.js";
+export * from "./rules/session/index.js";

@@ -4,11 +4,13 @@ import {
   formatTokens,
   formatUsd,
   getRecommendations,
+  type CoverageDto,
   type RecommendationDto,
 } from "../api/client";
 
 export function Recommendations() {
   const [rows, setRows] = useState<RecommendationDto[] | null>(null);
+  const [coverage, setCoverage] = useState<CoverageDto | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -16,6 +18,7 @@ export function Recommendations() {
     try {
       const res = await getRecommendations("open");
       setRows(res.recommendations);
+      setCoverage(res.coverage);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load recommendations");
@@ -47,6 +50,8 @@ export function Recommendations() {
         published rates under the stated assumption, not a measurement.
       </p>
 
+      {coverage ? <CoverageNote coverage={coverage} /> : null}
+
       {error ? <div className="error">{error}</div> : null}
       {rows == null && !error ? <div className="loading">Loading…</div> : null}
 
@@ -67,6 +72,84 @@ export function Recommendations() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * States what the session-rules panel does NOT cover, in the sentence a
+ * user actually reads. Three blind spots/edge cases, all silent otherwise:
+ *
+ * - Zero sessions considered (a brand-new account with no history yet) gets
+ *   its own sentence rather than the arithmetically-true-but-absurd
+ *   "Considered 0 sessions, all shown per rule."
+ * - Only the top `sessionsShownPerRule` sessions per rule ever get a card
+ *   (see MAX_SESSION_CARDS_PER_RULE in jobs/session-rules.ts) — a session
+ *   ranked 11th on a rule produces no card, with nothing on the page to say
+ *   so. That clause is gated on `sessionsConsidered > sessionsShownPerRule`,
+ *   which is a proxy for "truncation is possible somewhere in the panel",
+ *   NOT proof that any particular rule was truncated: `sessionsConsidered`
+ *   counts every distinct session in the window, including sessions below
+ *   SESSION_MIN_TURNS and sessions with null cache breakdowns that no rule
+ *   ever evaluates, and says nothing about how many sessions actually fired
+ *   a given rule. A rule that fired once and was never truncated still
+ *   shows this clause whenever the window-wide count clears the cap. The
+ *   exact number omitted per rule is not available here — coverage is
+ *   computed from the events table at request time, with no access to
+ *   per-rule fire counts — so the gate stays a possibility signal, not a
+ *   per-rule guarantee.
+ * - Subagent/sidechain turns carry no sessionId by the adapter's design, so
+ *   their tokens never enter a rollup and never produce a card either. That
+ *   clause is only shown when `unattributedTurns > 0` — a dangling "0
+ *   subagent turns belong to no session" sentence would read as a bug
+ *   report, not as good news. Its singular/plural agreement (noun AND both
+ *   verbs — "1 turn belongs ... is not counted" vs "2 turns belong ... are
+ *   not counted") is decided once via `isSingularTurn` so the three
+ *   agreements cannot drift apart from each other. `(N tokens)` itself stays
+ *   plural regardless of turn count — a single turn still carries many
+ *   tokens, so the token count doesn't govern that word.
+ *
+ * Exported (and free of hooks, unlike `Recommendations` itself) so
+ * `Recommendations.test.tsx` can render it standalone with
+ * `renderToStaticMarkup`, the same no-DOM pattern used for `RecommendationCard`.
+ */
+export function CoverageNote({ coverage }: { coverage: CoverageDto }) {
+  const {
+    sessionsConsidered,
+    sessionsShownPerRule,
+    unattributedTurns,
+    unattributedInputTokens,
+  } = coverage;
+
+  if (sessionsConsidered === 0) {
+    return (
+      <p className="muted" style={{ fontSize: "0.85rem" }}>
+        No sessions in this window yet.
+      </p>
+    );
+  }
+
+  const sessionWord = sessionsConsidered === 1 ? "session" : "sessions";
+  const scopeClause =
+    sessionsConsidered > sessionsShownPerRule
+      ? `showing the top ${sessionsShownPerRule} per rule`
+      : "all shown per rule";
+
+  const isSingularTurn = unattributedTurns === 1;
+  const unattributedClause =
+    unattributedTurns > 0
+      ? ` ${unattributedTurns.toLocaleString("en-US")} subagent turn${
+          isSingularTurn ? "" : "s"
+        } (${formatTokens(unattributedInputTokens)} tokens) ${
+          isSingularTurn ? "belongs" : "belong"
+        } to no session and ${isSingularTurn ? "is" : "are"} not counted here.`
+      : "";
+
+  return (
+    <p className="muted" style={{ fontSize: "0.85rem" }}>
+      Considered {sessionsConsidered.toLocaleString("en-US")} {sessionWord},{" "}
+      {scopeClause}.
+      {unattributedClause}
+    </p>
   );
 }
 
@@ -118,11 +201,19 @@ export function RecommendationCard({
         full rate rather than wasted. Labelling both figures "waste" invited
         dividing one by the other for a per-token rate that corresponds to
         nothing. The money keeps its own label, and stays "estimated".
+
+        The dollar figure is also labelled "API-equivalent": most accounts
+        are on a subscription, where nothing is billed per token, so this
+        number is not what the user was charged. It is what the tokens
+        involved would have cost had this usage gone through the API at
+        published rates — the counterfactual the estimate is actually
+        measuring. Tokens stay the primary, measured figure; the dollars are
+        a unit conversion of them, not a receipt.
       */}
       <div className="muted" style={{ fontSize: "0.9rem" }}>
         Tokens involved: {formatTokens(r.estimatedWastedTokens)} · Est. savings:{" "}
         {formatUsd(r.estimatedWastedUsd)}{" "}
-        <span className="est-label">(estimated)</span>
+        <span className="est-label">(estimated, API-equivalent)</span>
         {r.eventIds.length > 0 ? ` · ${r.eventIds.length} linked event(s)` : null}
       </div>
       {r.counterfactual ? (

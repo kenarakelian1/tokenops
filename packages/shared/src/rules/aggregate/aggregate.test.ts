@@ -2,11 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   runAggregateRules,
   frontierShareRule,
-  cacheEfficiencyRule,
-  CACHE_EFFICIENCY_MIN_READ_RATIO,
+  AGGREGATE_RULE_IDS,
 } from "./index.js";
 import type { AggregateWindow, ModelWindowTotals } from "./index.js";
-import { MIN_WASTED_USD } from "../materiality.js";
 
 const window = (byModel: ModelWindowTotals[]): AggregateWindow => ({
   start: "2026-07-29T00:00:00.000Z",
@@ -201,241 +199,39 @@ describe("runAggregateRules", () => {
       expect(hit!.estimatedWastedUsd).toBeCloseTo(2, 5);
     });
   });
-
-  it("flags poor cache reuse", () => {
-    const hits = runAggregateRules(
-      window([
-        {
-          model: "claude-opus-5[1m]",
-          modelTier: "frontier",
-          inputTokens: 1_000_000,
-          outputTokens: 50_000,
-          cacheReadTokens: 10_000,
-          cacheCreationTokens: 5_000,
-          costUsd: 90,
-        },
-      ]),
-    );
-    expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeDefined();
-  });
-
-  it("is silent about cache when no breakdown was ever recorded (null), not reporting 0%", () => {
-    // Pre-migration events have no cache breakdown at all: null, not 0.
-    // Silence, not a false finding.
-    const hits = runAggregateRules(
-      window([
-        {
-          model: "claude-opus-5[1m]",
-          modelTier: "frontier",
-          inputTokens: 1_000_000,
-          outputTokens: 50_000,
-          cacheReadTokens: null,
-          cacheCreationTokens: null,
-          costUsd: 90,
-        },
-      ]),
-    );
-    expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeUndefined();
-  });
-
-  it("flags genuinely zero cache reuse when the breakdown was recorded as 0", () => {
-    // Post-migration, a recorded 0 is a real finding: you're paying full
-    // price for context on every call. This must NOT be silenced the way
-    // an absent (null) breakdown is.
-    const hits = runAggregateRules(
-      window([
-        {
-          model: "claude-opus-5[1m]",
-          modelTier: "frontier",
-          inputTokens: 1_000_000,
-          outputTokens: 50_000,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-          costUsd: 90,
-        },
-      ]),
-    );
-    expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeDefined();
-  });
-
-  it("keeps only the worst-offending model's cache_efficiency hit when multiple models qualify", () => {
-    // Regression for the multi-model collision: runAggregateRules used to
-    // emit one cache_efficiency hit per qualifying model, but the job's
-    // dedupeKey (ruleId + window start) carries no model, so two hits in
-    // the same run collided and whichever survived depended on
-    // non-deterministic GROUP BY order. Both models here are well under the
-    // 80% frontier-share threshold combined (105k/210k = 50%), so
-    // frontier_share stays silent and this test isolates the collision.
-    const hits = runAggregateRules(
-      window([
-        {
-          // readRatio 10%, target 50,000 -> gap 40,000 (worse).
-          model: "claude-opus-5[1m]",
-          modelTier: "frontier",
-          inputTokens: 100_000,
-          outputTokens: 5_000,
-          cacheReadTokens: 10_000,
-          cacheCreationTokens: 0,
-          costUsd: 1,
-        },
-        {
-          // readRatio 40%, target 50,000 -> gap 10,000 (better, but still a hit).
-          model: "claude-sonnet-5",
-          modelTier: "mid",
-          inputTokens: 100_000,
-          outputTokens: 5_000,
-          cacheReadTokens: 40_000,
-          cacheCreationTokens: 0,
-          costUsd: 1,
-        },
-      ]),
-    );
-    const cacheHits = hits.filter((h) => h.ruleId === "cache_efficiency");
-    expect(cacheHits).toHaveLength(1);
-    expect(cacheHits[0]!.detail).toMatch(/claude-opus-5\[1m\]/);
-    expect(cacheHits[0]!.estimatedWastedTokens).toBe(40_000);
-  });
-
-  it("drops a cache-reuse gap that doesn't clear the materiality floor", () => {
-    // readRatio = 5,500 / 12,000 ≈ 0.458 < 0.5, so checkCacheEfficiency
-    // itself would produce a hit — but the gap to the target ratio is only
-    // 6,000 - 5,500 = 500 tokens, well under MIN_WASTED_TOKENS (5,000). If
-    // runAggregateRules' `.filter(isMaterial)` were ever deleted, this
-    // hit would leak through and this test would fail.
-    const hits = runAggregateRules(
-      window([
-        {
-          model: "claude-sonnet-5",
-          modelTier: "mid",
-          inputTokens: 12_000,
-          outputTokens: 500,
-          cacheReadTokens: 5_500,
-          cacheCreationTokens: 0,
-          costUsd: 1,
-        },
-      ]),
-    );
-    expect(hits.find((h) => h.ruleId === "cache_efficiency")).toBeUndefined();
-  });
 });
 
-const NOW = new Date("2026-09-15T00:00:00Z");
-
-describe("cache_efficiency counterfactual", () => {
-  const totals = (over: Partial<ModelWindowTotals> = {}): ModelWindowTotals => ({
-    model: "claude-opus-5",
-    modelTier: "frontier",
-    inputTokens: 10_000_000,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    costUsd: null,
-    ...over,
-  });
-
-  it("targets the minimum healthy read ratio", () => {
-    const finding = cacheEfficiencyRule.evaluate(totals(), { now: NOW });
-    expect(finding).not.toBeNull();
-    expect(finding!.counterfactual.cacheReadTokens).toBe(
-      10_000_000 * CACHE_EFFICIENCY_MIN_READ_RATIO,
-    );
-    expect(finding!.counterfactual.model).toBe("claude-opus-5");
-  });
-
-  it("now quotes USD instead of null", () => {
-    // opus-5 in = $5/MTok. Actual: 10M at full rate = $50.
-    // Counterfactual: 5M full ($25) + 5M at 0.1x ($2.50) = $27.50. Saves $22.50.
-    const hits = runAggregateRules(window([totals()]), NOW);
-    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
-    expect(hit).toBeDefined();
-    expect(hit!.estimatedWastedUsd).toBeCloseTo(22.5, 4);
-  });
-
-  it("stays silent when no cache breakdown was ever recorded", () => {
-    const finding = cacheEfficiencyRule.evaluate(
-      totals({ cacheReadTokens: null }),
-      { now: NOW },
-    );
-    expect(finding).toBeNull();
-  });
-
-  it("drops a finding worth under a cent, which the token floor used to pass", () => {
-    // haiku in = $1/MTok. 20k input, 0 reads -> counterfactual moves 10k to
-    // 0.1x: saves 10k * $1/1M * 0.9 = $0.009, under MIN_WASTED_USD.
-    // The old token fallback (MIN_WASTED_TOKENS = 5_000) passed this at 10k.
-    const hits = runAggregateRules(
-      window([
-        totals({
-          model: "claude-haiku-4-5",
-          modelTier: "small",
-          inputTokens: 20_000,
-        }),
-      ]),
-      NOW,
-    );
-    expect(hits.some((h) => h.ruleId === "cache_efficiency")).toBe(false);
-    expect(MIN_WASTED_USD).toBe(0.01); // pins the floor this depends on
-  });
-
-  it("keeps cache tokens a subset of inputTokens when creation tokens leave less than half the input available for reads", () => {
-    // Worked example from the bug report / docs/rules/authoring.md § 4.4's
-    // invariant: a window dominated by cache WRITES with poor read reuse.
-    // Before the fix, targetReads was always inputTokens * 0.5 regardless of
-    // how much cacheCreationTokens already occupied, so the counterfactual
-    // declared targetReads (50,000) + cacheCreationTokens (60,000) =
-    // 110,000 against a 100,000-token input — more cache tokens than the
-    // input contains.
-    const finding = cacheEfficiencyRule.evaluate(
-      totals({
-        inputTokens: 100_000,
-        cacheReadTokens: 10_000,
-        cacheCreationTokens: 60_000,
-      }),
-      { now: NOW },
-    );
-    expect(finding).not.toBeNull();
-    const cf = finding!.counterfactual;
-    expect(
-      (cf.cacheReadTokens ?? 0) + (cf.cacheCreationTokens ?? 0),
-    ).toBeLessThanOrEqual(cf.inputTokens);
-    // The achievable read target is capped at inputTokens - cacheCreationTokens
-    // (100,000 - 60,000 = 40,000), not the naive inputTokens * 0.5 (50,000).
-    expect(cf.cacheReadTokens).toBe(40_000);
-    expect(cf.cacheCreationTokens).toBe(60_000);
-    // The shortfall (and implicatedTokens) shrinks to match the honest,
-    // achievable target: 40,000 - 10,000 = 30,000, not the naive
-    // 50,000 - 10,000 = 40,000.
-    expect(finding!.implicatedTokens).toBe(30_000);
-  });
-
-  it("prices the capped counterfactual correctly for a cache-write-heavy window", () => {
-    // Same window as above, on claude-opus-5 ($5/$25 per 1M; cache reads at
-    // 0.1x and cache creation at 1.25x the base input rate — see
-    // pricing.ts). Both figures below are derived by hand from those rates,
-    // not read off the code under test.
-    //
-    // Actual: fullRate = 100,000 - 10,000 - 60,000 = 30,000.
-    //   cost = 30,000/1e6*5 + 10,000/1e6*5*0.1 + 60,000/1e6*5*1.25
-    //        = 0.15 + 0.005 + 0.375 = 0.53
-    // Counterfactual (reads capped at 40,000, creation unchanged at 60,000):
-    //   fullRate = 100,000 - 40,000 - 60,000 = 0
-    //   cost = 0 + 40,000/1e6*5*0.1 + 60,000/1e6*5*1.25
-    //        = 0.02 + 0.375 = 0.395
-    // Saving = 0.53 - 0.395 = 0.135
-    const hits = runAggregateRules(
-      window([
-        totals({
-          inputTokens: 100_000,
+describe("cache_efficiency retirement", () => {
+  it("never emits a cache_efficiency hit, even on a window that would have tripped it", () => {
+    // Under the retired rule this window produced a real hit: readRatio =
+    // 10,000 / 1,000,000 = 0.01 (well under the 0.50 gate), readCapacity =
+    // 1,000,000 - 5,000 = 995,000, targetReads = min(500,000, 995,000) =
+    // 500,000, shortfall = 500,000 - 10,000 = 490,000 tokens — comfortably
+    // above the materiality floor. It is silent now.
+    const window = {
+      start: "2026-08-01T00:00:00.000Z",
+      end: "2026-08-08T00:00:00.000Z",
+      byModel: [
+        {
+          model: "claude-opus-5",
+          modelTier: "frontier" as const,
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
           cacheReadTokens: 10_000,
-          cacheCreationTokens: 60_000,
-          costUsd: 0.53,
-        }),
-      ]),
-      NOW,
-    );
-    const hit = hits.find((h) => h.ruleId === "cache_efficiency");
-    expect(hit).toBeDefined();
-    expect(hit!.estimatedWastedUsd).toBeCloseTo(0.135, 5);
+          cacheCreationTokens: 5_000,
+          costUsd: null,
+        },
+      ],
+    };
+    const hits = runAggregateRules(window, new Date("2026-08-11T00:00:00.000Z"));
+    expect(hits.map((h) => h.ruleId)).not.toContain("cache_efficiency");
+  });
+
+  it("keeps the id in AGGREGATE_RULE_IDS so open cards still get retired", () => {
+    // The job supersedes open cards for every id in this list that produced
+    // no hit. Dropping the id would strand every cache_efficiency card
+    // already in the database, open forever with no rule to retire it.
+    expect([...AGGREGATE_RULE_IDS]).toContain("cache_efficiency");
   });
 });
 

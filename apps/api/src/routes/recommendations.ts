@@ -9,6 +9,10 @@ import type {
   UsageEventRow,
 } from "../db/schema.js";
 import { rowToUsageEvent, type EventsRepo } from "../services/events-repo.js";
+import {
+  MAX_SESSION_CARDS_PER_RULE,
+  sessionWindowBounds,
+} from "../jobs/session-rules.js";
 
 export type RecommendationsRouteVariables = {
   eventsRepo: EventsRepo;
@@ -149,7 +153,32 @@ recommendationsRoutes.get("/", requireUser, async (c) => {
   }
 
   const rows = await repo.listRecommendations(userId, status);
-  return c.json({ recommendations: rows.map(recToDto) });
+
+  // Same trailing window the session-rules job evaluates, so "sessions
+  // considered" here matches what actually produced the cards being shown
+  // rather than some other period.
+  const { startIso, endIso } = sessionWindowBounds(new Date());
+
+  // usage_events has no indexes beyond its primary key, so sessionCoverage
+  // is two sequential scans — slow enough to fail or time out on its own.
+  // coverage is purely a supplementary disclosure sentence on the web
+  // client (CoverageDto is optional there for exactly this reason), so a
+  // failure here must degrade to no coverage note, not a 500 that hides
+  // every recommendation the user actually came for.
+  let coverage: Awaited<ReturnType<EventsRepo["sessionCoverage"]>> | undefined;
+  try {
+    coverage = await repo.sessionCoverage(userId, startIso, endIso);
+  } catch (err) {
+    console.error("sessionCoverage failed; omitting coverage note", err);
+  }
+
+  return c.json({
+    recommendations: rows.map(recToDto),
+    coverage:
+      coverage != null
+        ? { ...coverage, sessionsShownPerRule: MAX_SESSION_CARDS_PER_RULE }
+        : undefined,
+  });
 });
 
 /**

@@ -74,3 +74,29 @@ A rule set fitted to this workload would look at cache churn, absolute context s
 ## Reproducing this
 
 The measurements come from reading `~/.claude/projects/**/*.jsonl`, filtering to `type: "assistant"` lines carrying `message.usage`, and **deduplicating by `message.id`** — Claude Code writes one line per content block, so a naive per-line count inflates everything by ~2.1×. That inflation is itself the critical defect that stopped the branch; see the branch's review record.
+
+## What the session rules actually surface (measured 2026-08-11)
+
+The two session-grain rules built to replace `cache_efficiency` — `session_context_ceiling` and `session_cache_churn` — were replayed against the same `~/.claude/projects/**/*.jsonl` history using `scripts/measure-session-rules.mjs`, over a 7-day window, before being called done. This is the acceptance gate the previous rule set never had.
+
+The gate checks two things: an empty finding set (the rules never fire) and a noisy one (the rules fire on most sessions instead of an exceptional few). The noise check is against the pre-cap finding count — every hit a rule produces before its top-10-per-rule display cap — not the post-cap "cards shown" count, since post-cap is bounded above by `10 × (number of rules)` regardless of how often a rule actually fires and so could never trip a ceiling on its own.
+
+```
+window:                7 days
+sessions:              24
+turns (deduped):       15,567
+unattributed turns:    4,897 (481.9M tokens)
+
+session_context_ceiling: 17 sessions fire (70.8% of 24), top 10 shown, $898.29 API-equivalent
+session_cache_churn: 1 sessions fire (4.2% of 24), top 1 shown, $60.34 API-equivalent
+
+CARDS SHOWN: 11
+PRE-CAP FINDINGS: 18 (noise ceiling: 24)
+PASS: bounded, non-empty finding set.
+```
+
+24 sessions were considered, built from 15,567 deduped turns; 4,897 turns (481.9M tokens) were sidechain and carry no `sessionId`, so they are counted as unattributed rather than attributed to any session. `session_context_ceiling` fires on 17 of the 24 sessions — **70.8%** — capped to the top 10 by estimated waste, $898.29 API-equivalent. `session_cache_churn` fires on 1 of 24 — **4.2%** — $60.34 API-equivalent. 11 cards total are shown to the user; 18 pre-cap findings were produced against a noise ceiling of 24 (half of the 48 possible session×rule pairs across 24 sessions and 2 rules).
+
+`session_context_ceiling` firing on 17 of 24 sessions — about 71% — is a high proportion for a rule meant to flag an exceptional condition rather than describe the norm. It is not disqualifying on its own (the underlying workload does run consistently large contexts, as the earlier measurements in this document show), but it means the rule is closer to "most sessions in this window" than to "an outlier worth a card," and that is worth watching if it holds over a longer window or a different set of projects. The script deliberately does not gate on this fire-rate number — one week of one developer's history is too small a sample to justify a threshold on it, and inventing one would repeat the mistake this document exists to catch.
+
+The absolute dollar figures above will drift slightly between runs of this script even with no code changes: the scan window is mtime-based (`WINDOW_DAYS` days back from "now"), so as time passes the same 7-day window rolls forward and picks up newer turns while dropping older ones. That is expected drift, not a discrepancy to investigate.
