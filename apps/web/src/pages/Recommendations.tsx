@@ -77,8 +77,11 @@ export function Recommendations() {
 
 /**
  * States what the session-rules panel does NOT cover, in the sentence a
- * user actually reads. Two blind spots, both silent otherwise:
+ * user actually reads. Three blind spots/edge cases, all silent otherwise:
  *
+ * - Zero sessions considered (a brand-new account with no history yet) gets
+ *   its own sentence rather than the arithmetically-true-but-absurd
+ *   "Considered 0 sessions, all shown per rule."
  * - Only the top `sessionsShownPerRule` sessions per rule ever get a card
  *   (see MAX_SESSION_CARDS_PER_RULE in jobs/session-rules.ts) — a session
  *   ranked 11th on a rule produces no card, with nothing on the page to say
@@ -90,7 +93,12 @@ export function Recommendations() {
  *   their tokens never enter a rollup and never produce a card either. That
  *   clause is only shown when `unattributedTurns > 0` — a dangling "0
  *   subagent turns belong to no session" sentence would read as a bug
- *   report, not as good news.
+ *   report, not as good news. Its singular/plural agreement (noun AND both
+ *   verbs — "1 turn belongs ... is not counted" vs "2 turns belong ... are
+ *   not counted") is decided once via `isSingularTurn` so the three
+ *   agreements cannot drift apart from each other. `(N tokens)` itself stays
+ *   plural regardless of turn count — a single turn still carries many
+ *   tokens, so the token count doesn't govern that word.
  *
  * Exported (and free of hooks, unlike `Recommendations` itself) so
  * `Recommendations.test.tsx` can render it standalone with
@@ -104,25 +112,35 @@ export function CoverageNote({ coverage }: { coverage: CoverageDto }) {
     unattributedInputTokens,
   } = coverage;
 
+  if (sessionsConsidered === 0) {
+    return (
+      <p className="muted" style={{ fontSize: "0.85rem" }}>
+        No sessions in this window yet.
+      </p>
+    );
+  }
+
   const sessionWord = sessionsConsidered === 1 ? "session" : "sessions";
   const scopeClause =
     sessionsConsidered > sessionsShownPerRule
       ? `showing the top ${sessionsShownPerRule} per rule`
       : "all shown per rule";
 
+  const isSingularTurn = unattributedTurns === 1;
+  const unattributedClause =
+    unattributedTurns > 0
+      ? ` ${unattributedTurns.toLocaleString("en-US")} subagent turn${
+          isSingularTurn ? "" : "s"
+        } (${formatTokens(unattributedInputTokens)} tokens) ${
+          isSingularTurn ? "belongs" : "belong"
+        } to no session and ${isSingularTurn ? "is" : "are"} not counted here.`
+      : "";
+
   return (
     <p className="muted" style={{ fontSize: "0.85rem" }}>
       Considered {sessionsConsidered.toLocaleString("en-US")} {sessionWord},{" "}
       {scopeClause}.
-      {unattributedTurns > 0 ? (
-        <>
-          {" "}
-          {unattributedTurns.toLocaleString("en-US")} subagent turn
-          {unattributedTurns === 1 ? "" : "s"} (
-          {formatTokens(unattributedInputTokens)} tokens) belong to no session
-          and are not counted here.
-        </>
-      ) : null}
+      {unattributedClause}
     </p>
   );
 }

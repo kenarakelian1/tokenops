@@ -192,7 +192,11 @@ describe("CoverageNote", () => {
 
   it("does not claim a top-N truncation when every considered session is already shown", () => {
     // "showing the top 10 per rule" implies 10 were kept out of more — untrue
-    // and misleading when only 3 sessions exist in the window at all.
+    // and misleading when only 3 sessions exist in the window at all. Pins
+    // the replacement wording too, not just the absence of the wrong one —
+    // an implementation that dropped the scope clause entirely (rendering
+    // just "Considered 3 sessions.") would satisfy the negative assertion
+    // alone without actually saying anything true.
     const text = noteTextOf({
       sessionsConsidered: 3,
       sessionsShownPerRule: 10,
@@ -200,6 +204,41 @@ describe("CoverageNote", () => {
       unattributedInputTokens: 0,
     });
     expect(text).toContain("3 sessions");
+    expect(text).toContain("all shown per rule");
     expect(text).not.toContain("top 10 per rule");
+  });
+
+  it("agrees noun and verb for a single unattributed turn", () => {
+    // Regression: the noun's plural suffix was already conditional on
+    // unattributedTurns === 1, but the verbs ("belong", "are not counted")
+    // were hardcoded plural, so a single turn rendered "1 subagent turn ...
+    // belong to no session and are not counted here" — wrong on both verbs.
+    // isSingularTurn now decides the noun and both verbs from one place.
+    const text = noteTextOf({
+      sessionsConsidered: 50,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 1,
+      unattributedInputTokens: 42,
+    });
+    expect(text).toContain(
+      "1 subagent turn (42 tokens) belongs to no session and is not counted here.",
+    );
+    expect(text).not.toContain("subagent turns");
+    expect(text).not.toContain("belong to no session");
+    expect(text).not.toContain("are not counted");
+  });
+
+  it("gives zero considered sessions its own sentence instead of an absurd 'all shown per rule'", () => {
+    // "Considered 0 sessions, all shown per rule." is arithmetically true
+    // (0 > 10 is false, so the non-truncation branch fires) but reads as a
+    // malfunction to a brand-new account with no history yet. That state is
+    // deliberate, not incidental: it gets its own sentence.
+    const text = noteTextOf({
+      sessionsConsidered: 0,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 0,
+      unattributedInputTokens: 0,
+    });
+    expect(text).toBe("No sessions in this window yet.");
   });
 });
