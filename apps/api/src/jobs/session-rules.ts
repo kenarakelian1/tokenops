@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   SESSION_RULE_IDS,
   runSessionRules,
@@ -77,6 +78,23 @@ function bySavingsDesc(a: { hit: RuleHit }, b: { hit: RuleHit }): number {
  * rule computed but leaves the user's dismissal judgement alone. See
  * session-rules.test.ts's "does not resurrect a session card the user
  * dismissed" for the end-to-end regression.
+ *
+ * Ordering hazard, accepted deliberately: per rule, this sweeps the whole
+ * open set FIRST and writes the ranked survivors one upsert at a time
+ * AFTER — the reverse of aggregate-rules.ts, which writes each new card
+ * before superseding the stale one. That job can write-then-supersede
+ * because its keepDedupeKey names the one card just written; this job
+ * can't use the same trick (see above — one dedupeKey can't mean "keep
+ * these N"), so the only way to express "clear everything, then lay down
+ * this run's survivors" is to clear first. The cost: if an upsert throws
+ * partway through a rule's ranked list (say the 4th of 10), that rule is
+ * left with fewer open cards than it should have — silently short, not
+ * merely stale — until the next hourly run repairs it. This is accepted,
+ * not overlooked: every card here is derived state, fully recomputed from
+ * `sessionRollups` every run, so a transient shortfall self-heals within
+ * an hour. Making it atomic would mean widening
+ * supersedeOpenRecommendations to accept a set of keys to keep instead of
+ * one, which is out of scope for this task.
  */
 export async function runSessionRulesForUser(
   repo: Pick<
@@ -106,13 +124,22 @@ export async function runSessionRulesForUser(
 
   let written = 0;
   for (const ruleId of SESSION_RULE_IDS) {
-    // Clear the rule's whole open set first. "__sweep__" cannot collide
-    // with any real dedupeKey, which is what makes this a full clear.
-    await repo.supersedeOpenRecommendations(
-      userId,
-      ruleId,
-      `${ruleId}|__sweep__`,
-    );
+    // Clear the rule's whole open set first. A real dedupeKey is
+    // `${ruleId}|${sessionId}`, and sessionId is unvalidated external event
+    // data (z.string().optional(), no length or character restriction —
+    // see packages/shared/src/schema/event.ts), so a fixed literal like
+    // `${ruleId}|__sweep__` COULD collide with an actual session named
+    // "__sweep__": supersedeOpenRecommendations' `dedupeKey <>
+    // keepDedupeKey` predicate would then treat that one real card as
+    // "kept" and it would survive a sweep meant to clear it, leaving a
+    // stale card that never retires. Appending a fresh randomUUID() per
+    // call makes collision require a client guessing this run's
+    // just-generated UUID in advance, which is cryptographically
+    // infeasible — see "sweeps a card whose session is literally named the
+    // sweep sentinel" in session-rules.test.ts for the regression this
+    // guards.
+    const sweepKey = `${ruleId}|__sweep__${randomUUID()}`;
+    await repo.supersedeOpenRecommendations(userId, ruleId, sweepKey);
 
     const ranked = (byRule.get(ruleId) ?? [])
       .sort(bySavingsDesc)

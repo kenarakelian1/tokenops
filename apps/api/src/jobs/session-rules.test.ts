@@ -102,9 +102,66 @@ describe("runSessionRulesForUser", () => {
     ]);
     await runSessionRulesForUser(repo as never, "u1", new Date("2026-09-15T00:00:00.000Z"));
     const call = repo.upsertRecommendation.mock.calls[0]![0];
-    // Priced at the intro rate (session ended before the 2026-08-31 expiry),
-    // not the higher standard rate in force at `now`.
-    expect(call.estimatedWastedUsd).toBeGreaterThan(0);
+    // Priced at the intro rate (session ended before the 2026-08-31 expiry,
+    // $2/$10 per 1M tokens): $5.6. NOT $8.4, which is what this same fixture
+    // prices to at the standard rate ($3/$15) in force at wall-clock `now`
+    // (2026-09-15) — asserting merely `> 0` would pass under either rate and
+    // would not catch a regression that repriced this at `now`.
+    expect(call.estimatedWastedUsd).toBeCloseTo(5.6, 5);
+  });
+});
+
+describe("runSessionRulesForUser sweep sentinel hardening", () => {
+  it("sweeps a card whose session is literally named the sweep sentinel, once it stops firing", async () => {
+    // Regression: a fixed sweep key like `${ruleId}|__sweep__` collides
+    // with a real dedupeKey if a session happens to be named "__sweep__"
+    // (sessionId is unvalidated external data). The predicate that drives
+    // the sweep — `dedupeKey <> keepDedupeKey` — is scoped to the real
+    // repo (SQL / in-memory Map), not this job's own logic, so this
+    // exercises createMemoryEventsRepo rather than a mock: a mock would
+    // just record the call and could never show the stale-survivor bug.
+    const repo: EventsRepo = createMemoryEventsRepo();
+    const userId = "u1";
+    const sessionId = "__sweep__";
+
+    for (let i = 0; i < 25; i += 1) {
+      await repo.insertEventIfNew(userId, {
+        eventId: `evt-${i}`,
+        timestamp: new Date(
+          Date.parse("2026-08-10T00:00:00.000Z") + i * 60_000,
+        ).toISOString(),
+        machineId: "machine-1",
+        machineName: "ci-runner",
+        app: "otel",
+        provider: "anthropic",
+        model: "claude-opus-5",
+        inputTokens: 2_000_000,
+        outputTokens: 10_000,
+        costUsd: null,
+        grain: undefined,
+        sessionId,
+        cacheReadTokens: 1_000_000,
+        cacheCreationTokens: 10_000,
+        features: { modelTier: "frontier" },
+        hasContent: false,
+      });
+    }
+
+    await runSessionRulesForUser(repo, userId, NOW);
+    let open = await repo.listRecommendations(userId, "open");
+    expect(
+      open.some((r) => r.dedupeKey === "session_context_ceiling|__sweep__"),
+    ).toBe(true);
+
+    // 9 days later: those events have rolled out of the 7-day trailing
+    // window, so the session no longer fires and its card must be
+    // retired. With the un-hardened literal sentinel, this card's own
+    // dedupeKey would equal the keep-key and it would survive forever.
+    await runSessionRulesForUser(repo, userId, new Date("2026-08-19T00:00:00.000Z"));
+    open = await repo.listRecommendations(userId, "open");
+    expect(
+      open.some((r) => r.dedupeKey === "session_context_ceiling|__sweep__"),
+    ).toBe(false);
   });
 });
 
