@@ -29,7 +29,7 @@ export type RuleFinding = {
    * prefix ("Assumes: {assumption}", see
    * apps/web/src/pages/Recommendations.tsx), so a rule that includes the word
    * itself renders "Assumes: Assumes …". A rule states the belief; the UI
-   * frames it. `assumptions.test.ts` pins all five strings exactly.
+   * frames it. `assumptions.test.ts` pins all six strings exactly.
    */
   assumption?: string;
 };
@@ -54,8 +54,14 @@ export type RuleContext = {
  * question from what the RULE declares it consumes. Both gates are live.
  *
  * The aggregate runner (rules/aggregate/index.ts) is hand-wired rather than a
- * loop over a registry, because its two rules take different input types, so
- * there is no symmetric filter on that side.
+ * loop over a registry: it calls its one live rule (frontierShareRule)
+ * directly. That runner's AGGREGATE_RULE_IDS list still names two ids
+ * (`frontier_share` and the retired `cache_efficiency`) because it also
+ * drives retirement of stale cards for rules that stopped evaluating —
+ * `cache_efficiency` stays there on purpose so old open cards under that id
+ * get superseded. That list therefore no longer maps 1:1 onto what the
+ * runner evaluates, so a generic loop over it would need to evaluate a rule
+ * that has no live implementation to call.
  *
  * See docs/rules/authoring.md.
  */

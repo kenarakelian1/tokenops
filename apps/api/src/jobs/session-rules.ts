@@ -17,11 +17,23 @@ export const SESSION_WINDOW_DAYS = 7;
 /**
  * Open cards per rule, ranked by savings.
  *
- * Ten because consumption is that concentrated: across a measured week the
- * top 10 sessions of 190 were 80.1% of all consumption, so ten cards cover
- * most of what is worth acting on. PER RULE rather than overall, because
- * ceiling findings are worth far more than churn findings and a single
- * shared cap would crowd churn out of the panel entirely.
+ * This is a panel-size budget, not a coverage claim. In the measured 7-day
+ * window, 24 sessions carried mainline (non-sidechain) turns; of those, 17
+ * fired `session_context_ceiling`. A cap of 10 keeps the 10 highest-savings
+ * of those 17, so 7 sessions that genuinely fired the rule are omitted from
+ * the panel — that is the trade-off this constant makes, not some
+ * percentage of overall consumption.
+ *
+ * Session FILES are not sessions: the window held 228 `.jsonl` files, but
+ * 203 of them are entirely subagent (sidechain) transcripts with no
+ * mainline turns, so they never produce a rollup at all. 24 is the real
+ * population this cap operates on; do not re-derive a larger figure by
+ * counting files.
+ *
+ * PER RULE rather than overall, because the cap is per rule: the single
+ * `session_cache_churn` finding keeps its own slot rather than sharing a
+ * combined budget with the 10 `session_context_ceiling` cards and being
+ * crowded out.
  */
 export const MAX_SESSION_CARDS_PER_RULE = 10;
 

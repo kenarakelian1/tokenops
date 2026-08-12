@@ -85,10 +85,18 @@ export function Recommendations() {
  * - Only the top `sessionsShownPerRule` sessions per rule ever get a card
  *   (see MAX_SESSION_CARDS_PER_RULE in jobs/session-rules.ts) — a session
  *   ranked 11th on a rule produces no card, with nothing on the page to say
- *   so. That clause is only shown when a truncation actually happened
- *   (`sessionsConsidered > sessionsShownPerRule`); claiming "top 10 per
- *   rule" when only 3 sessions exist would assert a cap that never bound
- *   anything.
+ *   so. That clause is gated on `sessionsConsidered > sessionsShownPerRule`,
+ *   which is a proxy for "truncation is possible somewhere in the panel",
+ *   NOT proof that any particular rule was truncated: `sessionsConsidered`
+ *   counts every distinct session in the window, including sessions below
+ *   SESSION_MIN_TURNS and sessions with null cache breakdowns that no rule
+ *   ever evaluates, and says nothing about how many sessions actually fired
+ *   a given rule. A rule that fired once and was never truncated still
+ *   shows this clause whenever the window-wide count clears the cap. The
+ *   exact number omitted per rule is not available here — coverage is
+ *   computed from the events table at request time, with no access to
+ *   per-rule fire counts — so the gate stays a possibility signal, not a
+ *   per-rule guarantee.
  * - Subagent/sidechain turns carry no sessionId by the adapter's design, so
  *   their tokens never enter a rollup and never produce a card either. That
  *   clause is only shown when `unattributedTurns > 0` — a dangling "0

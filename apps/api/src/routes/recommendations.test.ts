@@ -315,6 +315,43 @@ describe("GET /v1/recommendations coverage", () => {
       unattributedInputTokens: 20,
     });
   });
+
+  it("still returns 200 with recommendations when sessionCoverage rejects", async () => {
+    // usage_events has no indexes beyond its primary key, so sessionCoverage
+    // is two sequential scans — slow enough to fail or time out on its own.
+    // A failure there must degrade to no coverage note, not sink the whole
+    // panel: the web client already types `coverage` as optional for
+    // exactly this reason.
+    const authRepo = createMemoryAuthRepo();
+    const eventsRepo = createMemoryEventsRepo();
+    eventsRepo.sessionCoverage = async () => {
+      throw new Error("simulated sessionCoverage failure");
+    };
+    const app = createApp({
+      db: undefined as never,
+      authRepo,
+      eventsRepo,
+      clerkVerifier: verifier,
+    });
+    const me = await app.request("/v1/auth/me", { headers: bearer("token-a") });
+    const userId = ((await me.json()) as { id: string }).id;
+
+    await eventsRepo.insertEventIfNew(
+      userId,
+      trivialFrontierEvent({ eventId: "evt-coverage-failure" }),
+    );
+
+    const res = await app.request("/v1/recommendations", {
+      headers: bearer("token-a"),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      recommendations: unknown[];
+      coverage?: unknown;
+    };
+    expect(Array.isArray(body.recommendations)).toBe(true);
+    expect(body.coverage).toBeUndefined();
+  });
 });
 
 describe("fetchWindowEvents ceiling", () => {

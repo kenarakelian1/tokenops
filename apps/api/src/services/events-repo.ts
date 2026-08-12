@@ -554,10 +554,15 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
       );
 
       // Band index derived from CONTEXT_BAND_EDGES rather than written out,
-      // so the SQL cannot drift from the rule's own edges.
+      // so the SQL cannot drift from the rule's own edges. The column name
+      // is read off usageEvents.inputTokens.name rather than hardcoded as
+      // "input_tokens" so this sql.raw band tracks a rename in schema.ts —
+      // a hardcoded literal would compile cleanly and fail at runtime on
+      // rename, and no test in this repo exercises the Drizzle path to
+      // catch it.
       const bandCase = sql.raw(
         `CASE ${CONTEXT_BAND_EDGES.slice(1)
-          .map((edge, i) => `WHEN input_tokens < ${edge} THEN ${i}`)
+          .map((edge, i) => `WHEN ${usageEvents.inputTokens.name} < ${edge} THEN ${i}`)
           .join(" ")} ELSE ${CONTEXT_BAND_EDGES.length - 1} END`,
       );
 
