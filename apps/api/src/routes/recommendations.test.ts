@@ -267,6 +267,56 @@ describe("GET /v1/recommendations/backtest", () => {
   });
 });
 
+describe("GET /v1/recommendations coverage", () => {
+  it("reports session coverage alongside the cards", async () => {
+    // The panel shows at most 10 sessions per rule and drops turns that
+    // carry no sessionId at all (sidechain turns, by the adapter's design).
+    // Without these numbers the panel would present a truncated view as
+    // complete.
+    const authRepo = createMemoryAuthRepo();
+    const eventsRepo = createMemoryEventsRepo();
+    const app = createApp({
+      db: undefined as never,
+      authRepo,
+      eventsRepo,
+      clerkVerifier: verifier,
+    });
+    const me = await app.request("/v1/auth/me", { headers: bearer("token-a") });
+    const userId = ((await me.json()) as { id: string }).id;
+
+    // One turn attributed to a session, one with no sessionId — both inside
+    // the trailing session-rules window — so sessionsConsidered and the
+    // unattributed figures both come out non-zero rather than trivially 0.
+    await eventsRepo.insertEventIfNew(
+      userId,
+      trivialFrontierEvent({ eventId: "evt-sess-1", sessionId: "sess-a" }),
+    );
+    await eventsRepo.insertEventIfNew(
+      userId,
+      trivialFrontierEvent({ eventId: "evt-unattributed-1" }),
+    );
+
+    const res = await app.request("/v1/recommendations", {
+      headers: bearer("token-a"),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      coverage: {
+        sessionsConsidered: number;
+        sessionsShownPerRule: number;
+        unattributedTurns: number;
+        unattributedInputTokens: number;
+      };
+    };
+    expect(body.coverage).toEqual({
+      sessionsConsidered: 1,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 1,
+      unattributedInputTokens: 20,
+    });
+  });
+});
+
 describe("fetchWindowEvents ceiling", () => {
   // Exercises MAX_BACKTEST_EVENTS' truncation behavior directly against the
   // exported function with an injected pageSize/maxEvents, rather than

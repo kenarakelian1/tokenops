@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { RecommendationDto } from "../api/client";
-import { RecommendationCard, describeCounterfactual } from "./Recommendations";
+import type { CoverageDto, RecommendationDto } from "../api/client";
+import {
+  CoverageNote,
+  RecommendationCard,
+  describeCounterfactual,
+} from "./Recommendations";
 
 /**
  * The card's user-visible sentences, pinned.
@@ -58,15 +62,20 @@ describe("RecommendationCard", () => {
     );
   });
 
-  it("labels the token figure as what it is, and keeps the money estimated", () => {
+  it("labels the token figure as what it is, and labels the money as API-equivalent", () => {
     // "Est. waste" claimed both figures describe waste. estimatedWastedTokens
     // is the tokens the finding is ABOUT: here the cache-read shortfall,
     // which was billed at the full rate rather than wasted, and for
     // frontier_share every frontier model's tokens including ones never
     // repriced. Dividing the dollars by it yields a rate for nothing.
+    //
+    // The dollar figure is also relabeled "API-equivalent": on a
+    // subscription plan the number is notional — what this usage would have
+    // cost on the API, not what the user was actually charged. Tokens stay
+    // the primary, measured figure; the money keeps its own label.
     const text = textOf(cacheEfficiency);
     expect(text).toContain("Tokens involved: 5.00M · Est. savings: $22.5000");
-    expect(text).toContain("(estimated)");
+    expect(text).toContain("(estimated, API-equivalent)");
     expect(text).not.toContain("Est. waste");
   });
 
@@ -137,5 +146,60 @@ describe("describeCounterfactual", () => {
         cacheCreationTokens: 250_000,
       }),
     ).toBe("claude-opus-5 · 10.00M in / 0 out · 5.00M cache read · 250.0k cache write");
+  });
+});
+
+/**
+ * The coverage note's user-visible sentence, pinned the same way the card's
+ * text is: rendered to static markup and stripped of tags, because a silent
+ * truncation (only the top 10 sessions per rule are ever kept, sidechain
+ * turns carry no sessionId at all) reads as full coverage unless the panel
+ * says otherwise in the words a person actually reads.
+ */
+function noteTextOf(coverage: CoverageDto): string {
+  const html = renderToStaticMarkup(<CoverageNote coverage={coverage} />);
+  return html.replace(/<[^>]*>/g, "");
+}
+
+describe("CoverageNote", () => {
+  it("states how many sessions were considered, that only the top N per rule are shown, and what belongs to no session", () => {
+    const text = noteTextOf({
+      sessionsConsidered: 190,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 4_423,
+      unattributedInputTokens: 500_000_000,
+    });
+    expect(text).toContain("190 sessions");
+    expect(text).toContain("top 10 per rule");
+    expect(text).toContain("4,423");
+    expect(text).toContain("500.00M");
+    expect(text).toContain("belong to no session");
+  });
+
+  it("omits the unattributed clause instead of describing zero turns", () => {
+    // A dangling "0 subagent turns (0 tokens) belong to no session" clause
+    // would read as a bug, not as good news. When there is nothing
+    // unattributed, the sentence should simply not mention it.
+    const text = noteTextOf({
+      sessionsConsidered: 50,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 0,
+      unattributedInputTokens: 0,
+    });
+    expect(text).not.toContain("subagent turn");
+    expect(text).not.toContain("belong to no session");
+  });
+
+  it("does not claim a top-N truncation when every considered session is already shown", () => {
+    // "showing the top 10 per rule" implies 10 were kept out of more — untrue
+    // and misleading when only 3 sessions exist in the window at all.
+    const text = noteTextOf({
+      sessionsConsidered: 3,
+      sessionsShownPerRule: 10,
+      unattributedTurns: 0,
+      unattributedInputTokens: 0,
+    });
+    expect(text).toContain("3 sessions");
+    expect(text).not.toContain("top 10 per rule");
   });
 });

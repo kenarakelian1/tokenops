@@ -123,6 +123,18 @@ export type RecommendationDto = {
   assumption: string | null;
 };
 
+/**
+ * What the session-rules window actually covered, alongside the cards
+ * themselves. Optional: an older API build that predates this field must
+ * not break the page — the coverage note simply does not render.
+ */
+export type CoverageDto = {
+  sessionsConsidered: number;
+  sessionsShownPerRule: number;
+  unattributedTurns: number;
+  unattributedInputTokens: number;
+};
+
 export type MachineDto = {
   machineId: string;
   name: string;
@@ -169,7 +181,7 @@ export function getEvents(params?: {
 }
 
 export function getRecommendations(status: "open" | "dismissed" | "all" = "open") {
-  return api<{ recommendations: RecommendationDto[] }>(
+  return api<{ recommendations: RecommendationDto[]; coverage?: CoverageDto }>(
     `/v1/recommendations?status=${status}`,
   );
 }

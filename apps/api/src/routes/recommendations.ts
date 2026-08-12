@@ -9,6 +9,10 @@ import type {
   UsageEventRow,
 } from "../db/schema.js";
 import { rowToUsageEvent, type EventsRepo } from "../services/events-repo.js";
+import {
+  MAX_SESSION_CARDS_PER_RULE,
+  sessionWindowBounds,
+} from "../jobs/session-rules.js";
 
 export type RecommendationsRouteVariables = {
   eventsRepo: EventsRepo;
@@ -149,7 +153,20 @@ recommendationsRoutes.get("/", requireUser, async (c) => {
   }
 
   const rows = await repo.listRecommendations(userId, status);
-  return c.json({ recommendations: rows.map(recToDto) });
+
+  // Same trailing window the session-rules job evaluates, so "sessions
+  // considered" here matches what actually produced the cards being shown
+  // rather than some other period.
+  const { startIso, endIso } = sessionWindowBounds(new Date());
+  const coverage = await repo.sessionCoverage(userId, startIso, endIso);
+
+  return c.json({
+    recommendations: rows.map(recToDto),
+    coverage: {
+      ...coverage,
+      sessionsShownPerRule: MAX_SESSION_CARDS_PER_RULE,
+    },
+  });
 });
 
 /**
