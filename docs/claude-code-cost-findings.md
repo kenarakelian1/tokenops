@@ -74,3 +74,24 @@ A rule set fitted to this workload would look at cache churn, absolute context s
 ## Reproducing this
 
 The measurements come from reading `~/.claude/projects/**/*.jsonl`, filtering to `type: "assistant"` lines carrying `message.usage`, and **deduplicating by `message.id`** — Claude Code writes one line per content block, so a naive per-line count inflates everything by ~2.1×. That inflation is itself the critical defect that stopped the branch; see the branch's review record.
+
+## What the session rules actually surface (measured 2026-08-11)
+
+The two session-grain rules built to replace `cache_efficiency` — `session_context_ceiling` and `session_cache_churn` — were replayed against the same `~/.claude/projects/**/*.jsonl` history using `scripts/measure-session-rules.mjs`, over a 7-day window, before being called done. This is the acceptance gate the previous rule set never had.
+
+```
+window:                7 days
+sessions:              24
+turns (deduped):       15,546
+unattributed turns:    4,889 (481.3M tokens)
+
+session_context_ceiling: 17 sessions fire, top 10 shown, $897.80 API-equivalent
+session_cache_churn: 1 sessions fire, top 1 shown, $60.34 API-equivalent
+
+CARDS SHOWN: 11
+PASS: bounded, non-empty finding set.
+```
+
+24 sessions were considered, built from 15,546 deduped turns; 4,889 turns (481.3M tokens) were sidechain and carry no `sessionId`, so they are counted as unattributed rather than attributed to any session. `session_context_ceiling` fires on 17 of the 24 sessions (capped to the top 10 by estimated waste, $897.80 API-equivalent); `session_cache_churn` fires on 1 of 24 ($60.34 API-equivalent). 11 cards total are shown, within the script's noise ceiling of 40.
+
+`session_context_ceiling` firing on 17 of 24 sessions — about 71% — is a high proportion for a rule meant to flag an exceptional condition rather than describe the norm. It is not disqualifying on its own (the underlying workload does run consistently large contexts, as the earlier measurements in this document show), but it means the rule is closer to "most sessions in this window" than to "an outlier worth a card," and that is worth watching if it holds over a longer window or a different set of projects.
