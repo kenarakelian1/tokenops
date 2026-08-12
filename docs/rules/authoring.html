@@ -114,10 +114,15 @@
 <body>
 <main>
 <h1 id="writing-a-tokenops-recommendation-rule">Writing a TokenOps recommendation rule</h1>
-<p>TokenOps ships five efficiency rules. This document is the contract for
-writing a sixth. Outside contributions are accepted — the rule surface is
-published precisely so that people who know a workload we don&#39;t can encode
-it.</p>
+<p>TokenOps ships six efficiency rules — four request/aggregate-grain rules
+(<code>frontier_trivial</code>, <code>full_document_io</code>, <code>context_bloat</code>, <code>frontier_share</code>)
+and two session-grain rules (<code>session_context_ceiling</code>,
+<code>session_cache_churn</code>; see the session-grain section below). A seventh,
+<code>cache_efficiency</code>, shipped and was later retired — its id stays in
+<code>RuleId</code> so historical rows still type-check, but no runner evaluates it.
+This document is the contract for writing the next one. Outside
+contributions are accepted — the rule surface is published precisely so
+that people who know a workload we don&#39;t can encode it.</p>
 <p>Everything below is copied from the source under
 <code>packages/shared/src/rules/</code>. If a snippet here and the code disagree, the
 code wins and this document is a bug.</p>
@@ -289,13 +294,48 @@ message count, paste and file-dump scores, and (for <code>context_bloat</code>) 
 event&#39;s same-session history. An aggregate has none of that: it is a
 time-bucketed sum with no request inside it. <code>runRules</code> discards every
 <code>grain: &quot;aggregate&quot;</code> event before any request rule runs.</p>
-<p>The aggregate runner is not a <code>for</code> loop over a registry — it calls its two
-rules explicitly, because <code>frontier_share</code> consumes a whole
-<code>AggregateWindow</code> while <code>cache_efficiency</code> is evaluated once per model row
-(<code>ModelWindowTotals</code>) and deduplicated down to the worst offender. Adding an
-aggregate rule means editing <code>runAggregateRules</code> as well as
-<code>AGGREGATE_RULE_IDS</code>; that list is what tells the hourly job which cards to
-retire when a rule stops firing.</p>
+<p>The aggregate runner is not a <code>for</code> loop over a registry — it calls its one
+live rule, <code>frontier_share</code>, explicitly. <code>AGGREGATE_RULE_IDS</code> still lists a
+second id, the retired <code>cache_efficiency</code>, because that list also drives
+retirement: the hourly job supersedes open cards for any listed id that
+produced no hit, which is exactly what clears <code>cache_efficiency</code>&#39;s old cards
+now that nothing evaluates it. Adding an aggregate rule means editing
+<code>runAggregateRules</code> as well as <code>AGGREGATE_RULE_IDS</code>.</p>
+<h3 id="session-grain-sessionrollup-and-runsessionrules">Session grain: <code>SessionRollup</code> and <code>runSessionRules</code></h3>
+<p>A third shape of input exists alongside request and aggregate grain:
+per-session totals plus a context-size histogram, in <code>SessionRollup</code>
+(<code>rules/session/rollup.ts</code>). It carries the same whole-window totals
+<code>ModelWindowTotals</code> does — <code>inputTokens</code>, <code>outputTokens</code>,
+<code>cacheReadTokens</code>/<code>cacheCreationTokens</code> with the same
+<code>null</code>-means-unrecorded convention (§ 4.1) — plus <code>turnsByContextBand</code> and
+<code>cacheReadByContextBand</code>, fixed-length histograms bucketed by
+<code>CONTEXT_BAND_EDGES</code>. The histogram, not per-turn samples, is what keeps a
+rollup bounded regardless of how many turns a session ran.</p>
+<p>Session rules declare <code>grain: &quot;aggregate&quot;</code>, not <code>&quot;session&quot;</code> — the <code>Rule</code>
+contract&#39;s <code>grain</code> union above has only <code>&quot;request&quot; | &quot;aggregate&quot;</code> members,
+and a <code>SessionRollup</code> is a per-session aggregate in exactly the sense that
+word already covers: a bounded sum with no single request inside it. A
+third union member would buy nothing, since nothing downstream needs to
+distinguish &quot;aggregate by model&quot; from &quot;aggregate by session&quot; at the type
+level.</p>
+<p>They run through their own runner, <code>runSessionRules</code>
+(<code>rules/session/index.ts</code>) — a sibling of <code>runAggregateRules</code> rather than an
+extension of it, since the two take differently-shaped input (per-model
+window totals vs. per-session totals with a histogram). The session-rules
+job (<code>apps/api/src/jobs/session-rules.ts</code>) builds one <code>SessionRollup</code> per
+session in the trailing window and calls <code>runSessionRules</code> once per
+rollup, through the same <code>priceFinding</code> and <code>isMaterial</code> every other grain
+uses. Register a new session rule in <code>SESSION_RULES</code> and its id in
+<code>SESSION_RULE_IDS</code> (<code>rules/session/index.ts</code>) — the session-rules job walks
+<code>SESSION_RULE_IDS</code> to retire cards for a rule that stopped firing, the same
+reasoning as <code>AGGREGATE_RULE_IDS</code> above.</p>
+<p>The two shipped session rules: <code>session_context_ceiling</code> (<code>warn</code>) flags a
+long session that kept re-reading a large context past a fixed target size;
+<code>session_cache_churn</code> (<code>info</code>) flags a session where cache-prefix rewrites,
+not reads, dominate the input bill. Both require <code>SESSION_MIN_TURNS</code> turns
+before evaluating, and both stay silent — not zero — when the rollup&#39;s cache
+breakdown is <code>null</code>, the same null-vs-zero discipline every other grain
+follows (§ 4.1).</p>
 <hr>
 <h2 id="2-a-worked-example-frontier_trivial">2. A worked example: <code>frontier_trivial</code></h2>
 <p>This is the whole rule, verbatim from
@@ -421,10 +461,10 @@ whose cost happened to be unpriceable.</p>
 <p><code>implicatedTokens</code> means &quot;the tokens this finding is <em>about</em>.&quot; For a model
 swap that is the entire call: all 200 of them were served by the wrong model.
 For <code>full_document_io</code> it is the removed share; for <code>context_bloat</code> the
-excess over the session&#39;s first request; for <code>cache_efficiency</code> the cache-read
-shortfall; for <code>frontier_share</code> all frontier tokens in the window. In each
-case it answers &quot;how much traffic does this finding concern,&quot; which is what
-a user reads it as.</p>
+excess over the session&#39;s first request; for <code>session_cache_churn</code> the
+cache-creation tokens spent rewriting instead of reading; for <code>frontier_share</code>
+all frontier tokens in the window. In each case it answers &quot;how much traffic
+does this finding concern,&quot; which is what a user reads it as.</p>
 <p>The field flows into <code>PricedSavings.estimatedWastedTokens</code> untouched — the
 pricer never derives it, precisely so a model-swap rule can report a token
 count that is not a difference.</p>
@@ -475,9 +515,13 @@ list.</p>
 actually have done.</strong> Not something cheaper. Not something theoretically
 optimal. Something they could have chosen, in the situation they were
 actually in.</p>
-<p>What the five shipped rules declare. The right-hand column is the <strong>rendered</strong>
-card line — the <code>Assumes: </code> prefix comes from the UI, not from the rule (see
-§ 2), so the string in the source is everything after the colon:</p>
+<p>What the four request/aggregate-grain rules declare (the two session-grain
+rules are covered separately in the session-grain section above — their
+counterfactuals move tokens between a session&#39;s own cache buckets rather
+than swapping models or trimming a single request). The right-hand column is
+the <strong>rendered</strong> card line — the <code>Assumes: </code> prefix comes from the UI, not
+from the rule (see § 2), so the string in the source is everything after the
+colon:</p>
 <table>
 <thead>
 <tr>
@@ -502,16 +546,16 @@ card line — the <code>Assumes: </code> prefix comes from the UI, not from the 
 <td><em>&quot;Assumes: context could have stayed at the size of the session&#39;s first request&quot;</em></td>
 </tr>
 <tr>
-<td><code>cache_efficiency</code></td>
-<td>Same model; <code>cacheReadTokens</code> raised toward <code>inputTokens × 0.5</code>, capped at <code>inputTokens − cacheCreationTokens</code> so the two cache components still fit inside <code>inputTokens</code> (see § 4.4)</td>
-<td><em>&quot;Assumes: a 50% cache-read ratio is achievable for this workload&quot;</em> — the percentage is the ratio <strong>actually targeted</strong>, so it drops below 50% whenever the cap binds</td>
-</tr>
-<tr>
 <td><code>frontier_share</code></td>
 <td>Dominant frontier model&#39;s cheaper in-vendor sibling, over <strong>that model&#39;s own</strong> tokens and cache breakdown</td>
 <td><em>&quot;Assumes: routine work moves from claude-opus-5 to claude-sonnet-5. Other vendors&#39; frontier tokens are counted in the share but not repriced.&quot;</em></td>
 </tr>
 </tbody></table>
+<p><code>cache_efficiency</code> previously appeared here as a fourth example — same
+model, <code>cacheReadTokens</code> raised toward <code>inputTokens × 0.5</code> and capped. It was
+retired 2026-08-11: its gate (cache-read ratio below 0.50) cannot fire on
+coding-agent traffic, where the measured median is 0.997. Its id remains in
+<code>RuleId</code> (§ 4.3) so historical rows still type-check.</p>
 <p>Three shapes appear, and yours will be one of them:</p>
 <ul>
 <li><strong>Routing advice</strong> — change <code>model</code>, keep every token count. The saving is
@@ -523,7 +567,11 @@ tokens at the model&#39;s own rate. (<code>full_document_io</code>, <code>contex
 between the rate tiers <em>inside</em> that input by raising a cache component. The
 saving is the multiplier delta (a cache read is billed at 0.1× the base
 input rate). The target must be capped to fit inside <code>inputTokens</code> — see
-§ 4.4. (<code>cache_efficiency</code>)</li>
+§ 4.4. No currently-shipped rule takes this exact shape; <code>cache_efficiency</code>
+did, before retirement (see above). <code>session_cache_churn</code> is a related but
+distinct shape — it redistributes within a session&#39;s own fixed cache total
+rather than raising a target against the whole of <code>inputTokens</code> — see the
+session-grain section above.</li>
 </ul>
 <p>Mixing two of them in one rule means you are asserting the user would have
 done two different things at once, and the dollar figure stops being
@@ -619,7 +667,11 @@ pricing-table question, not a rule question. Fix the table.</p>
   | &quot;full_document_io&quot;
   | &quot;context_bloat&quot;
   | &quot;frontier_share&quot;
-  | &quot;cache_efficiency&quot;;
+  // Retired 2026-08-11; kept so historical rows still type-check and so
+  // the aggregate job&#39;s retirement sweep can clear its old cards.
+  | &quot;cache_efficiency&quot;
+  | &quot;session_context_ceiling&quot;
+  | &quot;session_cache_churn&quot;;
 </code></pre>
 <p>A new rule adds its id to this union in <code>packages/shared/src/rules/types.ts</code>.
 <code>RuleId</code> is not <code>string</code>, and it is not decorative: the union is what makes
@@ -677,13 +729,18 @@ stays <code>null</code>.</p>
 <p>Its post-condition is exactly the invariant above. Use it in any rule whose
 counterfactual lowers <code>inputTokens</code>.</p>
 <p><strong>Cache-raising rules must cap, and <code>trimCacheTokens</code> will not help them.</strong>
-There is a third shape, and <code>cache_efficiency</code> is the reference example: it
-leaves <code>inputTokens</code> alone and <em>raises</em> a cache component. <code>trimCacheTokens</code>
-only shrinks, so it does not apply. The rule has to enforce the invariant
-itself — the target it wants (<code>inputTokens × 0.5</code>) is not necessarily a target
-it can have, because whatever <code>cacheCreationTokens</code> the window already
-recorded occupies part of the same <code>inputTokens</code> budget. From
-<code>aggregate/cache-efficiency.ts</code>:</p>
+There is a third shape: leave <code>inputTokens</code> alone and <em>raise</em> a cache
+component. <code>trimCacheTokens</code> only shrinks, so it does not apply — the rule
+has to enforce the invariant itself, because a wanted target (e.g.
+<code>inputTokens × 0.5</code>) is not necessarily a target it can have: whatever
+<code>cacheCreationTokens</code> the window already recorded occupies part of the same
+<code>inputTokens</code> budget.</p>
+<p>No currently-shipped rule takes this shape. <code>cache_efficiency</code> was the
+reference example and enforced exactly this cap, until it was retired
+2026-08-11 (§ 3) — the source file, <code>aggregate/cache-efficiency.ts</code>, no
+longer exists. Its capping logic is kept below because the <em>pattern</em> still
+applies to any future rule that raises a cache component, not because the
+snippet is live:</p>
 <pre><code class="language-ts">const cacheCreationTokens = totals.cacheCreationTokens ?? 0;
 const readCapacity = Math.max(0, totals.inputTokens - cacheCreationTokens);
 const targetReads = Math.min(
