@@ -403,8 +403,9 @@ describe("trailingWindow", () => {
   const sorted = toTimedUnits([ev(0, 10), ev(1, 20), ev(2, 40), ev(6, 80)]);
 
   it("sums only events inside the trailing window", () => {
-    // at hour 6, a 5-hour window covers (hour 1, hour 6]: 20 + 40 + 80
-    expect(trailingWindow(sorted, T0 + 6 * H, 5)).toBe(140);
+    // At hour 6 a 5-hour window is (hour 1, hour 6]. Hour 1 sits exactly on
+    // the opening edge and is therefore EXCLUDED: 40 + 80.
+    expect(trailingWindow(sorted, T0 + 6 * H, 5)).toBe(120);
   });
 
   it("excludes the event exactly at the window's opening edge", () => {
@@ -438,16 +439,26 @@ describe("windowHistory", () => {
     expect(windowHistory([], 5, T0 + H, T0, 1)).toEqual([]);
   });
 
-  it("stays linear rather than quadratic on a long history", () => {
-    // 30 days of hourly events sampled hourly is 720 x 720 under a naive
-    // re-scan per sample. This must complete promptly; a quadratic
-    // implementation on real data (15k+ events) would not.
-    const many = Array.from({ length: 720 }, (_, i) => ev(i, 1));
+  // NOTE: the sweep's linear complexity is enforced by code review, not by a
+  // test. A timing assertion at any fixture size this suite can afford does
+  // not separate the two implementations — the naive per-sample form runs in
+  // single-digit milliseconds at 720 events — and a test claiming a guarantee
+  // it cannot provide is worse than no test. What IS worth pinning is that
+  // the two code paths agree, which no other test covers.
+  it("agrees with trailingWindow at every sample", () => {
+    // Irregular spacing on purpose: repeated timestamps and long gaps put
+    // window edges in the places an off-by-one would show up.
+    const offsets = [0, 0, 1, 1, 1, 5, 9, 9, 20, 21, 40, 41, 41, 90, 200];
+    const many = offsets.flatMap((o, i) =>
+      Array.from({ length: 100 }, (_, j) => ev(o * 3 + (j % 3), i + j)),
+    );
     const sorted = toTimedUnits(many);
-    const started = Date.now();
-    const h = windowHistory(sorted, 168, T0, T0 + 719 * H, 1);
-    expect(h).toHaveLength(720);
-    expect(Date.now() - started).toBeLessThan(2_000);
+    const from = T0;
+    const to = T0 + 640 * H;
+    const swept = windowHistory(sorted, 168, from, to, 1);
+    for (const sample of swept) {
+      expect(sample.units).toBe(trailingWindow(sorted, sample.at, 168));
+    }
   });
 });
 ```
