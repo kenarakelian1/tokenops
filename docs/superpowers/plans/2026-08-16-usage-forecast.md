@@ -603,6 +603,15 @@ EOF
 - Consumes: `TimedUnit`, `trailingWindow` from this module
 - Produces: `PACE_HOURS`, `PROJECTION_HORIZON_HOURS`, `PROJECTION_STEP_HOURS`, `pacePerHour(sorted, nowMs)`, `projectWindow(sorted, nowMs, hours, ceiling): { reachesAtMs: number | null; reason: string | null }`
 
+> **Superseded in part.** The Step 1 block below is the original brief. Two of
+> its cases did not survive execution: the "rising series" fixture only
+> appeared to reach a ceiling *because* of the uncapped-inflow defect, and the
+> horizon regex `/not.*within/i` matches a message that no longer exists. The
+> delivered suite also adds two tests this block lacks — one pinning the
+> `pace * hours` saturation cap, one pinning the outflow boundary with an
+> exact instant, without which flipping that boundary left every test green.
+> `packages/shared/src/forecast/windows.test.ts` is the reference.
+
 - [ ] **Step 1: Write the failing test**
 
 Append to `packages/shared/src/forecast/windows.test.ts`:
@@ -713,12 +722,24 @@ export function pacePerHour(sorted: TimedUnit[], nowMs: number): number {
  * So this simulates forward:
  *
  *   trailing(t) = trailing(now)
- *               + pace * (t - now)        // inflow, estimated from recent use
- *               - units leaving the window // outflow, EXACT
+ *               - units leaving the window   // outflow, EXACT
+ *               + pace * min(h, hours)       // inflow, estimated and CAPPED
  *
  * The outflow term is exact because those events are already in the ledger —
  * it is `trailingWindow` evaluated over the slice that ages out. Nothing about
  * it is a guess.
+ *
+ * The cap on the inflow term is load-bearing, not defensive. Future events
+ * occupy (now, t], but only the part overlapping a window of width `hours`
+ * is ever inside it — a span of min(h, hours), not h. Drop the cap and the
+ * term grows without bound while outflow saturates at `current`, so the
+ * projection crosses ANY ceiling given enough horizon. That reintroduces the
+ * perpetual-exhaustion warning described above, one layer down, and is
+ * exactly the defect this plan originally shipped with.
+ *
+ * A consequence worth stating: `projected` plateaus at h = hours and is
+ * non-increasing thereafter, so unreached by then means unreachable at this
+ * pace — which is why the loop breaks there and why the reason says so.
  *
  * Returns `reachesAtMs: null` with a human-readable `reason` whenever no
  * honest projection exists. The reason is rendered to the user, so it reads
