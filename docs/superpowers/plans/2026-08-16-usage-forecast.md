@@ -762,13 +762,26 @@ export function projectWindow(
       outflow += sorted[tail]!.units;
       tail += 1;
     }
-    const projected = current + pace * h - outflow;
+    // The assumed future inflow occupies (now, t], but only the part
+    // overlapping the window counts — a span of min(h, hours), NOT h.
+    // Without that cap the term grows without bound while outflow saturates
+    // at `current`, so the projection crosses ANY ceiling given enough
+    // horizon: the exact perpetual-exhaustion warning this function exists
+    // to prevent.
+    const projected = current - outflow + pace * Math.min(h, hours);
     if (projected >= ceiling) return { reachesAtMs: t, reason: null };
+
+    // At h = hours the inflow term is fully saturated and outflow is
+    // non-decreasing, so `projected` can never rise again. Unreached here
+    // means unreachable at this pace.
+    if (h >= hours) break;
   }
 
   return {
     reachesAtMs: null,
-    reason: `not reached within ${PROJECTION_HORIZON_HOURS / 24} days at the current pace`,
+    // NOT "not reached within N days" — that invites the reader to think day
+    // N+1 might differ. The plateau means unreached is unreachable.
+    reason: "not reachable at this pace",
   };
 }
 ```
