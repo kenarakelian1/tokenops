@@ -35,6 +35,13 @@ export {
   windowHistory,
   type TimedUnit,
 } from "./windows.js";
+export {
+  CANDIDATE_MIN_GAP_HOURS,
+  CANDIDATE_MIN_ACTIVE_HOURS,
+  CANDIDATE_TOP_DECILE,
+  detectCandidateWalls,
+  hourOfWeekActivity,
+} from "./candidates.js";
 
 /**
  * Below this, a "historical maximum" is just the current period restated, so
