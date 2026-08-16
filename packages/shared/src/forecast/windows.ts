@@ -84,3 +84,96 @@ export function windowHistory(
   }
   return out;
 }
+
+/** Trailing hours the pace is averaged over. */
+export const PACE_HOURS = 24;
+
+/** How far ahead the projection looks before giving up. */
+export const PROJECTION_HORIZON_HOURS = 24 * 14;
+
+/** Simulation granularity. */
+export const PROJECTION_STEP_HOURS = 1;
+
+/** Units per hour over the trailing PACE_HOURS. */
+export function pacePerHour(sorted: TimedUnit[], nowMs: number): number {
+  return trailingWindow(sorted, nowMs, PACE_HOURS) / PACE_HOURS;
+}
+
+/**
+ * When will this trailing window reach `ceiling`?
+ *
+ * A trailing total does NOT simply grow at the current pace: as time
+ * advances, old events leave the window. Extrapolating `current + pace * t`
+ * ignores that and systematically over-predicts exhaustion — a steady-state
+ * user would be told they are about to run out, forever.
+ *
+ * So this simulates forward:
+ *
+ *   trailing(t) = [real events still in the window at t]   // outflow, EXACT
+ *               + pace * min(t - now, hours)                // assumed inflow
+ *
+ * The first term is exact because those events are already in the ledger —
+ * it is `current` minus whatever has aged out by `t`, tracked with an
+ * advancing pointer.
+ *
+ * The second term is capped at `pace * hours`, not `pace * (t - now)`. Past
+ * `hours` from now, the assumed future inflow rolling in at the head of the
+ * window is itself old enough to be rolling out the tail — a steady pace
+ * saturates the window at `pace * hours` and goes no higher. Without the
+ * cap, projecting far enough ahead (the horizon is 14 days; the window may
+ * be hours wide) always eventually crosses any ceiling, even one a
+ * steady-state user will never actually reach — silently reintroducing the
+ * unbounded-growth failure this function exists to avoid, just delayed
+ * instead of eliminated.
+ *
+ * Returns `reachesAtMs: null` with a human-readable `reason` whenever no
+ * honest projection exists. The reason is rendered to the user, so it reads
+ * as an explanation rather than an error code.
+ */
+export function projectWindow(
+  sorted: TimedUnit[],
+  nowMs: number,
+  hours: number,
+  ceiling: number | null,
+): { reachesAtMs: number | null; reason: string | null } {
+  if (ceiling == null) {
+    return { reachesAtMs: null, reason: "no ceiling to project against" };
+  }
+
+  const current = trailingWindow(sorted, nowMs, hours);
+  if (current >= ceiling) return { reachesAtMs: nowMs, reason: null };
+
+  const pace = pacePerHour(sorted, nowMs);
+  if (pace <= 0) {
+    return { reachesAtMs: null, reason: "no recent consumption to project from" };
+  }
+
+  const span = hours * MS_PER_HOUR;
+
+  // Outflow accumulates as the window's opening edge sweeps forward, so the
+  // pointer only ever advances — the whole series is walked once across all
+  // steps, not re-scanned per step.
+  let outflow = 0;
+  let tail = 0;
+  while (tail < sorted.length && sorted[tail]!.at <= nowMs - span) tail += 1;
+
+  for (
+    let h = PROJECTION_STEP_HOURS;
+    h <= PROJECTION_HORIZON_HOURS;
+    h += PROJECTION_STEP_HOURS
+  ) {
+    const t = nowMs + h * MS_PER_HOUR;
+    const windowOpensAt = t - span;
+    while (tail < sorted.length && sorted[tail]!.at <= windowOpensAt) {
+      outflow += sorted[tail]!.units;
+      tail += 1;
+    }
+    const projected = current - outflow + pace * Math.min(h, hours);
+    if (projected >= ceiling) return { reachesAtMs: t, reason: null };
+  }
+
+  return {
+    reachesAtMs: null,
+    reason: `not reached within ${PROJECTION_HORIZON_HOURS / 24} days at the current pace`,
+  };
+}

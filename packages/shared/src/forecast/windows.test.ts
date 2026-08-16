@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toTimedUnits, trailingWindow, windowHistory } from "./windows.js";
+import { pacePerHour, projectWindow } from "./windows.js";
 import type { UsageEvent } from "../schema/event.js";
 
 const H = 3_600_000;
@@ -137,5 +138,90 @@ describe("windowHistory", () => {
     for (const point of history) {
       expect(point.units).toBe(trailingWindow(sorted, point.at, WINDOW_H));
     }
+  });
+});
+
+describe("pacePerHour", () => {
+  it("averages the trailing 24 hours", () => {
+    // 240 units spread across the last 24h -> 10/hour
+    const evs = Array.from({ length: 24 }, (_, i) => ev(i, 10));
+    expect(pacePerHour(toTimedUnits(evs), T0 + 23 * H)).toBeCloseTo(10, 6);
+  });
+
+  it("is zero when nothing was consumed recently", () => {
+    expect(pacePerHour(toTimedUnits([ev(0, 1000)]), T0 + 500 * H)).toBe(0);
+  });
+});
+
+describe("projectWindow", () => {
+  it("accounts for events rolling OUT of the window, not just inflow", () => {
+    // THIS TEST FAILS UNDER NAIVE EXTRAPOLATION, which is the point.
+    //
+    // A 5-hour window. In the last 5h: 100 units, all of it in one spike at
+    // hour 0. Current pace is low. Naive `current + pace*t` climbs forever;
+    // the truth is that the hour-0 spike leaves the window within an hour and
+    // the total DROPS. A ceiling just above `current` must therefore never be
+    // reached.
+    const evs = [ev(0, 100), ev(4, 1)];
+    const sorted = toTimedUnits(evs);
+    const now = T0 + 4 * H;
+    expect(trailingWindow(sorted, now, 5)).toBe(101);
+
+    const res = projectWindow(sorted, now, 5, 110);
+    expect(res.reachesAtMs).toBeNull();
+    expect(res.reason).toMatch(/not.*within/i);
+  });
+
+  it("projects a reach time when inflow genuinely outpaces roll-out", () => {
+    // FIXTURE CHANGED FROM THE BRIEF (implementation left untouched — see
+    // task-3-report.md): the brief's rising series (10*(i+1) units/hour)
+    // only produced a reachable projection under the brief's own
+    // roll-out formula, which turned out to have a real bug of its own —
+    // the assumed-inflow term was never capped at `pace * hours`, so it
+    // grew without bound and crossed any ceiling given a long enough
+    // horizon, the exact unbounded-growth failure this function exists to
+    // avoid. Once that's fixed (inflow saturates at `pace * hours`,
+    // matching a steady-state window), the original fixture's "reach" was
+    // an artifact of the bug, not a real one, and the corrected model
+    // legitimately never reaches it.
+    //
+    // This fixture instead models a lull ending: 19 steady hours at 10
+    // units/hour, then a 5-hour lull at 1 unit/hour right before `now`.
+    // The 24h pace (~8.1/h) is pulled up by the steady hours, so the
+    // 5-hour window's steady-state ceiling (pace * 5 ~= 40.6) sits well
+    // above the current lull-depressed total (5) -- a ceiling in between
+    // is reached honestly, as the lull ages out and normal pace resumes.
+    const evs = [
+      ...Array.from({ length: 19 }, (_, i) => ev(i, 10)),
+      ...Array.from({ length: 5 }, (_, i) => ev(19 + i, 1)),
+    ];
+    const sorted = toTimedUnits(evs);
+    const now = T0 + 23 * H;
+    const current = trailingWindow(sorted, now, 5);
+    const res = projectWindow(sorted, now, 5, current * 1.05);
+    expect(res.reachesAtMs).not.toBeNull();
+    expect(res.reachesAtMs!).toBeGreaterThan(now);
+    expect(res.reason).toBeNull();
+  });
+
+  it("reports already-exceeded rather than a past instant", () => {
+    const sorted = toTimedUnits([ev(0, 100)]);
+    const res = projectWindow(sorted, T0, 5, 50);
+    expect(res.reachesAtMs).toBe(T0);
+    expect(res.reason).toBeNull();
+  });
+
+  it("declines to project when the pace is zero", () => {
+    const sorted = toTimedUnits([ev(0, 100)]);
+    const res = projectWindow(sorted, T0 + 400 * H, 168, 1_000_000);
+    expect(res.reachesAtMs).toBeNull();
+    expect(res.reason).toMatch(/no recent consumption/i);
+  });
+
+  it("declines to project against a null ceiling", () => {
+    const sorted = toTimedUnits([ev(0, 100)]);
+    const res = projectWindow(sorted, T0, 5, null);
+    expect(res.reachesAtMs).toBeNull();
+    expect(res.reason).toMatch(/no ceiling/i);
   });
 });
