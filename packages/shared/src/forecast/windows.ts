@@ -170,10 +170,18 @@ export function projectWindow(
     }
     const projected = current - outflow + pace * Math.min(h, hours);
     if (projected >= ceiling) return { reachesAtMs: t, reason: null };
+
+    // Once h reaches the window width, the assumed-inflow term is fully
+    // saturated (Math.min(h, hours) stops growing) and outflow is
+    // non-decreasing (consumptionUnits is clamped non-negative), so
+    // `projected` cannot exceed what it already was at this step for any
+    // larger h. If the ceiling isn't reached by here, it never will be —
+    // continuing to PROJECTION_HORIZON_HOURS would only re-confirm that.
+    if (h >= hours) break;
   }
 
   return {
     reachesAtMs: null,
-    reason: `not reached within ${PROJECTION_HORIZON_HOURS / 24} days at the current pace`,
+    reason: "not reachable at this pace",
   };
 }

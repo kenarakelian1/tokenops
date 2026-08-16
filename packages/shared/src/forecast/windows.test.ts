@@ -169,7 +169,30 @@ describe("projectWindow", () => {
 
     const res = projectWindow(sorted, now, 5, 110);
     expect(res.reachesAtMs).toBeNull();
-    expect(res.reason).toMatch(/not.*within/i);
+    expect(res.reason).toMatch(/not reachable/i);
+  });
+
+  it("never crosses a ceiling above the pace-hours saturation cap, even at steady state", () => {
+    // Pins the property named in projectWindow's docstring: a steady-state
+    // user must never be told they are perpetually about to run out. This
+    // is the single most discriminating case available -- it is what
+    // originally caught the brief's uncapped formula (which reached this
+    // exact ceiling anyway, just delayed to h=27 instead of never) and
+    // would have caught the naive formula too (reaches at h=15). Nothing
+    // else in this file pins the saturation cap itself.
+    //
+    // Steady 10 units/hour for 24h -> pace = 10/h. A 5-hour window at
+    // steady state holds pace * hours = 50 units and no more. A ceiling of
+    // 200 is 4x that headroom: comfortably, permanently unreachable.
+    const evs = Array.from({ length: 24 }, (_, i) => ev(i, 10));
+    const sorted = toTimedUnits(evs);
+    const now = T0 + 23 * H;
+    expect(trailingWindow(sorted, now, 5)).toBe(50);
+    expect(pacePerHour(sorted, now)).toBeCloseTo(10, 6);
+
+    const res = projectWindow(sorted, now, 5, 200);
+    expect(res.reachesAtMs).toBeNull();
+    expect(res.reason).toMatch(/not reachable/i);
   });
 
   it("projects a reach time when inflow genuinely outpaces roll-out", () => {
@@ -191,6 +214,17 @@ describe("projectWindow", () => {
     // 5-hour window's steady-state ceiling (pace * 5 ~= 40.6) sits well
     // above the current lull-depressed total (5) -- a ceiling in between
     // is reached honestly, as the lull ages out and normal pace resumes.
+    //
+    // NOTE: this reaches at h=1 under the naive formula, the brief's
+    // uncapped formula, and the corrected capped formula alike -- it does
+    // NOT discriminate the roll-out/saturation fix. No positive-reach test
+    // can: a first crossing under the *correct* model can only ever occur
+    // at h <= hours (after that, `projected` is non-increasing -- see the
+    // saturation-cap test above), and capped vs. uncapped formulas agree
+    // exactly on that range (Math.min(h, hours) === h there). All of the
+    // discriminating power necessarily lives in the negative cases, not
+    // this one. This test is a regression guard against an
+    // always-null/broken implementation, nothing more.
     const evs = [
       ...Array.from({ length: 19 }, (_, i) => ev(i, 10)),
       ...Array.from({ length: 5 }, (_, i) => ev(19 + i, 1)),
@@ -201,6 +235,42 @@ describe("projectWindow", () => {
     const res = projectWindow(sorted, now, 5, current * 1.05);
     expect(res.reachesAtMs).not.toBeNull();
     expect(res.reachesAtMs!).toBeGreaterThan(now);
+    expect(res.reason).toBeNull();
+  });
+
+  it("excludes an event from outflow only once it is exactly `hours` old, matching trailingWindow", () => {
+    // Pins the outflow boundary itself. A flip of the pointer guard from
+    // `<=` to `<` (an event ages out only once *strictly* older than
+    // `hours`, instead of at exactly `hours`) previously left all 17 tests
+    // green: the roll-out test above returns null either way, and the
+    // positive test only shifts which hour it reaches, invisible to a
+    // `toBeGreaterThan(now)` assertion. This test asserts an exact
+    // `reachesAtMs`, so a boundary flip changes the returned instant and
+    // the assertion fails.
+    //
+    // hours=5, now=T0+10H. A 50-unit spike sits at T0+8H, exactly 2 hours
+    // before `now` -- inside the current window. Its exact age-out instant
+    // is where `windowOpensAt(h) = t - 5H` equals T0+8H, which happens at
+    // h=3 (t=T0+13H). A second event (670 units at T0) sits outside the
+    // 5h window but inside the 24h pace window, giving pace=(50+670)/24
+    // = 30/h exactly.
+    //
+    // With the correct `<=` boundary, the spike is subtracted starting at
+    // h=3, so ceiling=115 first crosses one step later, at h=4 (t=T0+14H):
+    //   h=1: 50 + 30*1        = 80
+    //   h=2: 50 + 30*2        = 110
+    //   h=3: (50-50) + 30*3   = 90   <- spike just left; still under 115
+    //   h=4: (50-50) + 30*4   = 120  >= 115  -> reachesAtMs = T0+14H
+    // Flip to `<` and the spike is still counted at h=3, so it crosses one
+    // step earlier instead: h=3 gives 50 + 30*3 = 140 >= 115.
+    const evs = [ev(0, 670), ev(8, 50)];
+    const sorted = toTimedUnits(evs);
+    const now = T0 + 10 * H;
+    expect(trailingWindow(sorted, now, 5)).toBe(50);
+    expect(pacePerHour(sorted, now)).toBeCloseTo(30, 6);
+
+    const res = projectWindow(sorted, now, 5, 115);
+    expect(res.reachesAtMs).toBe(T0 + 14 * H);
     expect(res.reason).toBeNull();
   });
 
