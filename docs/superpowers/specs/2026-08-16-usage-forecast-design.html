@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Usage forecast — design</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --fg: #1a1a1a;
+      --muted: #5c5c5c;
+      --border: #d9d4c8;
+      --accent: #0f6b5c;
+      --code-bg: #eee9df;
+      --card: #fffefb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141412;
+        --fg: #eceae4;
+        --muted: #a8a59c;
+        --border: #2e2d28;
+        --accent: #5dceb8;
+        --code-bg: #22211c;
+        --card: #1b1a16;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      line-height: 1.55;
+      font-size: 1.05rem;
+    }
+    main {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1, h2, h3 {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 0.25rem; }
+    h2 {
+      font-size: 1.25rem;
+      margin-top: 2.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    h3 { font-size: 1.05rem; margin-top: 1.5rem; color: var(--accent); }
+    p { margin: 0.75rem 0; }
+    .meta { color: var(--muted); font-family: "Segoe UI", system-ui, sans-serif; font-size: 0.92rem; }
+    a { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 0.92rem;
+      margin: 1rem 0;
+      background: var(--card);
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--code-bg); }
+    code, pre {
+      font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      font-size: 0.86rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 0.9rem 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      line-height: 1.4;
+    }
+    pre code { background: none; padding: 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: 0.3rem 0; }
+    .arch {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.35;
+    }
+    .check { list-style: none; padding-left: 0; }
+    .check li::before { content: "☐ "; }
+    @media print {
+      body { background: white; color: black; }
+      main { max-width: none; }
+      h2 { break-after: avoid; }
+      table, pre, .arch { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<h1 id="usage-forecast-—-design">Usage forecast — design</h1>
+<p><strong>Date:</strong> 2026-08-16
+<strong>Status:</strong> Approved design. Implementation not started.
+<strong>Scope:</strong> Sub-project 1 of 3 (see &quot;Decomposition&quot; below).</p>
+<h2 id="why-this-exists">Why this exists</h2>
+<p>TokenOps was built because its author ran out of Claude Code usage three days
+before the account limit reset. The v0.2.0 session-grain rules explain what a
+session <strong>cost, after the fact</strong>. Nothing yet answers the question that caused
+the problem: <strong>am I going to make it to reset?</strong></p>
+<h2 id="what-the-providers-actually-expose">What the providers actually expose</h2>
+<p>Researched 2026-08-16 rather than assumed, because the answer determines
+whether any of this has to be inferred at all.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Available?</th>
+<th>What it gives</th>
+<th>Applies to</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>anthropic-ratelimit-*</code> response headers</td>
+<td><strong>Yes</strong></td>
+<td>limit / remaining / reset for requests, tokens, input tokens, output tokens; <code>retry-after</code> on 429</td>
+<td>API keys, <strong>~1-minute windows</strong></td>
+</tr>
+<tr>
+<td>Admin Usage &amp; Cost API (<code>/v1/organizations/usage_report/messages</code>)</td>
+<td><strong>Yes</strong></td>
+<td>authoritative cumulative usage, 1m/1h/1d buckets, split by uncached / cached / creation / output</td>
+<td>API organizations, Admin key</td>
+</tr>
+<tr>
+<td>Max / Pro subscription limits</td>
+<td><strong>No programmatic access</strong></td>
+<td>Claude Code&#39;s own <code>/usage</code> shows session cap, weekly cap, extra balance — display only</td>
+<td>the plan this project&#39;s author uses</td>
+</tr>
+</tbody></table>
+<p>Verified locally as well: the <code>claude</code> CLI has no <code>usage</code> subcommand, and no
+limit or quota state is cached anywhere under <code>~/.claude</code>. Session JSONL
+carries no limit marker — <code>stop_reason</code> only ever takes <code>tool_use</code>,
+<code>end_turn</code>, <code>stop_sequence</code>, or null, and every &quot;rate limit&quot; string in the
+files is prose inside conversations.</p>
+<p>Open upstream requests: claude-code
+<a href="https://github.com/anthropics/claude-code/issues/33820">#33820</a> (expose
+headers to hooks and status line; closed as duplicate of #27915) and
+<a href="https://github.com/anthropics/claude-code/issues/44328">#44328</a>
+(<code>claude usage --json</code>).</p>
+<p><strong>Consequence:</strong> for a Max subscription, any absolute quota figure would be
+invented. This design never invents one.</p>
+<p><strong>Two structural facts we do get for free</strong>, and they replace guesses that
+were nearly made: Max enforces a <strong>rolling 5-hour session window</strong> and a
+<strong>rolling 7-day window</strong> — not a fixed monthly reset date. Both windows here
+are trailing windows over event timestamps.</p>
+<h2 id="decomposition">Decomposition</h2>
+<p>Three subsystems share one abstraction and ship separately:</p>
+<ol>
+<li><strong>Usage forecast</strong> — this spec. Subscription pacing. <code>declared</code> and
+<code>inferred</code> provenance.</li>
+<li><strong>Proxy rate-limit capture</strong> — the agent&#39;s proxy already sits where
+<code>anthropic-ratelimit-*</code> / <code>x-ratelimit-*</code> headers arrive and currently
+reads only <code>content-type</code>. Adds <code>measured</code> provenance. Solves imminent
+throttling, not cycle exhaustion.</li>
+<li><strong>Admin Usage &amp; Cost API</strong> — replaces estimated ledger figures with
+Anthropic&#39;s own, including the cached/uncached/creation split. Adds
+<code>reported</code> provenance.</li>
+</ol>
+<p>Note for sequencing: 100% of events ever ingested by this deployment are
+<code>app=claude-code</code> / <code>provider=anthropic</code>. Sub-projects 2 and 3 deliver
+nothing to the current user and exist for other users.</p>
+<h2 id="provenance">Provenance</h2>
+<p>Every limit and every projection carries where it came from. This is a field,
+not a comment, and the UI renders it beside every number.</p>
+<pre><code class="language-ts">export type LimitProvenance = &quot;measured&quot; | &quot;reported&quot; | &quot;declared&quot; | &quot;inferred&quot;;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Provenance</th>
+<th>Meaning</th>
+<th>Authority</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>measured</code></td>
+<td>read from a provider response header</td>
+<td>authoritative, ~1 min</td>
+</tr>
+<tr>
+<td><code>reported</code></td>
+<td>returned by a provider usage API</td>
+<td>authoritative, cumulative</td>
+</tr>
+<tr>
+<td><code>declared</code></td>
+<td>the user marked a real limit hit</td>
+<td>the user&#39;s own observation</td>
+</tr>
+<tr>
+<td><code>inferred</code></td>
+<td>derived from the user&#39;s own history</td>
+<td>weakest — a bound, never a fact</td>
+</tr>
+</tbody></table>
+<p>A <code>measured</code> &quot;429 in 60 seconds&quot; and an <code>inferred</code> &quot;you may have hit a wall in
+July&quot; must never render alike. This is the v0.2.0 card discipline — state a
+bound, not a promise — applied to forecasting, and it is what makes the
+inference component safe to build at all.</p>
+<h2 id="units-and-why-the-unknown-metering-formula-does-not-sink-this">Units, and why the unknown metering formula does not sink this</h2>
+<p>Anthropic does not publish what a subscription meters. This design uses the
+same cache-aware weighting the rules already use:</p>
+<pre><code>units(event) = cacheCreation × 1.25 + cacheRead × 0.10 + output × 5.00
+</code></pre>
+<p>It is called a <strong>proxy</strong> everywhere in code and UI, never &quot;usage&quot;.</p>
+<p>The saving grace is that the primary output is <strong>self-relative</strong>. &quot;You are
+consuming 2.1× your own median&quot; holds as long as the proxy is <em>monotonically
+related</em> to whatever Anthropic counts — the formula itself is not needed, only
+that more consumption yields a larger number. That is a far weaker assumption
+than knowing the metering, and it is the reason the no-configuration path is
+honest.</p>
+<p>Absolute claims (&quot;you will run out Thursday&quot;) are only made against a
+<code>declared</code> ceiling, never against the proxy alone.</p>
+<h2 id="the-projection">The projection</h2>
+<h3 id="windows">Windows</h3>
+<p>Trailing <strong>5 hours</strong> (session) and trailing <strong>7 days</strong> (weekly), computed over
+event timestamps. No fixed reset date, because Anthropic does not enforce one.</p>
+<h3 id="roll-out-is-modelled-exactly">Roll-out is modelled exactly</h3>
+<p>A trailing total does not simply grow at the current pace — old events leave
+the window as time advances. Naive extrapolation (<code>current + pace × hours</code>)
+systematically over-predicts exhaustion. The projection therefore simulates
+forward:</p>
+<pre><code>trailing7d(t) = trailing7d(now)
+              + pace × (t − now)                          // inflow, estimated
+              − Σ units(events in [now−7d, now−7d+(t−now)]) // outflow, exact
+</code></pre>
+<p>The outflow term is <strong>exact</strong>, not estimated: those events are already in the
+ledger. This is cheap and materially more accurate than extrapolation, and a
+unit test must fail under the naive formula.</p>
+<h3 id="pace">Pace</h3>
+<p>Units per hour over a trailing 24 hours — shorter than the projection horizon,
+so a burst registers, but long enough that one idle night does not erase it.</p>
+<h3 id="ceiling-in-order-of-authority">Ceiling, in order of authority</h3>
+<ol>
+<li>A <code>declared</code> observation for that window kind, most recent first.</li>
+<li>Otherwise the user&#39;s <strong>own historical maximum</strong> for that window, labelled
+<code>inferred</code>. This is defensible: a maximum you actually reached is a <em>lower
+bound</em> on your real limit.</li>
+</ol>
+<h3 id="output-shape">Output shape</h3>
+<p>With zero configuration:</p>
+<blockquote>
+<p>Trailing 7 days: <strong>1.34M units</strong> — 87% of your highest week ever (Aug 3–10).
+At the current pace you would pass that in <strong>2.1 days</strong>. <em>(inferred ceiling —
+your own historical maximum)</em></p>
+</blockquote>
+<p>After one declaration:</p>
+<blockquote>
+<p>Trailing 7 days: <strong>1.34M units</strong> — 78% of your observed limit (marked Aug 9).
+At the current pace you would reach it in <strong>3.4 days</strong>. <em>(declared ceiling)</em></p>
+</blockquote>
+<h2 id="declaring-a-limit-hit">Declaring a limit hit</h2>
+<p>One control: <strong>&quot;I just hit my limit.&quot;</strong> It records:</p>
+<pre><code class="language-ts">type LimitObservation = {
+  windowKind: &quot;session_5h&quot; | &quot;weekly_7d&quot;;
+  observedAt: string;      // ISO
+  unitsInWindow: number;   // the trailing total at that instant
+  provenance: LimitProvenance;
+  status: &quot;active&quot; | &quot;superseded&quot; | &quot;dismissed&quot;;
+};
+</code></pre>
+<p>The most recent active observation per window kind is the ceiling. Newest
+wins because limits change — Anthropic permanently doubled Claude Code&#39;s
+5-hour limits on 2026-05-06 — and older observations remain visible as
+history rather than being averaged into a number that describes neither
+regime.</p>
+<h2 id="inferring-candidate-limit-hits">Inferring candidate limit hits</h2>
+<p><strong>The inference proposes; it never decides.</strong> This is the whole of how it
+stays honest, and it is a deliberate constraint rather than an
+implementation detail.</p>
+<p>A candidate requires <strong>all three</strong>:</p>
+<ol>
+<li>a zero-consumption gap of at least <code>CANDIDATE_MIN_GAP_HOURS = 12</code>,</li>
+<li>immediately preceded by a trailing-7d value in the <strong>top decile</strong> of that
+user&#39;s own trailing-7d history,</li>
+<li>falling in hours when that user&#39;s own activity pattern predicts work —
+specifically, the gap must overlap at least
+<code>CANDIDATE_MIN_ACTIVE_HOURS = 4</code> hours that sit in the top half of the
+user&#39;s observed hour-of-week activity distribution.</li>
+</ol>
+<p>Clause 3 is what separates a limit hit from a weekend or a holiday. Twelve
+hours is chosen to clear a night&#39;s sleep without needing clause 3 to carry
+that case alone; clause 3 then excludes the quiet stretches that a fixed
+threshold cannot distinguish.</p>
+<p>These two values are starting points, not measured constants. Unlike the
+rules&#39; thresholds — which were derived from measurement — no data exists yet
+to calibrate them, and the acceptance gate below is what decides whether they
+survive. If they do not, the component ships disabled.</p>
+<p>A candidate is surfaced as a question, never as a ceiling:</p>
+<blockquote>
+<p><em>You went quiet Aug 3–6 after your heaviest stretch that week. Was that a
+usage limit?</em> <strong>[Yes] [No]</strong></p>
+</blockquote>
+<p><strong>Yes</strong> converts it into a <code>declared</code> observation — the inference&#39;s output
+becomes the declaration&#39;s input. <strong>No</strong> marks it <code>dismissed</code> so it is never
+proposed again. Because inference cannot set a ceiling on its own, a wrong
+guess costs one dismissed prompt instead of a confidently wrong forecast.</p>
+<h2 id="architecture">Architecture</h2>
+<h3 id="packagessharedsrcforecast"><code>packages/shared/src/forecast/</code></h3>
+<p>Pure functions over an event array. No database, no clock: <code>now</code> is always a
+parameter, matching <code>RuleContext.now</code>, so replays are deterministic.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>units.ts</code></td>
+<td><code>consumptionUnits(event)</code> — the single definition of the proxy weighting</td>
+</tr>
+<tr>
+<td><code>windows.ts</code></td>
+<td><code>trailingWindow</code>, <code>windowHistory</code>, <code>projectWindow</code> (including roll-out)</td>
+</tr>
+<tr>
+<td><code>candidates.ts</code></td>
+<td><code>detectCandidateWalls</code></td>
+</tr>
+<tr>
+<td><code>index.ts</code></td>
+<td><code>runForecast(events, now, observations)</code> → the complete answer</td>
+</tr>
+</tbody></table>
+<h3 id="api">API</h3>
+<ul>
+<li>New table <code>limit_observations</code>: <code>userId</code>, <code>windowKind</code>, <code>observedAt</code>,
+<code>unitsInWindow</code>, <code>provenance</code>, <code>status</code>.</li>
+<li>Repo methods on <strong>both</strong> implementations — memory and Drizzle. The
+session-rules work shipped Drizzle SQL that no test could reach; that gap
+is not to be repeated silently, and where it cannot be closed it must be
+stated.</li>
+<li><code>GET /v1/forecast</code>, <code>POST /v1/limit-observations</code>, and confirm/dismiss for
+candidates.</li>
+</ul>
+<h3 id="web">Web</h3>
+<p>A forecast panel rendering provenance beside every figure.</p>
+<h2 id="error-handling">Error handling</h2>
+<ul>
+<li>No events in the window: report &quot;not enough data&quot;, never a projection.</li>
+<li>Fewer than <code>MIN_HISTORY_DAYS = 14</code> of history: a &quot;historical maximum&quot; drawn
+from one week is just the current week, so it is not a ceiling at all.
+Report pace only and omit any time-to-exhaustion until there is enough
+history for the maximum to mean something.</li>
+<li>Pace of zero: no exhaustion time exists; say so rather than emitting
+<code>Infinity</code>.</li>
+<li>An event carrying no cache breakdown (<code>null</code>) contributes its known
+components only; it never fabricates a zero. Same <code>null</code> vs <code>0</code> discipline
+as the rules.</li>
+<li>The forecast query failing must not take down any other panel — the
+recommendations route already carries this pattern.</li>
+</ul>
+<h2 id="testing">Testing</h2>
+<p>Unit tests per pure function, including two that pin the reasoning rather
+than the arithmetic:</p>
+<ul>
+<li>a roll-out case that <strong>fails under naive extrapolation</strong>, and</li>
+<li>a candidate-detection case where a weekend must <strong>not</strong> be proposed.</li>
+</ul>
+<h3 id="acceptance-gate">Acceptance gate</h3>
+<p><code>scripts/measure-forecast.mjs</code>, replayed over real <code>~/.claude/projects</code>
+history, mirroring <code>measure-session-rules.mjs</code>. Two criteria:</p>
+<ol>
+<li><strong>The projection is computable and sane</strong> — pace, both windows, and a
+historical maximum, with no <code>NaN</code> and no negative time-to-exhaustion.</li>
+<li><strong>Detection is checked against remembered ground truth.</strong> This project&#39;s
+author ran out of usage roughly three days before a reset. If detection
+proposes that period, it works. If it proposes twenty candidates across the
+window, it is noise and <strong>ships disabled</strong> rather than being tuned until
+the output looks acceptable.</li>
+</ol>
+<p>Criterion 2 is the important one. The previous rule set shipped green and
+useless because nothing was measured against reality until the end. Here a
+real event exists to check against, not merely a plausibility bound — and the
+correct response to failing it is to disable the component and report the
+number, not to move the thresholds.</p>
+</main>
+</body>
+</html>
