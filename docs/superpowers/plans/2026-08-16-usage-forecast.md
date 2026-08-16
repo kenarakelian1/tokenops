@@ -445,20 +445,26 @@ describe("windowHistory", () => {
   // single-digit milliseconds at 720 events — and a test claiming a guarantee
   // it cannot provide is worse than no test. What IS worth pinning is that
   // the two code paths agree, which no other test covers.
-  it("agrees with trailingWindow at every sample", () => {
-    // Irregular spacing on purpose: repeated timestamps and long gaps put
-    // window edges in the places an off-by-one would show up.
-    const offsets = [0, 0, 1, 1, 1, 5, 9, 9, 20, 21, 40, 41, 41, 90, 200];
-    const many = offsets.flatMap((o, i) =>
-      Array.from({ length: 100 }, (_, j) => ev(o * 3 + (j % 3), i + j)),
-    );
-    const sorted = toTimedUnits(many);
-    const from = T0;
-    const to = T0 + 640 * H;
-    const swept = windowHistory(sorted, 168, from, to, 1);
-    for (const sample of swept) {
-      expect(sample.units).toBe(trailingWindow(sorted, sample.at, 168));
-    }
+  it("windowHistory agrees with trailingWindow at every sample", () => {
+    // Build ~2,000 events and assert, at every sampled instant, that
+    // windowHistory's swept total EXACTLY equals trailingWindow computed
+    // independently at the same instant.
+    //
+    // The fixture must satisfy three properties, because a uniformly-spaced
+    // one would pass under an off-by-one and prove nothing:
+    //   1. repeated timestamps — several events sharing one instant
+    //   2. irregular sub-hour gaps, so most events sit OFF the sample grid
+    //   3. a grid-aligned overlay whose spacing divides the window length,
+    //      guaranteeing that some window edges coincide exactly with an
+    //      event timestamp — this is the case that separates a correct
+    //      half-open sweep from an off-by-one one
+    //
+    // Use a seeded PRNG so the fixture is deterministic across runs.
+    // Compare with exact `toBe`; if the two summation orders ever produce a
+    // last-bit difference, report it rather than loosening to toBeCloseTo.
+    //
+    // The delivered implementation of this test is the reference — see
+    // packages/shared/src/forecast/windows.test.ts.
   });
 });
 ```
