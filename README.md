@@ -82,19 +82,24 @@ Replayed over 37.5 days of my own history (42,610 deduped events from 90,293
 raw assistant lines, a 2.12x dedup ratio — local retention doesn't go back
 further than that): the gate itself passes — every figure finite, no
 projection lands in the past, and candidate detection proposed **0** wall
-candidates, comfortably under the noise ceiling of 5. But the gate isn't the
-real test. I ran out of usage roughly three days before a weekly reset at
-some point while using this tool, and the honest report is that detection
-did not surface a matching period in this window: of the 18 zero-consumption
-gaps of 12+ hours present in the available history, none satisfied all three
-detector conditions together — the ones with a heavy-enough run-up were
-overnight gaps with too little of my own active time inside them, and the
-one long daytime-spanning gap (37.1h, over a weekend) had a run-up below my
-own top decile. So on this dataset: the gate passes, but detection is not
-yet catching the case it was built for, and thresholds were not loosened to
-manufacture a hit. See `scripts/measure-forecast.mjs` and
-`.superpowers/sdd/2026-08-16-usage-forecast/task-9-report.md` for the full
-numbers.
+candidates, comfortably under the noise ceiling of 5.
+
+The gate isn't the real test, though. I ran out of usage roughly three days
+before a weekly reset at some point while using this tool, and the honest
+report is more specific than "detection missed it." The longest
+zero-consumption gap anywhere in the retained history is **37.1 hours**; a
+three-day outage is 72+ hours. No gap in the available data is even close to
+long enough to be that event, so it cannot appear in this run's input
+regardless of what the detector's thresholds are set to — it predates
+2026-07-10, the earliest event local retention still has. **This run does
+not test the detector's ability to catch that case, in either direction.**
+What it does establish is precision: across all 18 real zero-consumption
+gaps of 12+ hours in the window — a range of lengths and times of day — the
+detector proposed zero false positives. Two gaps had a heavy-enough run-up
+to pass that condition but were overnight (0 and 3 active hours, under the
+4-hour bar); the one long daytime-spanning gap (37.1h, over a weekend) had a
+run-up below the user's own top decile. **Recall remains untested** on this
+data, and thresholds were not loosened to manufacture a hit anyway.
 
 ## Architecture
 
