@@ -1,5 +1,5 @@
 import { WINDOW_HOURS, type WallCandidate } from "./types.js";
-import { trailingWindow, type TimedUnit } from "./windows.js";
+import { type TimedUnit } from "./windows.js";
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -13,11 +13,26 @@ export const CANDIDATE_MIN_ACTIVE_HOURS = 4;
 export const CANDIDATE_TOP_DECILE = 0.9;
 
 /**
+ * Fraction of a slot's calendar occurrences that must have seen activity for
+ * that hour-of-week to count as one of the user's normally-active hours.
+ *
+ * A fourth detector constant, governing behaviour exactly as directly as the
+ * three above — named and exported rather than left as a bare literal buried
+ * in a comparison.
+ */
+export const CANDIDATE_ACTIVE_PRESENCE_THRESHOLD = 0.5;
+
+/**
  * Total units per hour-of-week slot (0 = Sunday 00:00 UTC .. 167).
  *
- * This is the user's own rhythm, derived rather than assumed. It is what lets
- * the detector tell "stopped because blocked" from "stopped because it was
- * Saturday" without anyone hard-coding a working week.
+ * A raw magnitude profile of the user's own rhythm: how much was consumed in
+ * each hour-of-week, summed across the whole observed history. Exported for
+ * callers that want to *display* that rhythm (e.g. a forecast panel).
+ *
+ * Candidate detection deliberately does NOT consume this. A magnitude
+ * threshold is exactly the kind of thing an unusually heavy episode
+ * distorts — see `activeSlots` below, which derives "normally active" from
+ * presence in the raw event series instead.
  */
 export function hourOfWeekActivity(sorted: TimedUnit[]): number[] {
   const slots = new Array<number>(168).fill(0);
@@ -31,14 +46,18 @@ export function hourOfWeekActivity(sorted: TimedUnit[]): number[] {
 /**
  * Hour-of-week slots the user is normally active in.
  *
- * Deliberately frequency-based rather than magnitude-based: "active" means
- * this slot saw activity in most of its calendar occurrences across the
- * observed span, regardless of how much. A magnitude threshold (e.g. a
- * median of summed units) is not robust to the very thing this detector is
- * looking for — a single unusually heavy episode inflates its own slot and
- * can push an ordinary but comparatively quieter slot below the cutoff,
- * exactly when that slot is what should decide whether the following gap is
- * an ordinary non-working stretch.
+ * Deliberately frequency-based rather than magnitude-based, and built
+ * directly from the event series rather than from `hourOfWeekActivity`'s
+ * summed totals: "active" means this slot saw activity in at least
+ * CANDIDATE_ACTIVE_PRESENCE_THRESHOLD of its calendar occurrences across the
+ * observed span, regardless of how much activity. A magnitude threshold
+ * (e.g. a median of summed units) is not robust to the very thing this
+ * detector is looking for: a single unusually heavy episode inflates its own
+ * slot's total, which can push an ordinary but comparatively lower-volume
+ * slot below a magnitude cutoff even though both are worked equally often.
+ * It is also not robust in the ordinary case — a magnitude median discards
+ * roughly half of any user's genuinely-worked hours by construction, spike
+ * or no spike.
  */
 function activeSlots(sorted: TimedUnit[], nowMs: number): Set<number> {
   if (sorted.length === 0) return new Set();
@@ -60,18 +79,43 @@ function activeSlots(sorted: TimedUnit[], nowMs: number): Set<number> {
 
   const out = new Set<number>();
   for (let slot = 0; slot < 168; slot += 1) {
-    if (occurrences[slot]! > 0 && present[slot]! / occurrences[slot]! >= 0.5) {
+    if (
+      occurrences[slot]! > 0 &&
+      present[slot]! / occurrences[slot]! >= CANDIDATE_ACTIVE_PRESENCE_THRESHOLD
+    ) {
       out.add(slot);
     }
   }
   return out;
 }
 
-function quantile(values: number[], q: number): number {
-  if (values.length === 0) return 0;
-  const s = [...values].sort((a, b) => a - b);
-  const idx = Math.min(s.length - 1, Math.floor(q * s.length));
-  return s[idx]!;
+/**
+ * The trailing-window total sampled at each event, in one linear pass.
+ *
+ * Equivalent to `sorted.map((p) => trailingWindow(sorted, p.at, hours))`,
+ * but that form is O(n^2): each call rescans from the start. Since `sorted`
+ * is ascending and the window width is fixed, the trailing edge only ever
+ * advances as the sampling point advances, so a single two-pointer sweep
+ * suffices — the same idiom `windowHistory` in windows.ts uses, and for the
+ * same reason (this file's own top-decile scan is exactly the "30 days
+ * hourly against a 7-day window" shape that function's docstring warns
+ * about).
+ */
+function trailingAtEachEvent(sorted: TimedUnit[], hours: number): number[] {
+  const span = hours * MS_PER_HOUR;
+  const out = new Array<number>(sorted.length).fill(0);
+  let tail = 0;
+  let total = 0;
+  for (let i = 0; i < sorted.length; i += 1) {
+    total += sorted[i]!.units;
+    const windowOpensAt = sorted[i]!.at - span;
+    while (tail < i && sorted[tail]!.at <= windowOpensAt) {
+      total -= sorted[tail]!.units;
+      tail += 1;
+    }
+    out[i] = total;
+  }
+  return out;
 }
 
 /**
@@ -104,7 +148,7 @@ export function detectCandidateWalls(
   const weeklyHours = WINDOW_HOURS.weekly_7d;
 
   // The user's own distribution of trailing-7d totals, sampled at each event.
-  const trailingAtEvents = sorted.map((p) => trailingWindow(sorted, p.at, weeklyHours));
+  const trailingAtEvents = trailingAtEachEvent(sorted, weeklyHours);
   const heavyThreshold = quantile(trailingAtEvents, CANDIDATE_TOP_DECILE);
 
   const out: WallCandidate[] = [];
@@ -119,14 +163,27 @@ export function detectCandidateWalls(
     if (before < heavyThreshold || before <= 0) continue;
 
     // Condition 3: does the gap cover hours they would normally be working?
+    // Starts at h = 1, not h = 0: h = 0 is startAt itself, the hour the last
+    // event actually landed in, which is by construction always an hour the
+    // user was present. Counting it would hand every candidate a free active
+    // hour and silently turn CANDIDATE_MIN_ACTIVE_HOURS = 4 into a threshold
+    // of 3.
     let activeHours = 0;
-    for (let h = 0; h < Math.floor(gapHours); h += 1) {
+    for (let h = 1; h < Math.floor(gapHours); h += 1) {
       const t = new Date(startAt + h * MS_PER_HOUR);
       if (active.has(t.getUTCDay() * 24 + t.getUTCHours())) activeHours += 1;
     }
     if (activeHours < CANDIDATE_MIN_ACTIVE_HOURS) continue;
 
-    const id = `wall:${new Date(startAt).toISOString()}:${Math.round(gapHours)}`;
+    // Keyed on startAt alone: a gap is uniquely identified by the event that
+    // opens it. Rounded gapHours added no discriminating information for a
+    // closed gap (nextAt is a fixed prior event, so gapHours was already
+    // constant) and was actively harmful for the trailing gap at the end of
+    // history, where nextAt = nowMs grows every time detection runs — a
+    // gapHours-keyed id changed hour to hour, so a dismissal of "this gap"
+    // could never survive being asked again. Keying on startAt alone means a
+    // dismissal also survives the gap later closing when the user resumes.
+    const id = `wall:${new Date(startAt).toISOString()}`;
     if (dismissed.has(id)) continue;
 
     out.push({
@@ -139,4 +196,11 @@ export function detectCandidateWalls(
     });
   }
   return out;
+}
+
+function quantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const idx = Math.min(s.length - 1, Math.floor(q * s.length));
+  return s[idx]!;
 }

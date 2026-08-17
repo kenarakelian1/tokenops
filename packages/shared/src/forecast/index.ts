@@ -39,6 +39,7 @@ export {
   CANDIDATE_MIN_GAP_HOURS,
   CANDIDATE_MIN_ACTIVE_HOURS,
   CANDIDATE_TOP_DECILE,
+  CANDIDATE_ACTIVE_PRESENCE_THRESHOLD,
   detectCandidateWalls,
   hourOfWeekActivity,
 } from "./candidates.js";
