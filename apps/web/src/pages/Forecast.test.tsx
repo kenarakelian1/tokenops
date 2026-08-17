@@ -74,6 +74,32 @@ describe("WindowCard", () => {
     expect(textOf(base)).toMatch(/7-day week/i);
     expect(textOf({ ...base, windowKind: "session_5h" })).toMatch(/5-hour session/i);
   });
+
+  it("never states both 'No ceiling established yet.' and a projected reach date, even for a contradictory DTO", () => {
+    // Defect B (2026-08-16 second review): an earlier round put the
+    // mutual-exclusion guard in the PRODUCER (`forecastWindow` in
+    // @tokenops/shared, whose own invariant comment says `ceiling` may
+    // never be `0`), not the renderer. Rendering `WindowCard` directly
+    // against a shape that violates that invariant still emitted both
+    // sentences -- this is exactly the shape the reviewer demonstrated, and
+    // `ForecastDto`'s own doc comment says the panel must tolerate an OLDER
+    // API build (a pre-fix API emits precisely this). This test targets
+    // `Forecast.tsx` itself, independent of whether the producer-side guard
+    // holds -- it must not be removed.
+    const contradictory: WindowForecastDto = {
+      windowKind: "weekly_7d",
+      current: 1_000,
+      pacePerHour: 50,
+      ceiling: 0,
+      ceilingProvenance: "declared",
+      fractionOfCeiling: null,
+      reachesCeilingAt: "2026-08-20T00:00:00.000Z",
+      noProjectionReason: null,
+    };
+    const t = textOf(contradictory);
+    expect(t).toMatch(/No ceiling established yet\./);
+    expect(t).not.toMatch(/Projected to reach the ceiling around/);
+  });
 });
 
 const candidate: WallCandidateDto = {

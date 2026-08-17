@@ -208,14 +208,27 @@ forecastRoutes.get("/v1/forecast", requireUser, async (c) => {
     now.getTime() - FORECAST_HISTORY_DAYS * 86_400_000,
   ).toISOString();
 
-  const { events, truncated } = await repo.eventsSince(userId, since);
+  const { events, truncated, historyStartIso } = await repo.eventsSince(
+    userId,
+    since,
+  );
   const observations = await repo.listLimitObservations(userId);
 
   // Sorted once and reused for both runForecast and detectCandidatesSafely
   // (M5) — this array can be large (see EVENTS_SINCE_MAX), and the two
   // calls used to each sort it independently on every page load.
   const sorted = toTimedUnits(events);
-  const forecast = runForecast(events, now.toISOString(), observations, sorted);
+  // `historyStartIso` (from eventsSince, computed independent of the row
+  // cap) keeps `historyDays` honest even when the fetch above was
+  // truncated — see runForecast's matching parameter in @tokenops/shared
+  // and defect A in the 2026-08-16 second review.
+  const forecast = runForecast(
+    events,
+    now.toISOString(),
+    observations,
+    sorted,
+    historyStartIso,
+  );
   // The one place that knows the fetch above was capped — see the
   // `truncated` field's doc comment in @tokenops/shared's forecast/types.ts.
   forecast.truncated = truncated;

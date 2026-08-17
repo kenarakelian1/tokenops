@@ -163,30 +163,68 @@ function forecastWindow(
  * sorted series for `detectCandidatesSafely` and would otherwise sort the
  * same (potentially large) event array twice per request (M5). Every other
  * caller omits it and gets the old behavior.
+ *
+ * `historyStartIso`, when given, overrides `sorted[0].at` as the origin
+ * `historyDays` is measured from. See the comment above `historyStartMs`
+ * below for why this exists (defect A, 2026-08-16 review): without it,
+ * `historyDays` silently meant "days retained after `EVENTS_SINCE_MAX`
+ * truncation" rather than "days of real history", and a dense-enough user
+ * could have their ceiling withheld — "needs 14 days of history (have 12)"
+ * — despite forty real days on file. Every caller but `GET /v1/forecast`
+ * omits it and falls back to `sorted[0].at`; none of those paths ever
+ * truncates.
  */
 export function runForecast(
   events: UsageEvent[],
   nowIso: string,
   observations: LimitObservation[] = [],
   presorted?: TimedUnit[],
+  historyStartIso?: string | null,
 ): Forecast {
   const nowMs = Date.parse(nowIso);
   const sorted = presorted ?? toTimedUnits(events);
+
+  // The TRUE origin of `historyDays`: the real oldest matching event, not
+  // merely the oldest one that survived `EVENTS_SINCE_MAX`'s row cap (see
+  // events-repo.ts). `GET /v1/forecast` passes `historyStartIso` from
+  // `EventsRepo.eventsSince`'s `historyStartIso` field, which is computed by
+  // a MIN(timestamp) query scoped identically to the capped fetch but NOT
+  // subject to its row limit — so it stays accurate even when the cap bit.
+  // Falling back to `sorted[0]!.at` (the old behavior) is only correct when
+  // nothing was truncated, which is true for every caller that omits this
+  // parameter.
+  const historyStartMs =
+    historyStartIso != null
+      ? Date.parse(historyStartIso)
+      : sorted.length > 0
+        ? sorted[0]!.at
+        : NaN;
 
   // Clamped once, here — the single source of truth for `historyDays` — and
   // used everywhere downstream, rather than clamping only the returned
   // field while `forecastWindow` (below) interpolates the raw, unclamped
   // value into its `noProjectionReason` copy via `Math.floor(historyDays)`.
-  // A future-dated first event (nowMs < sorted[0].at, e.g. clock skew) makes
-  // the raw value negative; without a single clamp point, that negative
-  // count would print in user-facing copy ("have -3") even though the
-  // returned `historyDays` field itself correctly reported `0` (M3).
-  const rawHistoryDays =
-    sorted.length === 0 ? 0 : (nowMs - sorted[0]!.at) / (24 * MS_PER_HOUR);
+  // A future-dated first event (nowMs < historyStartMs, e.g. clock skew)
+  // makes the raw value negative; without a single clamp point, that
+  // negative count would print in user-facing copy ("have -3") even though
+  // the returned `historyDays` field itself correctly reported `0` (M3).
+  const rawHistoryDays = Number.isNaN(historyStartMs)
+    ? 0
+    : (nowMs - historyStartMs) / (24 * MS_PER_HOUR);
   const historyDays = Math.max(0, rawHistoryDays);
 
   let withoutBreakdown = 0;
-  for (const e of events) if (!hasCacheBreakdown(e)) withoutBreakdown += 1;
+  for (const e of events) {
+    // Same exclusion `toTimedUnits` applies: an event whose timestamp fails
+    // to parse never entered `sorted`, so it must not enter this count
+    // either. Without this, `eventsWithoutBreakdown` (drawn from raw
+    // `events`) and `eventsCounted` (drawn from `sorted`, below) would be
+    // counted over two different populations, and `BreakdownNote` could
+    // print "N of M" with N > M for a caller passing an unparseable
+    // timestamp.
+    if (Number.isNaN(Date.parse(e.timestamp))) continue;
+    if (!hasCacheBreakdown(e)) withoutBreakdown += 1;
+  }
 
   return {
     generatedAt: new Date(nowMs).toISOString(),

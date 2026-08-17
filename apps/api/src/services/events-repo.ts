@@ -93,6 +93,18 @@ export function assertActiveIsDeclared(observation: {
  * the cap actually bit rather than degrading silently. See I3 in the
  * 2026-08-16 review — one user's own account measured 42,810 events in 37.5
  * days.
+ *
+ * This cap intentionally does NOT also bound `historyStartIso` (see
+ * `eventsSince`'s return type below): a row cap sized to survive "a
+ * plausible peak rate" only pushes the day this defect resurfaces further
+ * out, it does not close it — the 2026-08-16 second review found this cap
+ * doing exactly that (defect A): past ~1,429 events/day it silently
+ * shrank the *reported* history span below `MIN_HISTORY_DAYS`, withholding
+ * a ceiling from a user with forty real days on file while telling them
+ * they had twelve. `historyStartIso` is computed independently of this cap
+ * (a MIN(timestamp) aggregate, not bounded by `.limit()`) specifically so
+ * raising this constant is never required to keep `historyDays` honest —
+ * only to bound how many full rows a single request materializes.
  */
 export const EVENTS_SINCE_MAX = 20_000;
 
@@ -247,11 +259,21 @@ export type EventsRepo = {
    * signals that the cap actually bit, so a caller (`GET /v1/forecast`) can
    * tell the user their forecast was computed over a partial window instead
    * of presenting it as complete.
+   *
+   * `historyStartIso` is the timestamp of the TRUE oldest matching event in
+   * `[sinceIso, now]`, regardless of whether the cap above bit — an
+   * unindexed-row-count-independent MIN(timestamp) over the same scope, not
+   * `events[0]`'s timestamp. Callers that report "days of history" (see
+   * `runForecast`'s `historyStartIso` parameter in @tokenops/shared) must use
+   * this field rather than the oldest event actually returned, or a dense
+   * enough user's reported history silently shrinks to whatever survived
+   * truncation (defect A, 2026-08-16 second review). `null` only when there
+   * are no matching events at all.
    */
   eventsSince(
     userId: string,
     sinceIso: string,
-  ): Promise<{ events: UsageEvent[]; truncated: boolean }>;
+  ): Promise<{ events: UsageEvent[]; truncated: boolean; historyStartIso: string | null }>;
 };
 
 /**
@@ -929,18 +951,18 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
     },
 
     async eventsSince(userId, sinceIso) {
+      const scope = and(
+        eq(usageEvents.userId, userId),
+        gte(usageEvents.timestamp, new Date(sinceIso)),
+        or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
+      );
+
       // Newest first, capped at MAX+1 so a single extra row past the cap is
       // enough to know whether truncation happened, without a second query.
       const rows = await db
         .select()
         .from(usageEvents)
-        .where(
-          and(
-            eq(usageEvents.userId, userId),
-            gte(usageEvents.timestamp, new Date(sinceIso)),
-            or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
-          ),
-        )
+        .where(scope)
         .orderBy(desc(usageEvents.timestamp))
         .limit(EVENTS_SINCE_MAX + 1);
 
@@ -949,7 +971,29 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
       // Restore the documented oldest-first contract after capping from the
       // newest end.
       capped.reverse();
-      return { events: capped.map(rowToUsageEvent), truncated };
+
+      // historyStartIso: the TRUE oldest matching event, independent of the
+      // cap above — see the doc comment on this method in the EventsRepo
+      // type for why this must not just be `capped[0]`. When nothing was
+      // truncated, `capped` already holds every matching row, so its first
+      // (oldest, post-reverse) entry already IS the true bound and a second
+      // query would be pure waste. Only when the fetch above actually
+      // dropped older rows does a MIN(timestamp) aggregate over the same
+      // scope — cheap and index-backed, unlike re-fetching every matching
+      // row — recover it.
+      let historyStartIso: string | null =
+        capped.length > 0 ? capped[0]!.timestamp.toISOString() : null;
+      if (truncated) {
+        const [oldest] = await db
+          .select({ min: sql<string>`MIN(${usageEvents.timestamp})` })
+          .from(usageEvents)
+          .where(scope);
+        historyStartIso = oldest?.min
+          ? new Date(oldest.min).toISOString()
+          : historyStartIso;
+      }
+
+      return { events: capped.map(rowToUsageEvent), truncated, historyStartIso };
     },
   };
 }
@@ -1494,7 +1538,18 @@ export function createMemoryEventsRepo(): EventsRepo {
       const truncated = matches.length > EVENTS_SINCE_MAX;
       const capped = truncated ? matches.slice(0, EVENTS_SINCE_MAX) : matches;
       capped.reverse(); // restore the documented oldest-first contract
-      return { events: capped.map(rowToUsageEvent), truncated };
+
+      // historyStartIso: the TRUE oldest matching event, independent of the
+      // cap above — see the Drizzle implementation's matching comment. Cheap
+      // here since `matches` (pre-cap) is already fully materialized in
+      // memory: it is sorted newest-first, so its last element is exactly
+      // the oldest match, capped or not.
+      const historyStartIso =
+        matches.length > 0
+          ? matches[matches.length - 1]!.timestamp.toISOString()
+          : null;
+
+      return { events: capped.map(rowToUsageEvent), truncated, historyStartIso };
     },
   };
 }

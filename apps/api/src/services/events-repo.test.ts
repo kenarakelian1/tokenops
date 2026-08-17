@@ -765,12 +765,13 @@ describe("eventsSince", () => {
     });
     // Neither event above sets `grain`, so this also pins that a
     // null/undefined grain is included, not excluded, by eventsSince.
-    const { events, truncated } = await repo.eventsSince(
+    const { events, truncated, historyStartIso } = await repo.eventsSince(
       "u1",
       "2026-08-05T00:00:00.000Z",
     );
     expect(events.map((e) => e.eventId)).toEqual(["b"]);
     expect(truncated).toBe(false);
+    expect(historyStartIso).toBe("2026-08-10T00:00:00.000Z");
   });
 
   it("excludes aggregate-grain events, which have no single request inside them", async () => {
@@ -802,7 +803,7 @@ describe("eventsSince", () => {
       });
     }
 
-    const { events, truncated } = await repo.eventsSince(
+    const { events, truncated, historyStartIso } = await repo.eventsSince(
       "u1",
       "2026-07-01T00:00:00.000Z",
     );
@@ -818,6 +819,14 @@ describe("eventsSince", () => {
         Date.parse(events[i - 1]!.timestamp),
       );
     }
+    // Defect A (2026-08-16 second review): historyStartIso reports the TRUE
+    // oldest matching event -- evt-0, which did NOT survive the cap -- not
+    // the oldest one actually returned (events[0], which is evt-5). A
+    // forecast that relied on events[0]'s timestamp for "days of history"
+    // would silently report five events' worth less history than the user
+    // actually has.
+    expect(historyStartIso).toBe("2026-08-01T00:00:00.000Z");
+    expect(historyStartIso).not.toBe(events[0]!.timestamp);
   });
 
   it("does not report truncated when the count lands exactly on the cap", async () => {

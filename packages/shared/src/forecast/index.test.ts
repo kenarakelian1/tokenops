@@ -118,6 +118,62 @@ describe("runForecast", () => {
     expect(f.eventsWithoutBreakdown).toBe(1);
   });
 
+  it("keeps eventsWithoutBreakdown's population in sync with eventsCounted's, even when an event's timestamp fails to parse", () => {
+    // `unparseable` never enters `sorted` (toTimedUnits drops it), so it
+    // must not enter the `eventsWithoutBreakdown` count either -- otherwise
+    // BreakdownNote could print "N of M" with N > M. Before the fix,
+    // eventsWithoutBreakdown was counted over the raw `events` array (both
+    // events here lack a breakdown) while eventsCounted was `sorted.length`
+    // (only the parseable one) -- 2 of 1.
+    const unparseable: UsageEvent = { ...ev(1, 1000), timestamp: "not-a-date" };
+    const f = runForecast(
+      [unparseable, ev(2, 1000)],
+      new Date(T0 + 3 * H).toISOString(),
+    );
+    expect(f.eventsCounted).toBe(1);
+    expect(f.eventsWithoutBreakdown).toBe(1);
+    expect(f.eventsWithoutBreakdown).toBeLessThanOrEqual(f.eventsCounted);
+  });
+
+  it("defect A regression: does not withhold a ceiling merely because EVENTS_SINCE_MAX truncation shrank the retained series", () => {
+    // Simulates what `EventsRepo.eventsSince` hands `runForecast` when its
+    // row cap bites: `events`/`presorted` cover only the densest recent
+    // slice of a much longer real history (the account is 40 days old, but
+    // only the last 10 days survived EVENTS_SINCE_MAX). Before the fix,
+    // `historyDays` was derived from `sorted[0].at` alone -- ~10 days here,
+    // below MIN_HISTORY_DAYS -- so the ceiling was withheld entirely and the
+    // copy read "needs 14 days of history (have 10)" despite forty real
+    // days on file. `historyStartIso` -- independently derived from a
+    // MIN(timestamp) query never bounded by the row cap -- is the fix, and
+    // passing it must restore the ceiling.
+    const retainedDays = 10;
+    const trueHistoryDays = 40;
+    const retained = Array.from({ length: 24 * retainedDays }, (_, i) => ev(i, 100));
+    const now = new Date(T0 + (24 * retainedDays - 1) * H).toISOString();
+    const historyStartIso = new Date(
+      Date.parse(now) - trueHistoryDays * 24 * H,
+    ).toISOString();
+
+    const fixed = runForecast(retained, now, [], undefined, historyStartIso);
+    expect(fixed.historyDays).toBeGreaterThanOrEqual(trueHistoryDays - 1);
+    const weekly = fixed.windows.find((w) => w.windowKind === "weekly_7d")!;
+    expect(weekly.ceiling).not.toBeNull();
+    expect(weekly.ceilingProvenance).toBe("inferred");
+    expect(weekly.noProjectionReason ?? "").not.toMatch(/needs 14 days/i);
+
+    // Same events, without the true-span override -- this is the OLD
+    // behavior, and it DOES withhold the ceiling, proving the scenario
+    // above actually exercises the bug rather than a case that always
+    // passed.
+    const withoutOverride = runForecast(retained, now);
+    expect(withoutOverride.historyDays).toBeLessThan(MIN_HISTORY_DAYS);
+    const weeklyWithoutOverride = withoutOverride.windows.find(
+      (w) => w.windowKind === "weekly_7d",
+    )!;
+    expect(weeklyWithoutOverride.ceiling).toBeNull();
+    expect(weeklyWithoutOverride.noProjectionReason).toMatch(/needs 14 days/i);
+  });
+
   it("returns a usable shape with no events at all", () => {
     const f = runForecast([], NOW);
     expect(f.eventsCounted).toBe(0);

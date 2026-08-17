@@ -70,7 +70,14 @@ export type WindowForecast = {
 export type Forecast = {
   generatedAt: string;
   windows: WindowForecast[];
-  /** Days of history available. Below MIN_HISTORY_DAYS, ceilings are withheld. */
+  /**
+   * Days of history available. Below MIN_HISTORY_DAYS, ceilings are
+   * withheld. Reflects the TRUE span of history behind this forecast, not
+   * merely how much of it survived `EVENTS_SINCE_MAX`'s row cap — see
+   * `runForecast`'s `historyStartIso` parameter in index.ts. A user is never
+   * told they have fewer days of history than they actually have just
+   * because a dense recent stretch pushed older rows past the cap.
+   */
   historyDays: number;
   /** Events counted without a cache breakdown, and the total counted. */
   eventsWithoutBreakdown: number;

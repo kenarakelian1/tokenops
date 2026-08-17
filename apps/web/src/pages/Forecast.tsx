@@ -150,6 +150,44 @@ function formatHours(h: number): string {
 }
 
 /**
+ * The single decision both `ceilingClause` and `projectionClause` defer to,
+ * so the two clauses can never disagree about whether a usable ceiling
+ * exists — regardless of what the API sends. Before this existed, each
+ * clause ran its own independent null-check over an overlapping but
+ * non-identical set of fields, and a route-level guard (`forecastWindow` in
+ * @tokenops/shared, which enforces `ceiling` is never `0`) was the only
+ * thing keeping them in agreement. `ForecastDto`'s own doc comment states
+ * this panel must tolerate an OLDER API build, and a pre-fix build can still
+ * emit `{ceiling: 0, ceilingProvenance: "declared", fractionOfCeiling: null,
+ * reachesCeilingAt: "<a real date>"}` — rendering `WindowCard` directly
+ * against that shape used to print BOTH "No ceiling established yet." and
+ * "Projected to reach the ceiling around ...". This is a second,
+ * independent barrier against that — it does not replace the producer-side
+ * one, which stays exactly as strict for well-behaved callers.
+ *
+ * `ceiling > 0` (not just `!= null`) is deliberate: `0` is exactly the value
+ * the producer's own invariant says a real ceiling may never take (see the
+ * comment on `ceiling` in @tokenops/shared's forecast/index.ts), so treating
+ * it as "no usable ceiling" here — rather than trusting it — is what makes
+ * this barrier actually independent of the producer instead of just
+ * repeating the same assumption in a second place.
+ */
+function hasUsableCeiling(
+  w: WindowForecastDto,
+): w is WindowForecastDto & {
+  ceiling: number;
+  fractionOfCeiling: number;
+  ceilingProvenance: NonNullable<WindowForecastDto["ceilingProvenance"]>;
+} {
+  return (
+    w.ceiling != null &&
+    w.ceiling > 0 &&
+    w.fractionOfCeiling != null &&
+    w.ceilingProvenance != null
+  );
+}
+
+/**
  * The ceiling clause, on its own so `WindowCard` doesn't have to hold the
  * per-provenance copy inline. Every branch names its own provenance word
  * literally: a number without its provenance is the failure this whole
@@ -163,7 +201,7 @@ function formatHours(h: number): string {
  * ever produces one.
  */
 function ceilingClause(w: WindowForecastDto): string {
-  if (w.ceiling == null || w.fractionOfCeiling == null || w.ceilingProvenance == null) {
+  if (!hasUsableCeiling(w)) {
     return "No ceiling established yet.";
   }
   const pct = Math.round(w.fractionOfCeiling * 100);
@@ -188,9 +226,16 @@ function ceilingClause(w: WindowForecastDto): string {
  * there is not — and never both. `noProjectionReason` is written to already
  * read as an explanation (see `packages/shared/src/forecast/types.ts`), so
  * this renders it as-is rather than re-wrapping it.
+ *
+ * Gated on `hasUsableCeiling` (see its doc comment), not merely
+ * `reachesCeilingAt != null`: a `reachesCeilingAt` date is only meaningful
+ * beside a ceiling `ceilingClause` is actually willing to report, and this
+ * is what stops the two clauses from contradicting each other on a
+ * malformed/older-API payload — see the "does not contradict itself" test
+ * in Forecast.test.tsx.
  */
 function projectionClause(w: WindowForecastDto): string | null {
-  if (w.reachesCeilingAt != null) {
+  if (hasUsableCeiling(w) && w.reachesCeilingAt != null) {
     return `Projected to reach the ceiling around ${formatDate(w.reachesCeilingAt)}.`;
   }
   if (w.noProjectionReason != null) {
