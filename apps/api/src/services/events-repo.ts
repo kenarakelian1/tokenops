@@ -17,15 +17,20 @@ import {
   getModelTier,
   type Counterfactual,
   type EventGrain,
+  type LimitObservation,
+  type LimitObservationStatus,
+  type LimitProvenance,
   type ModelWindowTotals,
   type SessionRollup,
   type UsageEvent,
   type UsageFeatures,
+  type WindowKind,
 } from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import {
   dailyAggregates,
   eventContent,
+  limitObservations,
   machines,
   recommendations,
   usageEvents,
@@ -179,6 +184,25 @@ export type EventsRepo = {
   hasMachine(userId: string, machineId: string): Promise<boolean>;
   countMachines(userId: string): Promise<number>;
   listMachines(userId: string): Promise<Machine[]>;
+  /** Every limit observation for a user, newest first. */
+  listLimitObservations(userId: string): Promise<LimitObservation[]>;
+  insertLimitObservation(
+    userId: string,
+    observation: Omit<LimitObservation, "id">,
+  ): Promise<LimitObservation>;
+  /** Returns false when no row matched — including when it belongs to another user. */
+  setLimitObservationStatus(
+    userId: string,
+    id: string,
+    status: LimitObservationStatus,
+  ): Promise<boolean>;
+  /**
+   * Request-grain events at or after `sinceIso`, oldest first, for the
+   * forecast. Aggregate-grain rows are excluded: they are time-bucketed sums
+   * with no single request inside them, so they would distort both the
+   * windows and the pace.
+   */
+  eventsSince(userId: string, sinceIso: string): Promise<UsageEvent[]>;
 };
 
 /**
@@ -775,6 +799,73 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .where(eq(machines.userId, userId))
         .orderBy(desc(machines.lastSeenAt));
     },
+
+    async listLimitObservations(userId) {
+      const rows = await db
+        .select()
+        .from(limitObservations)
+        .where(eq(limitObservations.userId, userId))
+        .orderBy(desc(limitObservations.observedAt));
+      return rows.map((r) => ({
+        id: r.id,
+        windowKind: r.windowKind as WindowKind,
+        observedAt: new Date(r.observedAt).toISOString(),
+        unitsInWindow: Number(r.unitsInWindow),
+        provenance: r.provenance as LimitProvenance,
+        status: r.status as LimitObservationStatus,
+      }));
+    },
+
+    async insertLimitObservation(userId, observation) {
+      const [row] = await db
+        .insert(limitObservations)
+        .values({
+          userId,
+          windowKind: observation.windowKind,
+          observedAt: new Date(observation.observedAt),
+          unitsInWindow: String(observation.unitsInWindow),
+          provenance: observation.provenance,
+          status: observation.status,
+        })
+        .returning();
+      return {
+        id: row!.id,
+        windowKind: row!.windowKind as WindowKind,
+        observedAt: new Date(row!.observedAt).toISOString(),
+        unitsInWindow: Number(row!.unitsInWindow),
+        provenance: row!.provenance as LimitProvenance,
+        status: row!.status as LimitObservationStatus,
+      };
+    },
+
+    async setLimitObservationStatus(userId, id, status) {
+      const updated = await db
+        .update(limitObservations)
+        .set({ status })
+        .where(
+          and(
+            eq(limitObservations.userId, userId),
+            eq(limitObservations.id, id),
+          ),
+        )
+        .returning({ id: limitObservations.id });
+      return updated.length > 0;
+    },
+
+    async eventsSince(userId, sinceIso) {
+      const rows = await db
+        .select()
+        .from(usageEvents)
+        .where(
+          and(
+            eq(usageEvents.userId, userId),
+            gte(usageEvents.timestamp, new Date(sinceIso)),
+            or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
+          ),
+        )
+        .orderBy(usageEvents.timestamp);
+      return rows.map(rowToUsageEvent);
+    },
   };
 }
 
@@ -796,6 +887,10 @@ export function createMemoryEventsRepo(): EventsRepo {
   const aggMap = new Map<string, MemAgg>();
   const recMap = new Map<string, MemRec>();
   const machineMap = new Map<string, MemMachine>();
+  const limitObservationMap = new Map<
+    string,
+    LimitObservation & { userId: string }
+  >();
   let recSeq = 0;
 
   function aggKey(
@@ -1259,6 +1354,49 @@ export function createMemoryEventsRepo(): EventsRepo {
       return [...machineMap.values()]
         .filter((m) => m.userId === userId)
         .sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
+    },
+
+    async listLimitObservations(userId) {
+      return [...limitObservationMap.values()]
+        .filter((o) => o.userId === userId)
+        .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))
+        .map(({ userId: _userId, ...o }) => o);
+    },
+
+    async insertLimitObservation(userId, observation) {
+      const id = crypto.randomUUID();
+      const row: LimitObservation & { userId: string } = {
+        id,
+        userId,
+        windowKind: observation.windowKind,
+        observedAt: observation.observedAt,
+        unitsInWindow: observation.unitsInWindow,
+        provenance: observation.provenance,
+        status: observation.status,
+      };
+      limitObservationMap.set(id, row);
+      const { userId: _userId, ...created } = row;
+      return created;
+    },
+
+    async setLimitObservationStatus(userId, id, status) {
+      const row = limitObservationMap.get(id);
+      if (!row || row.userId !== userId) return false;
+      row.status = status;
+      return true;
+    },
+
+    async eventsSince(userId, sinceIso) {
+      const since = new Date(sinceIso);
+      return [...eventMap.values()]
+        .filter(
+          (e) =>
+            e.userId === userId &&
+            e.timestamp >= since &&
+            e.grain !== "aggregate",
+        )
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+        .map(rowToUsageEvent);
     },
   };
 }

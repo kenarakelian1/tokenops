@@ -592,3 +592,120 @@ describe("sessionCoverage", () => {
     expect(coverage.unattributedInputTokens).toBe(500_000);
   });
 });
+
+describe("limit observations", () => {
+  it("round-trips an observation", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 1_234_567,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(created.id).toBeTruthy();
+    const all = await repo.listLimitObservations("u1");
+    expect(all).toHaveLength(1);
+    expect(all[0]!.unitsInWindow).toBe(1_234_567);
+    expect(all[0]!.provenance).toBe("declared");
+  });
+
+  it("scopes observations to their user", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 1,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(await repo.listLimitObservations("u2")).toEqual([]);
+  });
+
+  it("updates status and reports whether a row matched", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "session_5h",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 10,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u1", created.id, "dismissed"),
+    ).toBe(true);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "dismissed",
+    );
+    expect(
+      await repo.setLimitObservationStatus("u1", "no-such-id", "dismissed"),
+    ).toBe(false);
+  });
+
+  it("will not let one user change another's observation", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "session_5h",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 10,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u2", created.id, "dismissed"),
+    ).toBe(false);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "active",
+    );
+  });
+});
+
+describe("eventsSince", () => {
+  const base = {
+    machineId: "machine-1",
+    machineName: "ci-runner",
+    app: "claude-code",
+    provider: "anthropic",
+    model: "claude-opus-5",
+    features: { modelTier: "unknown" as const },
+    hasContent: false,
+    costUsd: null,
+  };
+
+  it("returns only events at or after the cutoff, oldest first", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "a",
+      timestamp: "2026-08-01T00:00:00.000Z",
+      inputTokens: 10,
+      outputTokens: 1,
+    });
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "b",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      inputTokens: 20,
+      outputTokens: 2,
+    });
+    // Neither event above sets `grain`, so this also pins that a
+    // null/undefined grain is included, not excluded, by eventsSince.
+    const got = await repo.eventsSince("u1", "2026-08-05T00:00:00.000Z");
+    expect(got.map((e) => e.eventId)).toEqual(["b"]);
+  });
+
+  it("excludes aggregate-grain events, which have no single request inside them", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "agg",
+      grain: "aggregate",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      inputTokens: 5_000_000,
+      outputTokens: 1,
+    });
+    expect(
+      await repo.eventsSince("u1", "2026-08-01T00:00:00.000Z"),
+    ).toEqual([]);
+  });
+});
