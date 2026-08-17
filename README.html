@@ -184,6 +184,32 @@ node scripts/measure-session-rules.mjs --detail  # every card: which session, wh
 WINDOW_DAYS=30 node scripts/measure-session-rules.mjs --detail
 </code></pre>
 <p><code>--detail</code> prints exactly the cards the dashboard would show, ranked by savings. This is also the acceptance gate for the rule set itself: it exits non-zero both when nothing fires <em>and</em> when too much does, so an overtuned rule fails the build rather than filling a panel with noise.</p>
+<h3 id="will-i-make-it-to-reset">Will I make it to reset?</h3>
+<pre><code class="language-bash">node scripts/measure-forecast.mjs           # both windows, pace, projection
+node scripts/measure-forecast.mjs --detail  # plus your hour-of-week activity model
+</code></pre>
+<p>Anthropic publishes no quota for subscription plans and exposes none
+programmatically, so this never invents one. With no configuration it
+compares your pace against <strong>your own history</strong> — your highest week ever is a
+lower bound on your real limit, because you reached it. Mark a real limit hit
+in the app and the projection switches to that instead, and says so.</p>
+<p>Replayed over 37.5 days of my own history (42,610 deduped events from 90,293
+raw assistant lines, a 2.12x dedup ratio — local retention doesn&#39;t go back
+further than that): the gate itself passes — every figure finite, no
+projection lands in the past, and candidate detection proposed <strong>0</strong> wall
+candidates, comfortably under the noise ceiling of 5. But the gate isn&#39;t the
+real test. I ran out of usage roughly three days before a weekly reset at
+some point while using this tool, and the honest report is that detection
+did not surface a matching period in this window: of the 18 zero-consumption
+gaps of 12+ hours present in the available history, none satisfied all three
+detector conditions together — the ones with a heavy-enough run-up were
+overnight gaps with too little of my own active time inside them, and the
+one long daytime-spanning gap (37.1h, over a weekend) had a run-up below my
+own top decile. So on this dataset: the gate passes, but detection is not
+yet catching the case it was built for, and thresholds were not loosened to
+manufacture a hit. See <code>scripts/measure-forecast.mjs</code> and
+<code>.superpowers/sdd/2026-08-16-usage-forecast/task-9-report.md</code> for the full
+numbers.</p>
 <h2 id="architecture">Architecture</h2>
 <pre><code>┌─────────────────────────────┐
 │  Claude Code / OpenAI SDK   │

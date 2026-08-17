@@ -65,6 +65,37 @@ WINDOW_DAYS=30 node scripts/measure-session-rules.mjs --detail
 
 `--detail` prints exactly the cards the dashboard would show, ranked by savings. This is also the acceptance gate for the rule set itself: it exits non-zero both when nothing fires *and* when too much does, so an overtuned rule fails the build rather than filling a panel with noise.
 
+### Will I make it to reset?
+
+```bash
+node scripts/measure-forecast.mjs           # both windows, pace, projection
+node scripts/measure-forecast.mjs --detail  # plus your hour-of-week activity model
+```
+
+Anthropic publishes no quota for subscription plans and exposes none
+programmatically, so this never invents one. With no configuration it
+compares your pace against **your own history** — your highest week ever is a
+lower bound on your real limit, because you reached it. Mark a real limit hit
+in the app and the projection switches to that instead, and says so.
+
+Replayed over 37.5 days of my own history (42,610 deduped events from 90,293
+raw assistant lines, a 2.12x dedup ratio — local retention doesn't go back
+further than that): the gate itself passes — every figure finite, no
+projection lands in the past, and candidate detection proposed **0** wall
+candidates, comfortably under the noise ceiling of 5. But the gate isn't the
+real test. I ran out of usage roughly three days before a weekly reset at
+some point while using this tool, and the honest report is that detection
+did not surface a matching period in this window: of the 18 zero-consumption
+gaps of 12+ hours present in the available history, none satisfied all three
+detector conditions together — the ones with a heavy-enough run-up were
+overnight gaps with too little of my own active time inside them, and the
+one long daytime-spanning gap (37.1h, over a weekend) had a run-up below my
+own top decile. So on this dataset: the gate passes, but detection is not
+yet catching the case it was built for, and thresholds were not loosened to
+manufacture a hit. See `scripts/measure-forecast.mjs` and
+`.superpowers/sdd/2026-08-16-usage-forecast/task-9-report.md` for the full
+numbers.
+
 ## Architecture
 
 ```
