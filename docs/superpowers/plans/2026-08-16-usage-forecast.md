@@ -1223,7 +1223,34 @@ EOF
 
 **Interfaces:**
 - Consumes: `TimedUnit`, `trailingWindow` from `./windows.js`; `WINDOW_HOURS`, `WallCandidate` from `./types.js`
-- Produces: `CANDIDATE_MIN_GAP_HOURS`, `CANDIDATE_MIN_ACTIVE_HOURS`, `CANDIDATE_TOP_DECILE`, `hourOfWeekActivity(sorted): number[]` (length 168), `detectCandidateWalls(sorted, nowMs, dismissedIds): WallCandidate[]`
+- Produces: `CANDIDATE_MIN_GAP_HOURS`, `CANDIDATE_MIN_ACTIVE_HOURS`, `CANDIDATE_TOP_DECILE`, `CANDIDATE_ACTIVE_PRESENCE_THRESHOLD`, `hourOfWeekActivity(sorted): number[]` (length 168), `detectCandidateWalls(sorted, nowMs, dismissedIds): WallCandidate[]`
+
+> **Substantially superseded.** Four defects in the blocks below were found in
+> execution; `packages/shared/src/forecast/candidates.ts` and its test file are
+> the reference.
+>
+> 1. **`activeSlots` thresholded by median magnitude.** That discards roughly
+>    half of any real user's genuinely-worked hours, because a median is a
+>    relative threshold — and the absence being detected lowers the very slots
+>    that would flag it. "Normally active" is a question about presence, not
+>    volume. Shipped: per-slot presence frequency against
+>    `CANDIDATE_ACTIVE_PRESENCE_THRESHOLD = 0.5`, computed from the series
+>    directly, so `hourOfWeekActivity` is no longer consumed by detection.
+> 2. **The candidate id included `Math.round(gapHours)`.** The open trailing
+>    gap runs to `now`, so its id changed every hour and a dismissal could
+>    never stick — the heaviest user got re-prompted hourly, forever. Shipped:
+>    keyed on `startsAt` alone.
+> 3. **The top-decile computation was O(n²).** Shipped: a single-pass sweep —
+>    which must fold every event sharing a timestamp before recording that
+>    instant's total, or tied events undercount each other.
+> 4. **Three of the seven tests were vacuous**, including both tests covering
+>    the only two constraints this component exists to honour. The weekend test
+>    looped over an empty array and asserted a predicate no implementation
+>    could violate; the id-stability test compared two identical calls.
+>
+> The active-hour loop also starts at `h = 1`: `h = 0` is by construction an
+> hour the user was present in, so counting it gave every candidate a free
+> active hour and made the effective threshold 3 rather than 4.
 
 - [ ] **Step 1: Write the failing test**
 
