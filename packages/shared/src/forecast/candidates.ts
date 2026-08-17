@@ -100,20 +100,40 @@ function activeSlots(sorted: TimedUnit[], nowMs: number): Set<number> {
  * same reason (this file's own top-decile scan is exactly the "30 days
  * hourly against a 7-day window" shape that function's docstring warns
  * about).
+ *
+ * `trailingWindow`'s boundary `(at - hours, at]` is a pure function of a
+ * timestamp *value* — it has no notion of array position, so two events
+ * sharing a timestamp always see each other. A naive index-order sweep does
+ * not: it would add `sorted[i].units` to the running total and record that
+ * total for index `i` before a later-indexed event at the *same* timestamp
+ * had been folded in, undercounting every index but the last in a tied run.
+ * So before recording a value for any index, the sweep first walks the head
+ * pointer through the *entire* run of indices sharing that timestamp and
+ * folds all of them into `total`, then writes that one total back across
+ * every index in the run. Ties are rare in practice but not theoretical:
+ * TokenOps ingests per-message events across multiple machines, and
+ * concurrent sessions can land in the same millisecond.
  */
 function trailingAtEachEvent(sorted: TimedUnit[], hours: number): number[] {
   const span = hours * MS_PER_HOUR;
   const out = new Array<number>(sorted.length).fill(0);
   let tail = 0;
   let total = 0;
-  for (let i = 0; i < sorted.length; i += 1) {
-    total += sorted[i]!.units;
-    const windowOpensAt = sorted[i]!.at - span;
-    while (tail < i && sorted[tail]!.at <= windowOpensAt) {
+  let i = 0;
+  while (i < sorted.length) {
+    const at = sorted[i]!.at;
+    let j = i;
+    while (j < sorted.length && sorted[j]!.at === at) {
+      total += sorted[j]!.units;
+      j += 1;
+    }
+    const windowOpensAt = at - span;
+    while (tail < j && sorted[tail]!.at <= windowOpensAt) {
       total -= sorted[tail]!.units;
       tail += 1;
     }
-    out[i] = total;
+    for (let k = i; k < j; k += 1) out[k] = total;
+    i = j;
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toTimedUnits } from "./windows.js";
+import { toTimedUnits, type TimedUnit } from "./windows.js";
 import type { UsageEvent } from "../schema/event.js";
 import {
   CANDIDATE_MIN_GAP_HOURS,
@@ -162,6 +162,55 @@ describe("detectCandidateWalls", () => {
     const closedSorted = toTimedUnits(resumedEvents);
     const closedRun = detectCandidateWalls(closedSorted, T0 + 40 * 24 * H, []);
     expect(closedRun.map((c) => c.id)).toContain(openId);
+  });
+
+  it("does not let a tied timestamp elsewhere in history smuggle a below-threshold event past the top decile", () => {
+    // trailingWindow's boundary (at - hours, at] is a pure function of a
+    // timestamp VALUE, not array position: two events sharing a timestamp
+    // must see each other's units regardless of which one is stored first.
+    // A naive index-order accumulation instead adds one point's units to a
+    // running total before recording that total, so an earlier-indexed
+    // event tied with a later one gets an undercounted trailing value. That
+    // corrupted (too-low) value is one entry among many feeding the shared
+    // top-decile threshold, and decreasing any value can only pull an order
+    // statistic down, never up -- so the defect can only manufacture FALSE
+    // POSITIVES (a threshold that is wrongly too low), never suppress a
+    // genuine candidate.
+    //
+    // Construction, one event per week at a fixed hour-of-week slot (so
+    // trailing-7d windows never overlap and each value is independently
+    // controllable), with week 4 split into a tied pair:
+    //   weeks 0,1,2,3,5,6,7,8: 50 units each (filler, always low)
+    //   week 4: two events at the IDENTICAL instant, 100 + 4900 = 5000
+    //           combined -- position-independently, BOTH must read 5000.
+    //   week 9 (the target): 4800 units, correctly below the true top
+    //           decile (5000), so it must never be proposed as a candidate.
+    // Under the old index-order bug, week 4's first (undercounted) entry
+    // read only 100 -- not 5000 -- which is what let the target's 4800
+    // wrongly land exactly at the (deflated) threshold. See the fix's
+    // report for the by-hand quantile arithmetic both ways.
+    const WEEK = 168 * H;
+    const sorted: TimedUnit[] = [
+      { at: 0 * WEEK, units: 50 },
+      { at: 1 * WEEK, units: 50 },
+      { at: 2 * WEEK, units: 50 },
+      { at: 3 * WEEK, units: 50 },
+      { at: 4 * WEEK, units: 100 }, // tied, first
+      { at: 4 * WEEK, units: 4900 }, // tied, second (same instant)
+      { at: 5 * WEEK, units: 50 },
+      { at: 6 * WEEK, units: 50 },
+      { at: 7 * WEEK, units: 50 },
+      { at: 8 * WEEK, units: 50 },
+      { at: 9 * WEEK, units: 4800 }, // target
+    ];
+    const lastAt = sorted[sorted.length - 1]!.at;
+    // >= 4 weeks out: covers 4 occurrences of the one active hour-of-week
+    // slot, satisfying condition 3 so this exercises condition 2 in
+    // isolation rather than being excluded some other way.
+    const now = lastAt + 700 * H;
+
+    const found = detectCandidateWalls(sorted, now, []);
+    expect(found).toEqual([]);
   });
 
   it("returns nothing for an empty history", () => {
