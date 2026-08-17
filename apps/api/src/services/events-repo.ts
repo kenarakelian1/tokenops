@@ -84,6 +84,18 @@ export function assertActiveIsDeclared(observation: {
   }
 }
 
+/**
+ * Hard ceiling on how many request-grain events a single `eventsSince` call
+ * will return. Mirrors `MAX_BACKTEST_EVENTS` in routes/recommendations.ts —
+ * same shape of problem (an unbounded scan over `FORECAST_HISTORY_DAYS` days
+ * of full rows, `features` JSONB included, on an endpoint hit on every page
+ * load from three routes) and the same fix: cap it, and tell the caller when
+ * the cap actually bit rather than degrading silently. See I3 in the
+ * 2026-08-16 review — one user's own account measured 42,810 events in 37.5
+ * days.
+ */
+export const EVENTS_SINCE_MAX = 20_000;
+
 export type RecommendationInsert = {
   userId: string;
   ruleId: string;
@@ -224,8 +236,22 @@ export type EventsRepo = {
    * forecast. Aggregate-grain rows are excluded: they are time-bucketed sums
    * with no single request inside them, so they would distort both the
    * windows and the pace.
+   *
+   * Capped at `EVENTS_SINCE_MAX`. When more than that many rows exist in
+   * `[sinceIso, now]`, the returned `events` are the `EVENTS_SINCE_MAX` MOST
+   * RECENT ones (still returned oldest-first) — not the oldest — because the
+   * forecast's most load-bearing figures (`current`, `pacePerHour`, and the
+   * trailing window a fresh declaration/confirmation stamps) all depend on
+   * recent history, while only the historical-maximum sweep and candidate
+   * detection lose reach into the past when capped. `truncated: true`
+   * signals that the cap actually bit, so a caller (`GET /v1/forecast`) can
+   * tell the user their forecast was computed over a partial window instead
+   * of presenting it as complete.
    */
-  eventsSince(userId: string, sinceIso: string): Promise<UsageEvent[]>;
+  eventsSince(
+    userId: string,
+    sinceIso: string,
+  ): Promise<{ events: UsageEvent[]; truncated: boolean }>;
 };
 
 /**
@@ -863,6 +889,32 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
     },
 
     async setLimitObservationStatus(userId, id, status) {
+      // M2: `insertLimitObservation` isn't the only write path that can put
+      // a row into `status: "active"` — this one can too, and until now did
+      // so unguarded. No caller passes "active" here today, but the
+      // invariant `assertActiveIsDeclared` exists to enforce (an active
+      // ceiling must be declared) has to hold on every write path, not just
+      // the ones a reviewer happened to check. Only looked up when the
+      // target status is "active": every other transition (the only ones
+      // any caller uses today) skips the extra read.
+      if (status === "active") {
+        const [existing] = await db
+          .select({ provenance: limitObservations.provenance })
+          .from(limitObservations)
+          .where(
+            and(
+              eq(limitObservations.userId, userId),
+              eq(limitObservations.id, id),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          assertActiveIsDeclared({
+            status,
+            provenance: existing.provenance as LimitProvenance,
+          });
+        }
+      }
       const updated = await db
         .update(limitObservations)
         .set({ status })
@@ -877,6 +929,8 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
     },
 
     async eventsSince(userId, sinceIso) {
+      // Newest first, capped at MAX+1 so a single extra row past the cap is
+      // enough to know whether truncation happened, without a second query.
       const rows = await db
         .select()
         .from(usageEvents)
@@ -887,8 +941,15 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
             or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
           ),
         )
-        .orderBy(usageEvents.timestamp);
-      return rows.map(rowToUsageEvent);
+        .orderBy(desc(usageEvents.timestamp))
+        .limit(EVENTS_SINCE_MAX + 1);
+
+      const truncated = rows.length > EVENTS_SINCE_MAX;
+      const capped = truncated ? rows.slice(0, EVENTS_SINCE_MAX) : rows;
+      // Restore the documented oldest-first contract after capping from the
+      // newest end.
+      capped.reverse();
+      return { events: capped.map(rowToUsageEvent), truncated };
     },
   };
 }
@@ -1407,21 +1468,33 @@ export function createMemoryEventsRepo(): EventsRepo {
     async setLimitObservationStatus(userId, id, status) {
       const row = limitObservationMap.get(id);
       if (!row || row.userId !== userId) return false;
+      // M2: kept symmetric with the Drizzle implementation's guard above —
+      // see its comment for why this must hold on every write path.
+      if (status === "active") {
+        assertActiveIsDeclared({ status, provenance: row.provenance });
+      }
       row.status = status;
       return true;
     },
 
     async eventsSince(userId, sinceIso) {
       const since = new Date(sinceIso);
-      return [...eventMap.values()]
+      // Newest first, so capping keeps the most recent EVENTS_SINCE_MAX
+      // rows — see the Drizzle implementation's matching comment and the
+      // EventsRepo doc comment for why recency wins over completeness here.
+      const matches = [...eventMap.values()]
         .filter(
           (e) =>
             e.userId === userId &&
             e.timestamp >= since &&
             e.grain !== "aggregate",
         )
-        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-        .map(rowToUsageEvent);
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+      const truncated = matches.length > EVENTS_SINCE_MAX;
+      const capped = truncated ? matches.slice(0, EVENTS_SINCE_MAX) : matches;
+      capped.reverse(); // restore the documented oldest-first contract
+      return { events: capped.map(rowToUsageEvent), truncated };
     },
   };
 }

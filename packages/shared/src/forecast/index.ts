@@ -79,11 +79,33 @@ function forecastWindow(
   const current = trailingWindow(sorted, nowMs, hours);
   const pace = pacePerHour(sorted, nowMs);
 
+  /**
+   * INVARIANT: `ceiling` is either `null` (no ceiling can be justified) or a
+   * strictly positive number — never `0`. Both branches below enforce this
+   * at the one place `ceiling` is ever assigned, so every downstream reader
+   * (this function's own `fractionOfCeiling` below, `projectWindow`, and the
+   * UI's `ceilingClause`/`projectionClause`) can treat `ceiling != null` as
+   * a single three-way switch without a second, independent falsy-vs-null
+   * check of its own to keep in sync.
+   *
+   * That second check is exactly what went wrong before this comment
+   * existed (I1): `fractionOfCeiling` read a stored `ceiling: 0` as falsy
+   * ("no ceiling") while `projectWindow`'s `current >= ceiling` read that
+   * same `0` as "already exceeded" — one `WindowForecast` rendering both
+   * "No ceiling established yet." and a projected reach date at once. A
+   * zero-unit declaration is now rejected at the API route that creates one
+   * (see `POST /v1/limit-observations` in forecast.ts), so this should never
+   * see `declared.unitsInWindow <= 0` in practice; the guard stays here too
+   * so any other path that ever constructs a `LimitObservation` — a fixture,
+   * a migration, a future caller — degrades to "no ceiling" (or falls
+   * through to the inferred branch) instead of resurrecting the
+   * self-contradiction.
+   */
   let ceiling: number | null = null;
   let ceilingProvenance: LimitProvenance | null = null;
 
   const declared = activeDeclaration(observations, windowKind);
-  if (declared) {
+  if (declared != null && declared.unitsInWindow > 0) {
     ceiling = declared.unitsInWindow;
     ceilingProvenance = declared.provenance;
   } else if (historyDays >= MIN_HISTORY_DAYS && sorted.length > 0) {
@@ -116,7 +138,10 @@ function forecastWindow(
     pacePerHour: pace,
     ceiling,
     ceilingProvenance,
-    fractionOfCeiling: ceiling && ceiling > 0 ? current / ceiling : null,
+    // `ceiling` is never `0` here (see the invariant above `let ceiling`),
+    // so a plain nullness check is enough — no `ceiling > 0` falsy check
+    // needed, and adding one back would silently reopen I1.
+    fractionOfCeiling: ceiling != null ? current / ceiling : null,
     reachesCeilingAt:
       projected.reachesAtMs == null ? null : new Date(projected.reachesAtMs).toISOString(),
     noProjectionReason,
@@ -132,17 +157,33 @@ function forecastWindow(
  * Candidate detection is NOT performed here; callers pass detected candidates
  * through separately, because a candidate only becomes a ceiling once the
  * user has confirmed it and it has been stored as a declaration.
+ *
+ * `presorted`, when given, is used instead of recomputing `toTimedUnits(events)`
+ * — purely an optimization for `GET /v1/forecast`, which also needs the same
+ * sorted series for `detectCandidatesSafely` and would otherwise sort the
+ * same (potentially large) event array twice per request (M5). Every other
+ * caller omits it and gets the old behavior.
  */
 export function runForecast(
   events: UsageEvent[],
   nowIso: string,
   observations: LimitObservation[] = [],
+  presorted?: TimedUnit[],
 ): Forecast {
   const nowMs = Date.parse(nowIso);
-  const sorted = toTimedUnits(events);
+  const sorted = presorted ?? toTimedUnits(events);
 
-  const historyDays =
+  // Clamped once, here — the single source of truth for `historyDays` — and
+  // used everywhere downstream, rather than clamping only the returned
+  // field while `forecastWindow` (below) interpolates the raw, unclamped
+  // value into its `noProjectionReason` copy via `Math.floor(historyDays)`.
+  // A future-dated first event (nowMs < sorted[0].at, e.g. clock skew) makes
+  // the raw value negative; without a single clamp point, that negative
+  // count would print in user-facing copy ("have -3") even though the
+  // returned `historyDays` field itself correctly reported `0` (M3).
+  const rawHistoryDays =
     sorted.length === 0 ? 0 : (nowMs - sorted[0]!.at) / (24 * MS_PER_HOUR);
+  const historyDays = Math.max(0, rawHistoryDays);
 
   let withoutBreakdown = 0;
   for (const e of events) if (!hasCacheBreakdown(e)) withoutBreakdown += 1;
@@ -152,9 +193,19 @@ export function runForecast(
     windows: WINDOW_ORDER.map((k) =>
       forecastWindow(sorted, nowMs, k, historyDays, observations),
     ),
-    historyDays: Math.max(0, historyDays),
+    historyDays,
     eventsWithoutBreakdown: withoutBreakdown,
-    eventsCounted: events.length,
+    // `sorted.length`, not `events.length`: toTimedUnits (whether computed
+    // here or passed in as `presorted`) silently drops any event whose
+    // timestamp fails to parse, so every window figure above is already
+    // computed over `sorted`. Counting raw `events` here would let
+    // `BreakdownNote`'s "X of Y events" denominator include events that are
+    // invisible to the window maths the sentence is describing (M4).
+    eventsCounted: sorted.length,
     candidates: [],
+    // Set by the route that fetches events from the repo, which is the only
+    // place that knows whether that fetch was capped (see the `truncated`
+    // field's doc comment in types.ts).
+    truncated: false,
   };
 }

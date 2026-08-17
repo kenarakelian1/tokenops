@@ -133,4 +133,61 @@ describe("runForecast", () => {
     // Candidate detection arrives in a later task and is wired in there.
     expect(runForecast(longHistory(), NOW).candidates).toEqual([]);
   });
+
+  it("I1: a declared ceiling of 0 never renders as both 'no ceiling' and a projected reach date", () => {
+    // The route that creates a declaration now rejects `unitsInWindow: 0`
+    // before it is ever written (see forecast.ts's POST
+    // /v1/limit-observations), but this exercises runForecast directly so
+    // the invariant holds structurally, independent of that route-level
+    // guard: an active/declared observation of exactly 0 units must never
+    // reach a WindowForecast that both withholds a ceiling AND claims a
+    // reach date. Short history (below MIN_HISTORY_DAYS) so there is no
+    // inferred fallback to mask the bug -- the zero declaration must fall
+    // all the way through to "no ceiling", not resolve some other way.
+    const short = Array.from({ length: 24 * 3 }, (_, i) => ev(i, 100));
+    const now = new Date(T0 + 24 * 3 * H).toISOString();
+    const obs: LimitObservation[] = [
+      {
+        id: "zero",
+        windowKind: "weekly_7d",
+        observedAt: now,
+        unitsInWindow: 0,
+        provenance: "declared",
+        status: "active",
+      },
+    ];
+    const f = runForecast(short, now, obs);
+    const weekly = f.windows.find((w) => w.windowKind === "weekly_7d")!;
+    // Before the fix: ceiling=0/declared, fractionOfCeiling=null (0 read as
+    // falsy), but current(0) >= ceiling(0) so reachesCeilingAt was a real
+    // ISO timestamp -- "No ceiling established yet." rendered right beside
+    // "Projected to reach the ceiling around ...".
+    expect(weekly.ceiling).toBeNull();
+    expect(weekly.ceilingProvenance).toBeNull();
+    expect(weekly.fractionOfCeiling).toBeNull();
+    expect(weekly.reachesCeilingAt).toBeNull();
+    expect(weekly.noProjectionReason).not.toBeNull();
+  });
+
+  it("I1: a declared ceiling of 0 falls through to the inferred maximum when history is long enough", () => {
+    // With ample history, a zero declaration must not black-hole the window
+    // into "no ceiling" when a real, positive, honest ceiling (the user's
+    // own historical maximum) is available -- it degrades to the SAME
+    // behavior as having no declaration at all, not to a permanently
+    // withheld ceiling.
+    const obs: LimitObservation[] = [
+      {
+        id: "zero",
+        windowKind: "weekly_7d",
+        observedAt: new Date(T0 + 24 * 20 * H).toISOString(),
+        unitsInWindow: 0,
+        provenance: "declared",
+        status: "active",
+      },
+    ];
+    const f = runForecast(longHistory(), NOW, obs);
+    const weekly = f.windows.find((w) => w.windowKind === "weekly_7d")!;
+    expect(weekly.ceiling).toBeGreaterThan(0);
+    expect(weekly.ceilingProvenance).toBe("inferred");
+  });
 });

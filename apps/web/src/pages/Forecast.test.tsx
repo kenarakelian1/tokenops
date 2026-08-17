@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { WallCandidateDto, WindowForecastDto } from "../api/client";
-import { BreakdownNote, CandidatePrompt, WindowCard } from "./Forecast";
+import { BreakdownNote, CandidatePrompt, TruncationNote, WindowCard } from "./Forecast";
 
 /**
  * Same no-DOM pattern `Recommendations.test.tsx` uses for `RecommendationCard`
@@ -99,6 +99,15 @@ describe("CandidatePrompt", () => {
     );
     expect(html).toMatch(/<button/);
     expect((html.match(/<button/g) ?? []).length).toBe(2);
+  });
+});
+
+describe("TruncationNote", () => {
+  it("tells the reader their history was capped", () => {
+    const html = renderToStaticMarkup(<TruncationNote />);
+    const t = html.replace(/<[^>]*>/g, "");
+    expect(t).toMatch(/most recent/i);
+    expect(t).toMatch(/left out|too large/i);
   });
 });
 

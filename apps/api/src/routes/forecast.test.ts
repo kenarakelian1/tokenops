@@ -95,6 +95,53 @@ function heavyDayThenGapEvents(nowMs: number): UsageEvent[] {
   return events;
 }
 
+/**
+ * Two independently-detectable wall candidates within one
+ * FORECAST_HISTORY_DAYS window: a heavy day (`heavyDay1`) followed by a
+ * `gap1Days`-long gap and a resumption of normal activity, then a second
+ * heavy day (`heavyDay2`) followed by an open trailing gap to `nowMs`. Same
+ * construction as `heavyDayThenGapEvents` above (weekday 9:00-18:00 activity,
+ * `t0` snapped to `TARGET_WEEKDAY` so the fixture's weekday/weekend shape is
+ * independent of when the test actually runs), just with a second heavy
+ * episode inserted partway through instead of one. The default parameters
+ * (10, 3, 34, 74) were confirmed empirically (see the I2 fix report) to
+ * produce exactly two candidates, spaced about three and a half weeks apart
+ * -- the same shape the review's own reproduction used.
+ */
+function twoWallCandidatesEvents(
+  nowMs: number,
+  heavyDay1 = 10,
+  gap1Days = 3,
+  heavyDay2 = 34,
+  finalGapHours = 74,
+): UsageEvent[] {
+  const rawT0 = nowMs - finalGapHours * H - (heavyDay2 * 24 + 17) * H;
+  const t0Midnight = new Date(rawT0);
+  t0Midnight.setUTCHours(0, 0, 0, 0);
+  const shiftDays = (t0Midnight.getUTCDay() - TARGET_WEEKDAY + 7) % 7;
+  const t0 = t0Midnight.getTime() - shiftDays * DAY;
+
+  const events: UsageEvent[] = [];
+  for (let d = 0; d <= heavyDay2; d += 1) {
+    const dow = new Date(t0 + d * DAY).getUTCDay();
+    if (dow === 0 || dow === 6) continue; // weekend: no activity
+    if (d > heavyDay1 && d <= heavyDay1 + gap1Days) continue; // the first gap
+    const isHeavy = d === heavyDay1 || d === heavyDay2;
+    const mult = isHeavy ? 20 : 1;
+    for (let h = 9; h < 18; h += 1) {
+      const at = t0 + d * DAY + h * H;
+      events.push(
+        baseEvent({
+          eventId: `evt-2wall-${d}-${h}`,
+          timestamp: new Date(at).toISOString(),
+          inputTokens: 1_000 * mult,
+        }),
+      );
+    }
+  }
+  return events;
+}
+
 describe("forecast routes", () => {
   let app: ReturnType<typeof createApp>;
   let eventsRepo: ReturnType<typeof createMemoryEventsRepo>;
@@ -157,10 +204,14 @@ describe("forecast routes", () => {
   });
 
   describe("POST /v1/limit-observations", () => {
-    it("records the live trailing total rather than trusting the client", async () => {
-      // The client must not be able to claim an arbitrary ceiling; the server
-      // stamps the number from its own ledger. No events are seeded, so the
-      // real figure is 0 -- nowhere near the client's claimed 999,999,999.
+    it("I1: rejects a declaration when the real trailing window is empty, rather than storing a meaningless ceiling", async () => {
+      // No events are seeded, so the server's own measurement is 0 -- a
+      // "ceiling" of exactly zero is not a limit anyone could have hit, and
+      // used to render as a self-contradiction downstream ("No ceiling
+      // established yet." next to a projected reach date). The client's
+      // wildly-claimed figure must still be ignored, not honored as a
+      // fallback: this asserts the request is rejected outright, with
+      // nothing written, not silently satisfied by the client's number.
       const res = await request("/v1/limit-observations", {
         method: "POST",
         body: JSON.stringify({
@@ -168,12 +219,9 @@ describe("forecast routes", () => {
           unitsInWindow: 999_999_999,
         }),
       });
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.observation.unitsInWindow).not.toBe(999_999_999);
-      expect(body.observation.unitsInWindow).toBe(0);
-      expect(body.observation.provenance).toBe("declared");
-      expect(body.observation.status).toBe("active");
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "empty_window" });
+      expect(await eventsRepo.listLimitObservations(userId)).toEqual([]);
     });
 
     it("stamps the units actually measured from real history, not a default", async () => {
@@ -217,6 +265,18 @@ describe("forecast routes", () => {
     });
 
     it("supersedes the previous active observation for that window", async () => {
+      // I1 now rejects a declaration whose real trailing window is empty, so
+      // this seeds real consumption first -- both POSTs below must measure a
+      // positive unitsInWindow to succeed at all.
+      await eventsRepo.insertEventIfNew(
+        userId,
+        baseEvent({
+          eventId: "evt-supersede-seed",
+          timestamp: new Date(Date.now() - 60_000).toISOString(),
+          inputTokens: 500,
+          outputTokens: 0,
+        }),
+      );
       await request("/v1/limit-observations", {
         method: "POST",
         body: JSON.stringify({ windowKind: "weekly_7d" }),
@@ -252,6 +312,17 @@ describe("forecast routes", () => {
 
   describe("POST /v1/limit-observations/:id/dismiss", () => {
     it("dismisses an existing observation", async () => {
+      // I1 now rejects a declaration whose real trailing window is empty, so
+      // this seeds real consumption first.
+      await eventsRepo.insertEventIfNew(
+        userId,
+        baseEvent({
+          eventId: "evt-dismiss-seed",
+          timestamp: new Date(Date.now() - 60_000).toISOString(),
+          inputTokens: 500,
+          outputTokens: 0,
+        }),
+      );
       const created = await request("/v1/limit-observations", {
         method: "POST",
         body: JSON.stringify({ windowKind: "session_5h" }),
@@ -367,6 +438,72 @@ describe("forecast routes", () => {
       const afterRetract = await (await request("/v1/forecast")).json();
       expect(afterRetract.candidates).toHaveLength(1);
       expect(afterRetract.candidates[0].id).toBe(candidateId);
+    });
+
+    it("I2 regression: confirming a second candidate must not resurrect the first", async () => {
+      // Before the fix, `suppressesCandidate` read "answered" purely off
+      // `status === "active"`. Every candidate shares windowKind
+      // "weekly_7d", so confirming B calls `supersedeActive("weekly_7d")`,
+      // which flips A's row from "active" to "superseded" purely to keep
+      // "one active ceiling per window" true -- and, as a side effect, made
+      // A stop matching "answered" and get proposed again even though it had
+      // already been confirmed. With two real, independently-detected
+      // candidates, confirming both in turn must retire both; only
+      // retracting a specific confirmation may bring its candidate back.
+      for (const event of twoWallCandidatesEvents(Date.now())) {
+        await eventsRepo.insertEventIfNew(userId, event);
+      }
+
+      const before = await (await request("/v1/forecast")).json();
+      expect(before.candidates).toHaveLength(2);
+      const [idA, idB] = before.candidates.map((c: { id: string }) => c.id);
+      expect(idA).not.toBe(idB);
+
+      const confirmA = await request("/v1/wall-candidates/confirm", {
+        method: "POST",
+        body: JSON.stringify({ id: idA }),
+      });
+      expect(confirmA.status).toBe(200);
+      const { observation: obsA } = (await confirmA.json()) as {
+        observation: { id: string };
+      };
+
+      const afterA = await (await request("/v1/forecast")).json();
+      expect(afterA.candidates.map((c: { id: string }) => c.id)).toEqual([
+        idB,
+      ]);
+
+      const confirmB = await request("/v1/wall-candidates/confirm", {
+        method: "POST",
+        body: JSON.stringify({ id: idB }),
+      });
+      expect(confirmB.status).toBe(200);
+
+      // The crux of I2: confirming B must not resurrect A.
+      const afterB = await (await request("/v1/forecast")).json();
+      expect(afterB.candidates).toEqual([]);
+
+      // Exactly one active weekly ceiling drives the forecast even though
+      // two candidates have now been confirmed -- confirming B superseded
+      // A's row, it did not leave two rows active at once.
+      const observations = await eventsRepo.listLimitObservations(userId);
+      const activeWeekly = observations.filter(
+        (o) => o.windowKind === "weekly_7d" && o.status === "active",
+      );
+      expect(activeWeekly).toHaveLength(1);
+
+      // Retracting A's confirmation must un-retire A specifically, without
+      // touching B.
+      const retractA = await request(
+        `/v1/limit-observations/${obsA.id}/dismiss`,
+        { method: "POST" },
+      );
+      expect(retractA.status).toBe(200);
+
+      const afterRetractA = await (await request("/v1/forecast")).json();
+      expect(afterRetractA.candidates.map((c: { id: string }) => c.id)).toEqual([
+        idA,
+      ]);
     });
 
     it("404s confirming an id that does not match any currently detected candidate", async () => {

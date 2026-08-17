@@ -86,6 +86,8 @@ export function Forecast() {
 
       {forecast ? (
         <>
+          {forecast.truncated ? <TruncationNote /> : null}
+
           {forecast.eventsWithoutBreakdown != null && forecast.eventsCounted != null ? (
             <BreakdownNote
               eventsWithoutBreakdown={forecast.eventsWithoutBreakdown}
@@ -284,6 +286,22 @@ export function CandidatePrompt({
         </button>
       </div>
     </article>
+  );
+}
+
+/**
+ * I3: states plainly that this forecast was NOT computed over your full
+ * history — the API caps how many events a single request will scan (see
+ * `EVENTS_SINCE_MAX` in events-repo.ts) and reports `truncated: true` rather
+ * than silently degrading. Free of hooks, like `BreakdownNote`, so it can be
+ * rendered and tested standalone.
+ */
+export function TruncationNote() {
+  return (
+    <p className="muted" style={{ fontSize: "0.85rem" }}>
+      Only your most recent activity was used for this forecast — your
+      history was too large to scan in full, so older events were left out.
+    </p>
   );
 }
 

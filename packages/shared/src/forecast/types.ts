@@ -76,4 +76,15 @@ export type Forecast = {
   eventsWithoutBreakdown: number;
   eventsCounted: number;
   candidates: WallCandidate[];
+  /**
+   * True when the event history behind this forecast was capped before it
+   * got here (see `EVENTS_SINCE_MAX` in events-repo.ts) — i.e. some older
+   * activity within the lookback window was left out rather than scanned.
+   * `runForecast` itself never sets this to `true`; it only knows about the
+   * events it was handed. The route that fetches those events from the repo
+   * is the one place that knows whether the fetch was capped, and stamps
+   * this field afterward — the same after-the-fact assignment
+   * `GET /v1/forecast` already uses for `candidates`.
+   */
+  truncated: boolean;
 };

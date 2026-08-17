@@ -172,11 +172,12 @@ export type WallCandidateDto = {
 };
 
 /**
- * `candidates`, `eventsWithoutBreakdown`, and `eventsCounted` are optional
- * the same way `RecommendationDto`'s `coverage` is: they are additive
- * metadata alongside the core `windows` figures, and a page built against
- * this type must not crash a request from an older API build that predates
- * one of them — the panel just skips the note or list that depends on it.
+ * `candidates`, `eventsWithoutBreakdown`, `eventsCounted`, and `truncated`
+ * are optional the same way `RecommendationDto`'s `coverage` is: they are
+ * additive metadata alongside the core `windows` figures, and a page built
+ * against this type must not crash a request from an older API build that
+ * predates one of them — the panel just skips the note or list that depends
+ * on it.
  */
 export type ForecastDto = {
   generatedAt: string;
@@ -185,6 +186,13 @@ export type ForecastDto = {
   eventsWithoutBreakdown?: number;
   eventsCounted?: number;
   candidates?: WallCandidateDto[];
+  /**
+   * True when the event history behind this forecast was capped (I3) — some
+   * older activity within the lookback window was left out rather than
+   * scanned in full. Mirrors `Forecast["truncated"]` in
+   * `@tokenops/shared/forecast`.
+   */
+  truncated?: boolean;
 };
 
 // --- Endpoint helpers ---

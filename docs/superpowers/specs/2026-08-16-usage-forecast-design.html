@@ -226,7 +226,9 @@ inference component safe to build at all.</p>
 <h2 id="units-and-why-the-unknown-metering-formula-does-not-sink-this">Units, and why the unknown metering formula does not sink this</h2>
 <p>Anthropic does not publish what a subscription meters. This design uses the
 same cache-aware weighting the rules already use:</p>
-<pre><code>units(event) = cacheCreation × 1.25 + cacheRead × 0.10 + output × 5.00
+<pre><code>units(event) = rawInput × 1.00 + cacheCreation × 1.25 + cacheRead × 0.10 + output × 5.00
+
+  rawInput = max(0, inputTokens − cacheRead − cacheCreation)
 </code></pre>
 <p>It is called a <strong>proxy</strong> everywhere in code and UI, never &quot;usage&quot;.</p>
 <p>The saving grace is that the primary output is <strong>self-relative</strong>. &quot;You are

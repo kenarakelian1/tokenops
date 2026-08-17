@@ -7,6 +7,7 @@ import {
 import {
   assertActiveIsDeclared,
   createMemoryEventsRepo,
+  EVENTS_SINCE_MAX,
   type EventsRepo,
 } from "./events-repo.js";
 
@@ -646,6 +647,45 @@ describe("limit observations", () => {
     ).toBe(false);
   });
 
+  it("M2: refuses to flip a non-declared observation's status to active, at setLimitObservationStatus itself", async () => {
+    // insertLimitObservation has always enforced assertActiveIsDeclared;
+    // setLimitObservationStatus did not, even though it can also produce a
+    // status: "active" row. No caller passes "active" here today, but the
+    // invariant has to be structural on every write path, not just the ones
+    // currently exercised.
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 42,
+      provenance: "inferred",
+      status: "dismissed",
+    });
+    await expect(
+      repo.setLimitObservationStatus("u1", created.id, "active"),
+    ).rejects.toThrow();
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "dismissed",
+    );
+  });
+
+  it("still allows flipping an already-declared observation's status to active", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 42,
+      provenance: "declared",
+      status: "superseded",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u1", created.id, "active"),
+    ).toBe(true);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "active",
+    );
+  });
+
   it("refuses to insert an active observation whose provenance isn't declared, at the write path itself", async () => {
     // Structural, not per-call-site: this calls insertLimitObservation
     // directly, bypassing every route in forecast.ts entirely, so it proves
@@ -725,8 +765,12 @@ describe("eventsSince", () => {
     });
     // Neither event above sets `grain`, so this also pins that a
     // null/undefined grain is included, not excluded, by eventsSince.
-    const got = await repo.eventsSince("u1", "2026-08-05T00:00:00.000Z");
-    expect(got.map((e) => e.eventId)).toEqual(["b"]);
+    const { events, truncated } = await repo.eventsSince(
+      "u1",
+      "2026-08-05T00:00:00.000Z",
+    );
+    expect(events.map((e) => e.eventId)).toEqual(["b"]);
+    expect(truncated).toBe(false);
   });
 
   it("excludes aggregate-grain events, which have no single request inside them", async () => {
@@ -739,8 +783,59 @@ describe("eventsSince", () => {
       inputTokens: 5_000_000,
       outputTokens: 1,
     });
-    expect(
-      await repo.eventsSince("u1", "2026-08-01T00:00:00.000Z"),
-    ).toEqual([]);
+    const { events } = await repo.eventsSince("u1", "2026-08-01T00:00:00.000Z");
+    expect(events).toEqual([]);
+  });
+
+  it("I3: caps at EVENTS_SINCE_MAX, keeping the MOST RECENT events and reporting truncated", async () => {
+    const repo = makeMemoryRepo();
+    const total = EVENTS_SINCE_MAX + 5;
+    for (let i = 0; i < total; i += 1) {
+      await repo.insertEventIfNew("u1", {
+        ...base,
+        eventId: `evt-${i}`,
+        // Ascending timestamps, one second apart, so "most recent" has an
+        // unambiguous meaning to assert against.
+        timestamp: new Date(Date.parse("2026-08-01T00:00:00.000Z") + i * 1000).toISOString(),
+        inputTokens: 1,
+        outputTokens: 0,
+      });
+    }
+
+    const { events, truncated } = await repo.eventsSince(
+      "u1",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(truncated).toBe(true);
+    expect(events).toHaveLength(EVENTS_SINCE_MAX);
+    // Still oldest-first, and the ones kept are the tail of the inserted
+    // series (the most recent), not the head -- a capped forecast must stay
+    // accurate about "now", not about the distant past.
+    expect(events[0]!.eventId).toBe(`evt-${total - EVENTS_SINCE_MAX}`);
+    expect(events[events.length - 1]!.eventId).toBe(`evt-${total - 1}`);
+    for (let i = 1; i < events.length; i += 1) {
+      expect(Date.parse(events[i]!.timestamp)).toBeGreaterThan(
+        Date.parse(events[i - 1]!.timestamp),
+      );
+    }
+  });
+
+  it("does not report truncated when the count lands exactly on the cap", async () => {
+    const repo = makeMemoryRepo();
+    for (let i = 0; i < EVENTS_SINCE_MAX; i += 1) {
+      await repo.insertEventIfNew("u1", {
+        ...base,
+        eventId: `evt-${i}`,
+        timestamp: new Date(Date.parse("2026-08-01T00:00:00.000Z") + i * 1000).toISOString(),
+        inputTokens: 1,
+        outputTokens: 0,
+      });
+    }
+    const { events, truncated } = await repo.eventsSince(
+      "u1",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(truncated).toBe(false);
+    expect(events).toHaveLength(EVENTS_SINCE_MAX);
   });
 });

@@ -86,27 +86,55 @@ function observedAtToCandidateId(observedAt: string): string {
  *   1. An explicit "no" — `status: "dismissed"`, `provenance: "inferred"` —
  *      written by `POST /v1/wall-candidates/dismiss` (via
  *      `insertDismissalMarker`). Permanent: nothing currently un-sets it.
- *   2. An explicit "yes" that is STILL STANDING — `status: "active"`,
- *      `provenance: "declared"` — written by `POST /v1/wall-candidates/confirm`.
- *      Deliberately NOT permanent the way (1) is: if the user later retracts
- *      this specific confirmation via `POST /v1/limit-observations/:id/dismiss`,
- *      that call only flips `status` to `"dismissed"` and leaves `provenance:
- *      "declared"` untouched — which matches NEITHER shape here, so
- *      suppression lifts and the candidate is proposed again.
+ *   2. An explicit "yes" that has not been RETRACTED — `provenance:
+ *      "declared"` with `status` of EITHER `"active"` (this is currently the
+ *      live ceiling) OR `"superseded"` (it WAS confirmed, and a later
+ *      declaration for the same window kind has since taken over as the
+ *      active ceiling — see `supersedeActive`). Both statuses mean "this
+ *      specific candidate was answered 'yes' and that answer still stands";
+ *      only `"dismissed"` means the answer was retracted.
+ *
+ *      INVARIANT (I2): answering a candidate and holding the active ceiling
+ *      for its window are two different facts about the same row, and only
+ *      one of them — the answer — is what suppression must track. Before
+ *      this comment, shape 2 checked `status === "active"` alone, so
+ *      confirming a SECOND candidate for the same window kind (every
+ *      candidate is `weekly_7d`) called `supersedeActive`, which flips the
+ *      FIRST candidate's row from `"active"` to `"superseded"` purely to
+ *      keep "one active ceiling per window" true — and, as an unintended
+ *      side effect, made the first candidate stop matching shape 2 and get
+ *      proposed again, even though the user had already answered it.
+ *      Widening shape 2 to also accept `"superseded"` decouples "was this
+ *      candidate answered" from "is this row today's ceiling": superseding
+ *      a row still keeps exactly one `"active"` observation per window kind
+ *      (that invariant is untouched — `supersedeActive` still runs, still
+ *      flips at most the prior active row), while the superseded row still
+ *      reads as "answered" here.
+ *
+ *      Retraction still works, and works the SAME WAY for either status:
+ *      `POST /v1/limit-observations/:id/dismiss` unconditionally sets
+ *      `status: "dismissed"` (leaving `provenance: "declared"` untouched)
+ *      regardless of whether the row was `"active"` or `"superseded"` when
+ *      retracted — `"dismissed"` matches neither status this shape accepts,
+ *      so suppression lifts and the candidate is proposable again either
+ *      way. See forecast.test.ts's "two confirmed candidates" test for both
+ *      directions verified end to end.
  *
  * This single predicate is what makes "a confirmed candidate is retired
- * while confirmed" and "retracting a confirmation and dismissing a proposal
- * are different acts" both true at once, without `confirm` having to write a
- * second, independent marker row that would outlive — and fight with — a
- * later retraction: a separate permanent marker plus a revocable active row
- * would leave the marker suppressing the candidate forever regardless of
- * what happens to the active row, which is exactly the bug this function
- * exists to avoid reintroducing.
+ * while confirmed, even after a later candidate is also confirmed" and
+ * "retracting a confirmation and dismissing a proposal are different acts"
+ * both true at once, without `confirm` having to write a second, independent
+ * marker row that would outlive — and fight with — a later retraction: a
+ * separate permanent marker plus a revocable active row would leave the
+ * marker suppressing the candidate forever regardless of what happens to the
+ * active row, which is exactly the bug this function exists to avoid
+ * reintroducing.
  */
 function suppressesCandidate(o: { status: string; provenance: string }): boolean {
   return (
     (o.status === "dismissed" && o.provenance === "inferred") ||
-    (o.status === "active" && o.provenance === "declared")
+    ((o.status === "active" || o.status === "superseded") &&
+      o.provenance === "declared")
   );
 }
 
@@ -180,17 +208,24 @@ forecastRoutes.get("/v1/forecast", requireUser, async (c) => {
     now.getTime() - FORECAST_HISTORY_DAYS * 86_400_000,
   ).toISOString();
 
-  const events = await repo.eventsSince(userId, since);
+  const { events, truncated } = await repo.eventsSince(userId, since);
   const observations = await repo.listLimitObservations(userId);
 
-  const forecast = runForecast(events, now.toISOString(), observations);
+  // Sorted once and reused for both runForecast and detectCandidatesSafely
+  // (M5) — this array can be large (see EVENTS_SINCE_MAX), and the two
+  // calls used to each sort it independently on every page load.
+  const sorted = toTimedUnits(events);
+  const forecast = runForecast(events, now.toISOString(), observations, sorted);
+  // The one place that knows the fetch above was capped — see the
+  // `truncated` field's doc comment in @tokenops/shared's forecast/types.ts.
+  forecast.truncated = truncated;
 
   const dismissedIds = observations
     .filter(suppressesCandidate)
     .map((o) => observedAtToCandidateId(o.observedAt));
 
   forecast.candidates = detectCandidatesSafely(
-    toTimedUnits(events),
+    sorted,
     now.getTime(),
     dismissedIds,
   );
@@ -217,12 +252,32 @@ forecastRoutes.post("/v1/limit-observations", requireUser, async (c) => {
   const since = new Date(
     now.getTime() - FORECAST_HISTORY_DAYS * 86_400_000,
   ).toISOString();
-  const events = await repo.eventsSince(userId, since);
+  const { events } = await repo.eventsSince(userId, since);
   const unitsInWindow = trailingWindow(
     toTimedUnits(events),
     now.getTime(),
     WINDOW_HOURS[windowKind],
   );
+
+  /**
+   * I1: a ceiling of exactly `0` is not a limit anyone could have hit — it
+   * says "you consumed nothing in this window", which contradicts the very
+   * premise of clicking "I hit this limit now". Storing it anyway used to
+   * render as a self-contradiction downstream ("No ceiling established
+   * yet." next to a projected reach date — see the invariant comment on
+   * `ceiling` in @tokenops/shared's forecast/index.ts) and permanently
+   * blocked the inferred-historical-maximum fallback for this window (any
+   * stored `active` declaration outranks `inferred`, however meaningless
+   * its number). Rejecting it here, before anything is written, is the
+   * honest response: there is no consumption yet to calibrate a ceiling
+   * against, so say that instead of persisting a number that means nothing.
+   * `supersedeActive` has NOT run yet at this point, so a rejected
+   * declaration leaves whatever ceiling already existed for this window
+   * untouched.
+   */
+  if (unitsInWindow <= 0) {
+    return c.json({ error: "empty_window" }, 400);
+  }
 
   await supersedeActive(repo, userId, windowKind);
 
@@ -290,7 +345,7 @@ forecastRoutes.post("/v1/wall-candidates/confirm", requireUser, async (c) => {
   const since = new Date(
     now.getTime() - FORECAST_HISTORY_DAYS * 86_400_000,
   ).toISOString();
-  const events = await repo.eventsSince(userId, since);
+  const { events } = await repo.eventsSince(userId, since);
   const observations = await repo.listLimitObservations(userId);
   const dismissedIds = observations
     .filter(suppressesCandidate)
