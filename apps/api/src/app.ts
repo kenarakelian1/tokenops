@@ -15,6 +15,7 @@ import { healthRoutes } from "./routes/health.js";
 import { eventsRoutes } from "./routes/events.js";
 import { aggregatesRoutes } from "./routes/aggregates.js";
 import { recommendationsRoutes } from "./routes/recommendations.js";
+import { forecastRoutes } from "./routes/forecast.js";
 import { heartbeatsRoutes } from "./routes/heartbeats.js";
 import { machinesRoutes } from "./routes/machines.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -114,6 +115,7 @@ export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
   app.route("/v1/events", eventsRoutes);
   app.route("/v1/aggregates", aggregatesRoutes);
   app.route("/v1/recommendations", recommendationsRoutes);
+  app.route("/", forecastRoutes);
   app.route("/v1/heartbeats", heartbeatsRoutes);
   app.route("/v1/machines", machinesRoutes);
   app.route("/v1/settings", settingsRoutes);
