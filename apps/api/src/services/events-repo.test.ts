@@ -4,7 +4,11 @@ import {
   type EventGrain,
   type UsageEvent,
 } from "@tokenops/shared";
-import { createMemoryEventsRepo, type EventsRepo } from "./events-repo.js";
+import {
+  assertActiveIsDeclared,
+  createMemoryEventsRepo,
+  type EventsRepo,
+} from "./events-repo.js";
 
 // Window bounds for the sessionRollups/sessionCoverage tests below — wide
 // enough to contain every generated timestamp with room either side.
@@ -640,6 +644,37 @@ describe("limit observations", () => {
     expect(
       await repo.setLimitObservationStatus("u1", "no-such-id", "dismissed"),
     ).toBe(false);
+  });
+
+  it("refuses to insert an active observation whose provenance isn't declared, at the write path itself", async () => {
+    // Structural, not per-call-site: this calls insertLimitObservation
+    // directly, bypassing every route in forecast.ts entirely, so it proves
+    // the invariant holds even for a caller that never heard of
+    // assertActiveIsDeclared -- exactly the "stop depending on discipline"
+    // guarantee two reviews have now asked for.
+    const repo = makeMemoryRepo();
+    await expect(
+      repo.insertLimitObservation("u1", {
+        windowKind: "weekly_7d",
+        observedAt: "2026-08-09T12:00:00.000Z",
+        unitsInWindow: 1,
+        provenance: "inferred",
+        status: "active",
+      }),
+    ).rejects.toThrow();
+    expect(await repo.listLimitObservations("u1")).toEqual([]);
+  });
+
+  it("assertActiveIsDeclared: throws only for active+non-declared", () => {
+    expect(() =>
+      assertActiveIsDeclared({ status: "active", provenance: "inferred" }),
+    ).toThrow();
+    expect(() =>
+      assertActiveIsDeclared({ status: "active", provenance: "declared" }),
+    ).not.toThrow();
+    expect(() =>
+      assertActiveIsDeclared({ status: "dismissed", provenance: "inferred" }),
+    ).not.toThrow();
   });
 
   it("will not let one user change another's observation", async () => {

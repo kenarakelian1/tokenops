@@ -61,6 +61,29 @@ export type SessionCoverage = {
   unattributedInputTokens: number;
 };
 
+/**
+ * Guards the one invariant every write to `limit_observations` must uphold:
+ * a ceiling that is live (`status: "active"`) must always be one the user
+ * actually declared. Enforced here, at the single write path both repo
+ * implementations share, rather than trusted to each call site — two
+ * reviews flagged that relying on every caller of `insertLimitObservation`
+ * to check this first was exactly the kind of discipline-dependent gap that
+ * regresses the moment a new caller is added. `runForecast`'s
+ * `activeDeclaration` (in `@tokenops/shared`) selects the ceiling by
+ * `status === "active"` alone and does not re-check provenance, so this is
+ * the one place in the whole system that has to hold the line.
+ */
+export function assertActiveIsDeclared(observation: {
+  status: LimitObservationStatus;
+  provenance: LimitProvenance;
+}): void {
+  if (observation.status === "active" && observation.provenance !== "declared") {
+    throw new Error(
+      `refusing to write an active limit observation with provenance "${observation.provenance}" — active observations must be declared`,
+    );
+  }
+}
+
 export type RecommendationInsert = {
   userId: string;
   ruleId: string;
@@ -817,6 +840,7 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
     },
 
     async insertLimitObservation(userId, observation) {
+      assertActiveIsDeclared(observation);
       const [row] = await db
         .insert(limitObservations)
         .values({
@@ -1364,6 +1388,7 @@ export function createMemoryEventsRepo(): EventsRepo {
     },
 
     async insertLimitObservation(userId, observation) {
+      assertActiveIsDeclared(observation);
       const id = crypto.randomUUID();
       const row: LimitObservation & { userId: string } = {
         id,

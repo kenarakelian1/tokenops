@@ -110,6 +110,18 @@ export function createApp(deps: AppDeps): Hono<{ Variables: AppVariables }> {
     await next();
   });
 
+  // A route that throws (rather than returning its own `c.json({error},
+  // code)`, the house convention every route in this app otherwise follows)
+  // would fall through to Hono's default plain-text 500 without this — a
+  // JSON API returning `text/plain` on its unhappy path. This is a single
+  // global net rather than a per-route try/catch specifically so it covers
+  // every route, present and future, not just the ones someone remembered to
+  // wrap.
+  app.onError((err, c) => {
+    console.error("Unhandled error:", err);
+    return c.json({ error: "internal_error" }, 500);
+  });
+
   app.route("/", healthRoutes);
   app.route("/v1/auth", authRoutes);
   app.route("/v1/events", eventsRoutes);

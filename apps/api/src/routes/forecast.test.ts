@@ -38,24 +38,43 @@ function baseEvent(
   };
 }
 
+/** Wednesday, matching packages/shared/src/forecast/candidates.test.ts's own anchor day. */
+const TARGET_WEEKDAY = 3;
+
 /**
  * A real, detectable wall candidate: ~24 days of weekday 9:00-18:00 activity
  * ending in a 20x-heavy day, followed by nothing. This is the same shape as
  * packages/shared/src/forecast/candidates.test.ts's `heavyFridayThenNothing`
  * fixture (proven there to produce a candidate via `detectCandidateWalls`),
- * anchored to `nowMs` instead of a fixed calendar date so it works no matter
- * what day this test actually runs.
+ * anchored to `nowMs` instead of a fixed calendar date so it stays close
+ * enough to "now" to land inside the route's `FORECAST_HISTORY_DAYS` fetch
+ * window no matter when this test runs.
  *
- * That anchoring is safe because hour-of-week (day-of-week * 24 + hour) has
- * an exact 7-day period: shifting the whole fixture by any amount never
- * changes which weekday/hour slots its own repeating pattern lands on
- * relative to itself. Only the fixed 74h trailing gap after the heavy day
- * matters, and that is anchored to `nowMs` directly.
+ * That anchoring is NOT, on its own, safe against which real weekday `t0`
+ * falls on: the loop below skips weekends using `getUTCDay()`, which reads
+ * off the actual calendar, and `t0` (and therefore which weekday `HEAVY_DAY`
+ * lands on) shifts with `nowMs`. Left alone, `HEAVY_DAY` itself lands on an
+ * actual weekend on about 2 of every 7 possible run instants and gets
+ * skipped entirely — the fixture then degrades to "any sufficiently long
+ * gap after uniform history" rather than the documented "heavy run-up then
+ * a wall" scenario `detectCandidateWalls` is meant to require. It still
+ * produces a candidate on those runs (a long gap after ANY history clears a
+ * low top-decile threshold), which is exactly why this was not caught by a
+ * failing test — it silently exercises a different, weaker code path
+ * instead. So `t0` is snapped backward (never forward, so `GAP_HOURS` can
+ * only grow, never shrink below `CANDIDATE_MIN_GAP_HOURS`) to the most
+ * recent UTC midnight that falls on `TARGET_WEEKDAY`, fixing every day's
+ * weekday in the fixture regardless of what day this test actually runs.
  */
 function heavyDayThenGapEvents(nowMs: number): UsageEvent[] {
   const GAP_HOURS = 74;
   const HEAVY_DAY = 23;
-  const t0 = nowMs - GAP_HOURS * H - (HEAVY_DAY * 24 + 17) * H;
+  const rawT0 = nowMs - GAP_HOURS * H - (HEAVY_DAY * 24 + 17) * H;
+
+  const t0Midnight = new Date(rawT0);
+  t0Midnight.setUTCHours(0, 0, 0, 0);
+  const shiftDays = (t0Midnight.getUTCDay() - TARGET_WEEKDAY + 7) % 7;
+  const t0 = t0Midnight.getTime() - shiftDays * DAY;
 
   const events: UsageEvent[] = [];
   for (let d = 0; d <= HEAVY_DAY; d += 1) {
@@ -189,6 +208,14 @@ describe("forecast routes", () => {
       expect(res.status).toBe(400);
     });
 
+    it("400s (not 500) on a literal `null` JSON body", async () => {
+      const res = await request("/v1/limit-observations", {
+        method: "POST",
+        body: "null",
+      });
+      expect(res.status).toBe(400);
+    });
+
     it("supersedes the previous active observation for that window", async () => {
       await request("/v1/limit-observations", {
         method: "POST",
@@ -290,6 +317,56 @@ describe("forecast routes", () => {
         (w: { windowKind: string }) => w.windowKind === "weekly_7d",
       );
       expect(weekly.ceilingProvenance).toBe("declared");
+      // I3: a confirmed candidate stops being (re-)proposed while the
+      // confirmation stands -- the panel must not keep re-asking a question
+      // that was already answered "yes".
+      expect(
+        afterConfirm.candidates.map((cand: { id: string }) => cand.id),
+      ).not.toContain(candidate.id);
+    });
+
+    it("I1 regression: retracting a confirmation makes the candidate proposable again", async () => {
+      // Confirming and dismissing a proposal are different acts. Before the
+      // fix, dismissedIds was built from `status === "dismissed"` alone, so
+      // retracting a *confirmed* candidate via
+      // POST /v1/limit-observations/:id/dismiss (which sets status:
+      // "dismissed" but leaves provenance: "declared" untouched) was
+      // wrongly read back as "this candidate id was proposed and rejected",
+      // permanently blacklisting it. This must fail against that reading:
+      // the candidate has to come back once its confirmation is retracted.
+      for (const event of heavyDayThenGapEvents(Date.now())) {
+        await eventsRepo.insertEventIfNew(userId, event);
+      }
+
+      const before = await (await request("/v1/forecast")).json();
+      expect(before.candidates).toHaveLength(1);
+      const candidateId = before.candidates[0].id;
+
+      const confirmRes = await request("/v1/wall-candidates/confirm", {
+        method: "POST",
+        body: JSON.stringify({ id: candidateId }),
+      });
+      expect(confirmRes.status).toBe(200);
+      const { observation } = (await confirmRes.json()) as {
+        observation: { id: string };
+      };
+
+      // Confirmed: the candidate is retired while the confirmation stands.
+      const afterConfirm = await (await request("/v1/forecast")).json();
+      expect(afterConfirm.candidates).toHaveLength(0);
+
+      // Retract the confirmation.
+      const retractRes = await request(
+        `/v1/limit-observations/${observation.id}/dismiss`,
+        { method: "POST" },
+      );
+      expect(retractRes.status).toBe(200);
+
+      // The candidate must be proposable again -- retracting a confirmation
+      // is not the same act as dismissing a proposal.
+      const afterRetract = await (await request("/v1/forecast")).json();
+      expect(afterRetract.candidates).toHaveLength(1);
+      expect(afterRetract.candidates[0].id).toBe(candidateId);
     });
 
     it("404s confirming an id that does not match any currently detected candidate", async () => {
@@ -304,6 +381,20 @@ describe("forecast routes", () => {
       const res = await request("/v1/wall-candidates/confirm", {
         method: "POST",
         body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("400s (not 500) on a literal `null` JSON body", async () => {
+      // `.catch(() => null)` on a parse failure covers an unparseable body,
+      // but `JSON.parse("null")` succeeds and returns `null` -- the one
+      // falsy value that parses cleanly but still isn't a record. Reading
+      // `body["id"]` off it without a guard throws (property access on
+      // null), which would surface as a 500 instead of the same 400 every
+      // other malformed body gets.
+      const res = await request("/v1/wall-candidates/confirm", {
+        method: "POST",
+        body: "null",
       });
       expect(res.status).toBe(400);
     });
@@ -353,6 +444,14 @@ describe("forecast routes", () => {
       expect(res.status).toBe(400);
     });
 
+    it("400s (not 500) on a literal `null` JSON body", async () => {
+      const res = await request("/v1/wall-candidates/dismiss", {
+        method: "POST",
+        body: "null",
+      });
+      expect(res.status).toBe(400);
+    });
+
     it("requires auth", async () => {
       const res = await app.request("/v1/wall-candidates/dismiss", {
         method: "POST",
@@ -361,6 +460,30 @@ describe("forecast routes", () => {
       });
       expect(res.status).toBe(401);
     });
+  });
+});
+
+describe("I2: unhandled repo errors return JSON, not Hono's default plain text", () => {
+  it("returns a JSON 500 when a repo call inside GET /v1/forecast throws", async () => {
+    const authRepo = createMemoryAuthRepo();
+    const eventsRepo = createMemoryEventsRepo();
+    eventsRepo.eventsSince = async () => {
+      throw new Error("simulated eventsSince failure");
+    };
+    const app = createApp({
+      db: undefined as never,
+      authRepo,
+      eventsRepo,
+      clerkVerifier: verifier,
+    });
+    await app.request("/v1/auth/me", { headers: bearer("token-a") });
+
+    const res = await app.request("/v1/forecast", { headers: bearer("token-a") });
+    expect(res.status).toBe(500);
+    // The house convention every route in this app follows: a JSON body
+    // shaped like `{ error: string }`, never Hono's default `text/plain`.
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(await res.json()).toEqual({ error: "internal_error" });
   });
 });
 

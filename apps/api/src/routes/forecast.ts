@@ -5,8 +5,6 @@ import {
   toTimedUnits,
   trailingWindow,
   WINDOW_HOURS,
-  type LimitObservationStatus,
-  type LimitProvenance,
   type TimedUnit,
   type WallCandidate,
   type WindowKind,
@@ -14,7 +12,15 @@ import {
 import { requireUser } from "../auth/middleware.js";
 import type { AuthRepo } from "../auth/repo.js";
 import type { ClerkVerifier } from "../auth/clerk.js";
-import type { EventsRepo } from "../services/events-repo.js";
+import {
+  assertActiveIsDeclared,
+  type EventsRepo,
+} from "../services/events-repo.js";
+
+// Re-exported so callers (and this file's own tests) that want the
+// invariant guard don't need to know it now lives beside the write it
+// guards, in events-repo.ts, rather than here.
+export { assertActiveIsDeclared };
 
 export type ForecastRouteVariables = {
   eventsRepo: EventsRepo;
@@ -36,18 +42,29 @@ function isWindowKind(value: unknown): value is WindowKind {
 }
 
 /**
- * A dismissed wall candidate is stored as a `limit_observations` row with
- * `status: "dismissed"` and `provenance: "inferred"`. `detectCandidateWalls`
- * keys a candidate's id purely on the gap's opening timestamp —
- * `wall:<startsAt ISO>` — so the round trip only has to carry that one
- * instant: `observedAt` holds `startsAt` verbatim, and prefixing it back with
- * `wall:` reconstructs exactly the id `detectCandidateWalls` would produce
- * for the same gap. `windowKind` and `unitsInWindow` are unused for this
- * status (every `WallCandidate.windowKind` is `weekly_7d`; there is no
- * meaningful "units" for a dismissal) but are still required fields on the
- * row, so they are filled with fixed placeholders. Reusing this table avoids
- * a second store for what is the same concept: a judgement the user has made
- * about a moment in their history.
+ * Parse a request body into a plain object, defaulting to `{}` for anything
+ * that isn't one — including a body that fails to parse at all (`.catch`)
+ * AND the one JSON value that parses successfully but still isn't a record:
+ * a literal `null` body. Without this second check, `body["windowKind"]`
+ * below would throw on `null` (property access on null) and surface as a
+ * generic 500 instead of the same 400 every other malformed body gets.
+ */
+async function parseBody(req: { json(): Promise<unknown> }): Promise<
+  Record<string, unknown>
+> {
+  const raw = await req.json().catch(() => null);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  return raw as Record<string, unknown>;
+}
+
+/**
+ * `detectCandidateWalls` keys a candidate's id purely on the gap's opening
+ * timestamp — `wall:<startsAt ISO>` — so encoding a judgement about a
+ * candidate only ever has to carry that one instant: `observedAt` holds
+ * `startsAt` verbatim, and prefixing it back with `wall:` reconstructs
+ * exactly the id `detectCandidateWalls` would produce for the same gap.
  */
 const DISMISSAL_ID_PREFIX = "wall:";
 
@@ -62,23 +79,57 @@ function observedAtToCandidateId(observedAt: string): string {
 }
 
 /**
- * Guards the one invariant every write in this route must uphold: a ceiling
- * that is live (`status: "active"`) must always be one the user actually
- * declared. Two prior reviews flagged that neither `activeDeclaration` (in
- * `@tokenops/shared`, which selects the ceiling by `status === "active"`
- * alone) nor `insertLimitObservation` enforces this link on its own — this
- * route is the first code that writes observations at all, so the guarantee
- * has to hold here, at every call site that inserts one.
+ * True when an observation should suppress its corresponding candidate id
+ * from ever being (re-)proposed by `detectCandidateWalls`. Two shapes count,
+ * and only two:
+ *
+ *   1. An explicit "no" — `status: "dismissed"`, `provenance: "inferred"` —
+ *      written by `POST /v1/wall-candidates/dismiss` (via
+ *      `insertDismissalMarker`). Permanent: nothing currently un-sets it.
+ *   2. An explicit "yes" that is STILL STANDING — `status: "active"`,
+ *      `provenance: "declared"` — written by `POST /v1/wall-candidates/confirm`.
+ *      Deliberately NOT permanent the way (1) is: if the user later retracts
+ *      this specific confirmation via `POST /v1/limit-observations/:id/dismiss`,
+ *      that call only flips `status` to `"dismissed"` and leaves `provenance:
+ *      "declared"` untouched — which matches NEITHER shape here, so
+ *      suppression lifts and the candidate is proposed again.
+ *
+ * This single predicate is what makes "a confirmed candidate is retired
+ * while confirmed" and "retracting a confirmation and dismissing a proposal
+ * are different acts" both true at once, without `confirm` having to write a
+ * second, independent marker row that would outlive — and fight with — a
+ * later retraction: a separate permanent marker plus a revocable active row
+ * would leave the marker suppressing the candidate forever regardless of
+ * what happens to the active row, which is exactly the bug this function
+ * exists to avoid reintroducing.
  */
-export function assertActiveIsDeclared(observation: {
-  status: LimitObservationStatus;
-  provenance: LimitProvenance;
-}): void {
-  if (observation.status === "active" && observation.provenance !== "declared") {
-    throw new Error(
-      `refusing to write an active limit observation with provenance "${observation.provenance}" — active observations must be declared`,
-    );
-  }
+function suppressesCandidate(o: { status: string; provenance: string }): boolean {
+  return (
+    (o.status === "dismissed" && o.provenance === "inferred") ||
+    (o.status === "active" && o.provenance === "declared")
+  );
+}
+
+/**
+ * Insert the "never propose this candidate again, until explicitly
+ * undone" marker described in `suppressesCandidate` (shape 1). Used only by
+ * `POST /v1/wall-candidates/dismiss` — an explicit rejection, the one
+ * suppression shape meant to be permanent. Confirming does NOT call this;
+ * see `suppressesCandidate`'s doc comment for why a second marker would
+ * conflict with a later retraction.
+ */
+async function insertDismissalMarker(
+  repo: EventsRepo,
+  userId: string,
+  observedAt: string,
+): Promise<void> {
+  await repo.insertLimitObservation(userId, {
+    windowKind: "weekly_7d",
+    observedAt,
+    unitsInWindow: 0,
+    provenance: "inferred",
+    status: "dismissed",
+  });
 }
 
 /**
@@ -135,7 +186,7 @@ forecastRoutes.get("/v1/forecast", requireUser, async (c) => {
   const forecast = runForecast(events, now.toISOString(), observations);
 
   const dismissedIds = observations
-    .filter((o) => o.status === "dismissed")
+    .filter(suppressesCandidate)
     .map((o) => observedAtToCandidateId(o.observedAt));
 
   forecast.candidates = detectCandidatesSafely(
@@ -156,7 +207,7 @@ forecastRoutes.post("/v1/limit-observations", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
 
-  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const body = await parseBody(c.req);
   const windowKind = body["windowKind"];
   if (!isWindowKind(windowKind)) {
     return c.json({ error: "invalid_window_kind" }, 400);
@@ -175,15 +226,16 @@ forecastRoutes.post("/v1/limit-observations", requireUser, async (c) => {
 
   await supersedeActive(repo, userId, windowKind);
 
-  const toInsert = {
+  // insertLimitObservation itself enforces status:"active" =>
+  // provenance:"declared" (see events-repo.ts's assertActiveIsDeclared); the
+  // literals below already satisfy it.
+  const observation = await repo.insertLimitObservation(userId, {
     windowKind,
     observedAt: now.toISOString(),
     unitsInWindow,
-    provenance: "declared" as const,
-    status: "active" as const,
-  };
-  assertActiveIsDeclared(toInsert);
-  const observation = await repo.insertLimitObservation(userId, toInsert);
+    provenance: "declared",
+    status: "active",
+  });
 
   return c.json({ observation });
 });
@@ -215,12 +267,20 @@ forecastRoutes.post(
  * fact about history, not about "now". A `400` client body carrying those
  * fields is still accepted for callers that pass through the exact object
  * `GET /v1/forecast` returned, but only `id` is trusted.
+ *
+ * Answering a candidate's question — either way — must retire it: once this
+ * writes the `active`/`declared` observation below, `suppressesCandidate`'s
+ * shape 2 keeps this same candidate id out of every subsequent
+ * `GET /v1/forecast`'s (and this route's own) candidate list for as long as
+ * that declaration stands, so the panel stops re-asking and a second confirm
+ * of the same id 404s (it is no longer a live candidate) instead of
+ * appending another row that supersedes the last.
  */
 forecastRoutes.post("/v1/wall-candidates/confirm", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
 
-  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const body = await parseBody(c.req);
   const id = body["id"];
   if (typeof id !== "string" || id.length === 0) {
     return c.json({ error: "invalid_id" }, 400);
@@ -233,7 +293,7 @@ forecastRoutes.post("/v1/wall-candidates/confirm", requireUser, async (c) => {
   const events = await repo.eventsSince(userId, since);
   const observations = await repo.listLimitObservations(userId);
   const dismissedIds = observations
-    .filter((o) => o.status === "dismissed")
+    .filter(suppressesCandidate)
     .map((o) => observedAtToCandidateId(o.observedAt));
 
   const candidates = detectCandidatesSafely(
@@ -248,15 +308,13 @@ forecastRoutes.post("/v1/wall-candidates/confirm", requireUser, async (c) => {
 
   await supersedeActive(repo, userId, candidate.windowKind);
 
-  const toInsert = {
+  const observation = await repo.insertLimitObservation(userId, {
     windowKind: candidate.windowKind,
     observedAt: candidate.startsAt,
     unitsInWindow: candidate.unitsInWindow,
-    provenance: "declared" as const,
-    status: "active" as const,
-  };
-  assertActiveIsDeclared(toInsert);
-  const observation = await repo.insertLimitObservation(userId, toInsert);
+    provenance: "declared",
+    status: "active",
+  });
 
   return c.json({ observation });
 });
@@ -266,7 +324,7 @@ forecastRoutes.post("/v1/wall-candidates/dismiss", requireUser, async (c) => {
   const repo = c.get("eventsRepo");
   const userId = c.get("userId");
 
-  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const body = await parseBody(c.req);
   const id = body["id"];
   const observedAt =
     typeof id === "string" ? candidateIdToObservedAt(id) : null;
@@ -274,15 +332,7 @@ forecastRoutes.post("/v1/wall-candidates/dismiss", requireUser, async (c) => {
     return c.json({ error: "invalid_id" }, 400);
   }
 
-  const toInsert = {
-    windowKind: "weekly_7d" as const,
-    observedAt,
-    unitsInWindow: 0,
-    provenance: "inferred" as const,
-    status: "dismissed" as const,
-  };
-  assertActiveIsDeclared(toInsert);
-  await repo.insertLimitObservation(userId, toInsert);
+  await insertDismissalMarker(repo, userId, observedAt);
 
   return c.json({ ok: true });
 });
