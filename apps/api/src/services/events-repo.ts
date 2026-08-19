@@ -17,15 +17,20 @@ import {
   getModelTier,
   type Counterfactual,
   type EventGrain,
+  type LimitObservation,
+  type LimitObservationStatus,
+  type LimitProvenance,
   type ModelWindowTotals,
   type SessionRollup,
   type UsageEvent,
   type UsageFeatures,
+  type WindowKind,
 } from "@tokenops/shared";
 import type { Db } from "../db/client.js";
 import {
   dailyAggregates,
   eventContent,
+  limitObservations,
   machines,
   recommendations,
   usageEvents,
@@ -55,6 +60,53 @@ export type SessionCoverage = {
   unattributedTurns: number;
   unattributedInputTokens: number;
 };
+
+/**
+ * Guards the one invariant every write to `limit_observations` must uphold:
+ * a ceiling that is live (`status: "active"`) must always be one the user
+ * actually declared. Enforced here, at the single write path both repo
+ * implementations share, rather than trusted to each call site — two
+ * reviews flagged that relying on every caller of `insertLimitObservation`
+ * to check this first was exactly the kind of discipline-dependent gap that
+ * regresses the moment a new caller is added. `runForecast`'s
+ * `activeDeclaration` (in `@tokenops/shared`) selects the ceiling by
+ * `status === "active"` alone and does not re-check provenance, so this is
+ * the one place in the whole system that has to hold the line.
+ */
+export function assertActiveIsDeclared(observation: {
+  status: LimitObservationStatus;
+  provenance: LimitProvenance;
+}): void {
+  if (observation.status === "active" && observation.provenance !== "declared") {
+    throw new Error(
+      `refusing to write an active limit observation with provenance "${observation.provenance}" — active observations must be declared`,
+    );
+  }
+}
+
+/**
+ * Hard ceiling on how many request-grain events a single `eventsSince` call
+ * will return. Mirrors `MAX_BACKTEST_EVENTS` in routes/recommendations.ts —
+ * same shape of problem (an unbounded scan over `FORECAST_HISTORY_DAYS` days
+ * of full rows, `features` JSONB included, on an endpoint hit on every page
+ * load from three routes) and the same fix: cap it, and tell the caller when
+ * the cap actually bit rather than degrading silently. See I3 in the
+ * 2026-08-16 review — one user's own account measured 42,810 events in 37.5
+ * days.
+ *
+ * This cap intentionally does NOT also bound `historyStartIso` (see
+ * `eventsSince`'s return type below): a row cap sized to survive "a
+ * plausible peak rate" only pushes the day this defect resurfaces further
+ * out, it does not close it — the 2026-08-16 second review found this cap
+ * doing exactly that (defect A): past ~1,429 events/day it silently
+ * shrank the *reported* history span below `MIN_HISTORY_DAYS`, withholding
+ * a ceiling from a user with forty real days on file while telling them
+ * they had twelve. `historyStartIso` is computed independently of this cap
+ * (a MIN(timestamp) aggregate, not bounded by `.limit()`) specifically so
+ * raising this constant is never required to keep `historyDays` honest —
+ * only to bound how many full rows a single request materializes.
+ */
+export const EVENTS_SINCE_MAX = 20_000;
 
 export type RecommendationInsert = {
   userId: string;
@@ -179,6 +231,49 @@ export type EventsRepo = {
   hasMachine(userId: string, machineId: string): Promise<boolean>;
   countMachines(userId: string): Promise<number>;
   listMachines(userId: string): Promise<Machine[]>;
+  /** Every limit observation for a user, newest first. */
+  listLimitObservations(userId: string): Promise<LimitObservation[]>;
+  insertLimitObservation(
+    userId: string,
+    observation: Omit<LimitObservation, "id">,
+  ): Promise<LimitObservation>;
+  /** Returns false when no row matched — including when it belongs to another user. */
+  setLimitObservationStatus(
+    userId: string,
+    id: string,
+    status: LimitObservationStatus,
+  ): Promise<boolean>;
+  /**
+   * Request-grain events at or after `sinceIso`, oldest first, for the
+   * forecast. Aggregate-grain rows are excluded: they are time-bucketed sums
+   * with no single request inside them, so they would distort both the
+   * windows and the pace.
+   *
+   * Capped at `EVENTS_SINCE_MAX`. When more than that many rows exist in
+   * `[sinceIso, now]`, the returned `events` are the `EVENTS_SINCE_MAX` MOST
+   * RECENT ones (still returned oldest-first) — not the oldest — because the
+   * forecast's most load-bearing figures (`current`, `pacePerHour`, and the
+   * trailing window a fresh declaration/confirmation stamps) all depend on
+   * recent history, while only the historical-maximum sweep and candidate
+   * detection lose reach into the past when capped. `truncated: true`
+   * signals that the cap actually bit, so a caller (`GET /v1/forecast`) can
+   * tell the user their forecast was computed over a partial window instead
+   * of presenting it as complete.
+   *
+   * `historyStartIso` is the timestamp of the TRUE oldest matching event in
+   * `[sinceIso, now]`, regardless of whether the cap above bit — an
+   * unindexed-row-count-independent MIN(timestamp) over the same scope, not
+   * `events[0]`'s timestamp. Callers that report "days of history" (see
+   * `runForecast`'s `historyStartIso` parameter in @tokenops/shared) must use
+   * this field rather than the oldest event actually returned, or a dense
+   * enough user's reported history silently shrinks to whatever survived
+   * truncation (defect A, 2026-08-16 second review). `null` only when there
+   * are no matching events at all.
+   */
+  eventsSince(
+    userId: string,
+    sinceIso: string,
+  ): Promise<{ events: UsageEvent[]; truncated: boolean; historyStartIso: string | null }>;
 };
 
 /**
@@ -775,6 +870,131 @@ export function createDrizzleEventsRepo(db: Db): EventsRepo {
         .where(eq(machines.userId, userId))
         .orderBy(desc(machines.lastSeenAt));
     },
+
+    async listLimitObservations(userId) {
+      const rows = await db
+        .select()
+        .from(limitObservations)
+        .where(eq(limitObservations.userId, userId))
+        .orderBy(desc(limitObservations.observedAt));
+      return rows.map((r) => ({
+        id: r.id,
+        windowKind: r.windowKind as WindowKind,
+        observedAt: new Date(r.observedAt).toISOString(),
+        unitsInWindow: Number(r.unitsInWindow),
+        provenance: r.provenance as LimitProvenance,
+        status: r.status as LimitObservationStatus,
+      }));
+    },
+
+    async insertLimitObservation(userId, observation) {
+      assertActiveIsDeclared(observation);
+      const [row] = await db
+        .insert(limitObservations)
+        .values({
+          userId,
+          windowKind: observation.windowKind,
+          observedAt: new Date(observation.observedAt),
+          unitsInWindow: String(observation.unitsInWindow),
+          provenance: observation.provenance,
+          status: observation.status,
+        })
+        .returning();
+      return {
+        id: row!.id,
+        windowKind: row!.windowKind as WindowKind,
+        observedAt: new Date(row!.observedAt).toISOString(),
+        unitsInWindow: Number(row!.unitsInWindow),
+        provenance: row!.provenance as LimitProvenance,
+        status: row!.status as LimitObservationStatus,
+      };
+    },
+
+    async setLimitObservationStatus(userId, id, status) {
+      // M2: `insertLimitObservation` isn't the only write path that can put
+      // a row into `status: "active"` — this one can too, and until now did
+      // so unguarded. No caller passes "active" here today, but the
+      // invariant `assertActiveIsDeclared` exists to enforce (an active
+      // ceiling must be declared) has to hold on every write path, not just
+      // the ones a reviewer happened to check. Only looked up when the
+      // target status is "active": every other transition (the only ones
+      // any caller uses today) skips the extra read.
+      if (status === "active") {
+        const [existing] = await db
+          .select({ provenance: limitObservations.provenance })
+          .from(limitObservations)
+          .where(
+            and(
+              eq(limitObservations.userId, userId),
+              eq(limitObservations.id, id),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          assertActiveIsDeclared({
+            status,
+            provenance: existing.provenance as LimitProvenance,
+          });
+        }
+      }
+      const updated = await db
+        .update(limitObservations)
+        .set({ status })
+        .where(
+          and(
+            eq(limitObservations.userId, userId),
+            eq(limitObservations.id, id),
+          ),
+        )
+        .returning({ id: limitObservations.id });
+      return updated.length > 0;
+    },
+
+    async eventsSince(userId, sinceIso) {
+      const scope = and(
+        eq(usageEvents.userId, userId),
+        gte(usageEvents.timestamp, new Date(sinceIso)),
+        or(isNull(usageEvents.grain), ne(usageEvents.grain, "aggregate")),
+      );
+
+      // Newest first, capped at MAX+1 so a single extra row past the cap is
+      // enough to know whether truncation happened, without a second query.
+      const rows = await db
+        .select()
+        .from(usageEvents)
+        .where(scope)
+        .orderBy(desc(usageEvents.timestamp))
+        .limit(EVENTS_SINCE_MAX + 1);
+
+      const truncated = rows.length > EVENTS_SINCE_MAX;
+      const capped = truncated ? rows.slice(0, EVENTS_SINCE_MAX) : rows;
+      // Restore the documented oldest-first contract after capping from the
+      // newest end.
+      capped.reverse();
+
+      // historyStartIso: the TRUE oldest matching event, independent of the
+      // cap above — see the doc comment on this method in the EventsRepo
+      // type for why this must not just be `capped[0]`. When nothing was
+      // truncated, `capped` already holds every matching row, so its first
+      // (oldest, post-reverse) entry already IS the true bound and a second
+      // query would be pure waste. Only when the fetch above actually
+      // dropped older rows does a MIN(timestamp) aggregate over the same
+      // scope — cheap and index-backed, unlike re-fetching every matching
+      // row — recover it.
+      let historyStartIso: string | null =
+        capped.length > 0 ? capped[0]!.timestamp.toISOString() : null;
+      if (truncated) {
+        const [oldest] = await db
+          .select({ min: sql<string>`MIN(${usageEvents.timestamp})` })
+          .from(usageEvents)
+          .where(scope);
+        historyStartIso = oldest?.min
+          ? new Date(oldest.min).toISOString()
+          : historyStartIso;
+      }
+
+      return { events: capped.map(rowToUsageEvent), truncated, historyStartIso };
+    },
   };
 }
 
@@ -796,6 +1016,10 @@ export function createMemoryEventsRepo(): EventsRepo {
   const aggMap = new Map<string, MemAgg>();
   const recMap = new Map<string, MemRec>();
   const machineMap = new Map<string, MemMachine>();
+  const limitObservationMap = new Map<
+    string,
+    LimitObservation & { userId: string }
+  >();
   let recSeq = 0;
 
   function aggKey(
@@ -1259,6 +1483,73 @@ export function createMemoryEventsRepo(): EventsRepo {
       return [...machineMap.values()]
         .filter((m) => m.userId === userId)
         .sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
+    },
+
+    async listLimitObservations(userId) {
+      return [...limitObservationMap.values()]
+        .filter((o) => o.userId === userId)
+        .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))
+        .map(({ userId: _userId, ...o }) => o);
+    },
+
+    async insertLimitObservation(userId, observation) {
+      assertActiveIsDeclared(observation);
+      const id = crypto.randomUUID();
+      const row: LimitObservation & { userId: string } = {
+        id,
+        userId,
+        windowKind: observation.windowKind,
+        observedAt: observation.observedAt,
+        unitsInWindow: observation.unitsInWindow,
+        provenance: observation.provenance,
+        status: observation.status,
+      };
+      limitObservationMap.set(id, row);
+      const { userId: _userId, ...created } = row;
+      return created;
+    },
+
+    async setLimitObservationStatus(userId, id, status) {
+      const row = limitObservationMap.get(id);
+      if (!row || row.userId !== userId) return false;
+      // M2: kept symmetric with the Drizzle implementation's guard above —
+      // see its comment for why this must hold on every write path.
+      if (status === "active") {
+        assertActiveIsDeclared({ status, provenance: row.provenance });
+      }
+      row.status = status;
+      return true;
+    },
+
+    async eventsSince(userId, sinceIso) {
+      const since = new Date(sinceIso);
+      // Newest first, so capping keeps the most recent EVENTS_SINCE_MAX
+      // rows — see the Drizzle implementation's matching comment and the
+      // EventsRepo doc comment for why recency wins over completeness here.
+      const matches = [...eventMap.values()]
+        .filter(
+          (e) =>
+            e.userId === userId &&
+            e.timestamp >= since &&
+            e.grain !== "aggregate",
+        )
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+      const truncated = matches.length > EVENTS_SINCE_MAX;
+      const capped = truncated ? matches.slice(0, EVENTS_SINCE_MAX) : matches;
+      capped.reverse(); // restore the documented oldest-first contract
+
+      // historyStartIso: the TRUE oldest matching event, independent of the
+      // cap above — see the Drizzle implementation's matching comment. Cheap
+      // here since `matches` (pre-cap) is already fully materialized in
+      // memory: it is sorted newest-first, so its last element is exactly
+      // the oldest match, capped or not.
+      const historyStartIso =
+        matches.length > 0
+          ? matches[matches.length - 1]!.timestamp.toISOString()
+          : null;
+
+      return { events: capped.map(rowToUsageEvent), truncated, historyStartIso };
     },
   };
 }

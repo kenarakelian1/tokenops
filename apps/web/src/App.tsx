@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { getMe, setAuthTokenGetter, type UserMe } from "./api/client";
 import { Explore } from "./pages/Explore";
+import { Forecast } from "./pages/Forecast";
 import { Login } from "./pages/Login";
 import { Machines } from "./pages/Machines";
 import { Overview } from "./pages/Overview";
@@ -91,6 +92,9 @@ function Dashboard() {
         <NavLink className={navClass} to="/recommendations">
           Recommendations
         </NavLink>
+        <NavLink className={navClass} to="/forecast">
+          Forecast
+        </NavLink>
         <NavLink className={navClass} to="/machines">
           Machines
         </NavLink>
@@ -107,6 +111,7 @@ function Dashboard() {
           <Route path="/" element={<Overview user={user} />} />
           <Route path="/explore" element={<Explore />} />
           <Route path="/recommendations" element={<Recommendations />} />
+          <Route path="/forecast" element={<Forecast />} />
           <Route path="/machines" element={<Machines />} />
           <Route
             path="/settings"

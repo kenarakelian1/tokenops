@@ -87,7 +87,9 @@ Anthropic does not publish what a subscription meters. This design uses the
 same cache-aware weighting the rules already use:
 
 ```
-units(event) = cacheCreation × 1.25 + cacheRead × 0.10 + output × 5.00
+units(event) = rawInput × 1.00 + cacheCreation × 1.25 + cacheRead × 0.10 + output × 5.00
+
+  rawInput = max(0, inputTokens − cacheRead − cacheCreation)
 ```
 
 It is called a **proxy** everywhere in code and UI, never "usage".

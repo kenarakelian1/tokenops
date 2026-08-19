@@ -142,6 +142,59 @@ export type MachineDto = {
   lastQueueDepth: number | null;
 };
 
+/**
+ * Where a ceiling figure came from, and therefore how much it can be
+ * trusted. Mirrors `LimitProvenance` in `@tokenops/shared/forecast` — kept
+ * as a separate DTO type (rather than importing the shared type) the same
+ * way every other DTO here shadows its API shape, so the web package never
+ * takes a runtime dependency on `@tokenops/shared`.
+ */
+export type LimitProvenanceDto = "measured" | "reported" | "declared" | "inferred";
+
+export type WindowForecastDto = {
+  windowKind: "session_5h" | "weekly_7d";
+  current: number;
+  pacePerHour: number;
+  ceiling: number | null;
+  ceilingProvenance: LimitProvenanceDto | null;
+  fractionOfCeiling: number | null;
+  reachesCeilingAt: string | null;
+  noProjectionReason: string | null;
+};
+
+export type WallCandidateDto = {
+  id: string;
+  windowKind: "session_5h" | "weekly_7d";
+  startsAt: string;
+  endsAt: string;
+  gapHours: number;
+  unitsInWindow: number;
+};
+
+/**
+ * `candidates`, `eventsWithoutBreakdown`, `eventsCounted`, and `truncated`
+ * are optional the same way `RecommendationDto`'s `coverage` is: they are
+ * additive metadata alongside the core `windows` figures, and a page built
+ * against this type must not crash a request from an older API build that
+ * predates one of them — the panel just skips the note or list that depends
+ * on it.
+ */
+export type ForecastDto = {
+  generatedAt: string;
+  windows: WindowForecastDto[];
+  historyDays?: number;
+  eventsWithoutBreakdown?: number;
+  eventsCounted?: number;
+  candidates?: WallCandidateDto[];
+  /**
+   * True when the event history behind this forecast was capped (I3) — some
+   * older activity within the lookback window was left out rather than
+   * scanned in full. Mirrors `Forecast["truncated"]` in
+   * `@tokenops/shared/forecast`.
+   */
+  truncated?: boolean;
+};
+
 // --- Endpoint helpers ---
 
 /** Clerk owns sign-in/out; this just hydrates the app's own user record (budget, etc). */
@@ -194,6 +247,34 @@ export function dismissRecommendation(id: string) {
 
 export function getMachines() {
   return api<{ machines: MachineDto[] }>("/v1/machines");
+}
+
+export function getForecast() {
+  return api<ForecastDto>("/v1/forecast");
+}
+
+/** "I hit my limit now": the server stamps the figure from its own ledger. */
+export function recordLimitObservation(windowKind: WindowForecastDto["windowKind"]) {
+  return api<{ observation: unknown }>("/v1/limit-observations", {
+    method: "POST",
+    body: JSON.stringify({ windowKind }),
+  });
+}
+
+/** Answers a candidate wall's question "yes": promotes it to a declared ceiling. */
+export function confirmWallCandidate(id: string) {
+  return api<{ observation: unknown }>("/v1/wall-candidates/confirm", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
+/** Answers a candidate wall's question "no": it is never proposed again. */
+export function dismissWallCandidate(id: string) {
+  return api<{ ok: boolean }>("/v1/wall-candidates/dismiss", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
 }
 
 export function putSettings(body: { budgetUsdMonthly: number | null }) {

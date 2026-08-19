@@ -65,6 +65,42 @@ WINDOW_DAYS=30 node scripts/measure-session-rules.mjs --detail
 
 `--detail` prints exactly the cards the dashboard would show, ranked by savings. This is also the acceptance gate for the rule set itself: it exits non-zero both when nothing fires *and* when too much does, so an overtuned rule fails the build rather than filling a panel with noise.
 
+### Will I make it to reset?
+
+```bash
+node scripts/measure-forecast.mjs           # both windows, pace, projection
+node scripts/measure-forecast.mjs --detail  # plus your hour-of-week activity model
+```
+
+Anthropic publishes no quota for subscription plans and exposes none
+programmatically, so this never invents one. With no configuration it
+compares your pace against **your own history** — your highest week ever is a
+lower bound on your real limit, because you reached it. Mark a real limit hit
+in the app and the projection switches to that instead, and says so.
+
+Replayed over 37.5 days of my own history (42,610 deduped events from 90,293
+raw assistant lines, a 2.12x dedup ratio — local retention doesn't go back
+further than that): the gate itself passes — every figure finite, no
+projection lands in the past, and candidate detection proposed **0** wall
+candidates, comfortably under the noise ceiling of 5.
+
+The gate isn't the real test, though. I ran out of usage roughly three days
+before a weekly reset at some point while using this tool, and the honest
+report is more specific than "detection missed it." The longest
+zero-consumption gap anywhere in the retained history is **37.1 hours**; a
+three-day outage is 72+ hours. No gap in the available data is even close to
+long enough to be that event, so it cannot appear in this run's input
+regardless of what the detector's thresholds are set to — it predates
+2026-07-10, the earliest event local retention still has. **This run does
+not test the detector's ability to catch that case, in either direction.**
+What it does establish is precision: across all 18 real zero-consumption
+gaps of 12+ hours in the window — a range of lengths and times of day — the
+detector proposed zero false positives. Two gaps had a heavy-enough run-up
+to pass that condition but were overnight (0 and 3 active hours, under the
+4-hour bar); the one long daytime-spanning gap (37.1h, over a weekend) had a
+run-up below the user's own top decile. **Recall remains untested** on this
+data, and thresholds were not loosened to manufacture a hit anyway.
+
 ## Architecture
 
 ```

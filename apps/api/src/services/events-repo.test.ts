@@ -4,7 +4,12 @@ import {
   type EventGrain,
   type UsageEvent,
 } from "@tokenops/shared";
-import { createMemoryEventsRepo, type EventsRepo } from "./events-repo.js";
+import {
+  assertActiveIsDeclared,
+  createMemoryEventsRepo,
+  EVENTS_SINCE_MAX,
+  type EventsRepo,
+} from "./events-repo.js";
 
 // Window bounds for the sessionRollups/sessionCoverage tests below — wide
 // enough to contain every generated timestamp with room either side.
@@ -590,5 +595,256 @@ describe("sessionCoverage", () => {
     expect(coverage.sessionsConsidered).toBe(1);
     expect(coverage.unattributedTurns).toBe(1);
     expect(coverage.unattributedInputTokens).toBe(500_000);
+  });
+});
+
+describe("limit observations", () => {
+  it("round-trips an observation", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 1_234_567,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(created.id).toBeTruthy();
+    const all = await repo.listLimitObservations("u1");
+    expect(all).toHaveLength(1);
+    expect(all[0]!.unitsInWindow).toBe(1_234_567);
+    expect(all[0]!.provenance).toBe("declared");
+  });
+
+  it("scopes observations to their user", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 1,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(await repo.listLimitObservations("u2")).toEqual([]);
+  });
+
+  it("updates status and reports whether a row matched", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "session_5h",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 10,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u1", created.id, "dismissed"),
+    ).toBe(true);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "dismissed",
+    );
+    expect(
+      await repo.setLimitObservationStatus("u1", "no-such-id", "dismissed"),
+    ).toBe(false);
+  });
+
+  it("M2: refuses to flip a non-declared observation's status to active, at setLimitObservationStatus itself", async () => {
+    // insertLimitObservation has always enforced assertActiveIsDeclared;
+    // setLimitObservationStatus did not, even though it can also produce a
+    // status: "active" row. No caller passes "active" here today, but the
+    // invariant has to be structural on every write path, not just the ones
+    // currently exercised.
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 42,
+      provenance: "inferred",
+      status: "dismissed",
+    });
+    await expect(
+      repo.setLimitObservationStatus("u1", created.id, "active"),
+    ).rejects.toThrow();
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "dismissed",
+    );
+  });
+
+  it("still allows flipping an already-declared observation's status to active", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "weekly_7d",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 42,
+      provenance: "declared",
+      status: "superseded",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u1", created.id, "active"),
+    ).toBe(true);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "active",
+    );
+  });
+
+  it("refuses to insert an active observation whose provenance isn't declared, at the write path itself", async () => {
+    // Structural, not per-call-site: this calls insertLimitObservation
+    // directly, bypassing every route in forecast.ts entirely, so it proves
+    // the invariant holds even for a caller that never heard of
+    // assertActiveIsDeclared -- exactly the "stop depending on discipline"
+    // guarantee two reviews have now asked for.
+    const repo = makeMemoryRepo();
+    await expect(
+      repo.insertLimitObservation("u1", {
+        windowKind: "weekly_7d",
+        observedAt: "2026-08-09T12:00:00.000Z",
+        unitsInWindow: 1,
+        provenance: "inferred",
+        status: "active",
+      }),
+    ).rejects.toThrow();
+    expect(await repo.listLimitObservations("u1")).toEqual([]);
+  });
+
+  it("assertActiveIsDeclared: throws only for active+non-declared", () => {
+    expect(() =>
+      assertActiveIsDeclared({ status: "active", provenance: "inferred" }),
+    ).toThrow();
+    expect(() =>
+      assertActiveIsDeclared({ status: "active", provenance: "declared" }),
+    ).not.toThrow();
+    expect(() =>
+      assertActiveIsDeclared({ status: "dismissed", provenance: "inferred" }),
+    ).not.toThrow();
+  });
+
+  it("will not let one user change another's observation", async () => {
+    const repo = makeMemoryRepo();
+    const created = await repo.insertLimitObservation("u1", {
+      windowKind: "session_5h",
+      observedAt: "2026-08-09T12:00:00.000Z",
+      unitsInWindow: 10,
+      provenance: "declared",
+      status: "active",
+    });
+    expect(
+      await repo.setLimitObservationStatus("u2", created.id, "dismissed"),
+    ).toBe(false);
+    expect((await repo.listLimitObservations("u1"))[0]!.status).toBe(
+      "active",
+    );
+  });
+});
+
+describe("eventsSince", () => {
+  const base = {
+    machineId: "machine-1",
+    machineName: "ci-runner",
+    app: "claude-code",
+    provider: "anthropic",
+    model: "claude-opus-5",
+    features: { modelTier: "unknown" as const },
+    hasContent: false,
+    costUsd: null,
+  };
+
+  it("returns only events at or after the cutoff, oldest first", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "a",
+      timestamp: "2026-08-01T00:00:00.000Z",
+      inputTokens: 10,
+      outputTokens: 1,
+    });
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "b",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      inputTokens: 20,
+      outputTokens: 2,
+    });
+    // Neither event above sets `grain`, so this also pins that a
+    // null/undefined grain is included, not excluded, by eventsSince.
+    const { events, truncated, historyStartIso } = await repo.eventsSince(
+      "u1",
+      "2026-08-05T00:00:00.000Z",
+    );
+    expect(events.map((e) => e.eventId)).toEqual(["b"]);
+    expect(truncated).toBe(false);
+    expect(historyStartIso).toBe("2026-08-10T00:00:00.000Z");
+  });
+
+  it("excludes aggregate-grain events, which have no single request inside them", async () => {
+    const repo = makeMemoryRepo();
+    await repo.insertEventIfNew("u1", {
+      ...base,
+      eventId: "agg",
+      grain: "aggregate",
+      timestamp: "2026-08-10T00:00:00.000Z",
+      inputTokens: 5_000_000,
+      outputTokens: 1,
+    });
+    const { events } = await repo.eventsSince("u1", "2026-08-01T00:00:00.000Z");
+    expect(events).toEqual([]);
+  });
+
+  it("I3: caps at EVENTS_SINCE_MAX, keeping the MOST RECENT events and reporting truncated", async () => {
+    const repo = makeMemoryRepo();
+    const total = EVENTS_SINCE_MAX + 5;
+    for (let i = 0; i < total; i += 1) {
+      await repo.insertEventIfNew("u1", {
+        ...base,
+        eventId: `evt-${i}`,
+        // Ascending timestamps, one second apart, so "most recent" has an
+        // unambiguous meaning to assert against.
+        timestamp: new Date(Date.parse("2026-08-01T00:00:00.000Z") + i * 1000).toISOString(),
+        inputTokens: 1,
+        outputTokens: 0,
+      });
+    }
+
+    const { events, truncated, historyStartIso } = await repo.eventsSince(
+      "u1",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(truncated).toBe(true);
+    expect(events).toHaveLength(EVENTS_SINCE_MAX);
+    // Still oldest-first, and the ones kept are the tail of the inserted
+    // series (the most recent), not the head -- a capped forecast must stay
+    // accurate about "now", not about the distant past.
+    expect(events[0]!.eventId).toBe(`evt-${total - EVENTS_SINCE_MAX}`);
+    expect(events[events.length - 1]!.eventId).toBe(`evt-${total - 1}`);
+    for (let i = 1; i < events.length; i += 1) {
+      expect(Date.parse(events[i]!.timestamp)).toBeGreaterThan(
+        Date.parse(events[i - 1]!.timestamp),
+      );
+    }
+    // Defect A (2026-08-16 second review): historyStartIso reports the TRUE
+    // oldest matching event -- evt-0, which did NOT survive the cap -- not
+    // the oldest one actually returned (events[0], which is evt-5). A
+    // forecast that relied on events[0]'s timestamp for "days of history"
+    // would silently report five events' worth less history than the user
+    // actually has.
+    expect(historyStartIso).toBe("2026-08-01T00:00:00.000Z");
+    expect(historyStartIso).not.toBe(events[0]!.timestamp);
+  });
+
+  it("does not report truncated when the count lands exactly on the cap", async () => {
+    const repo = makeMemoryRepo();
+    for (let i = 0; i < EVENTS_SINCE_MAX; i += 1) {
+      await repo.insertEventIfNew("u1", {
+        ...base,
+        eventId: `evt-${i}`,
+        timestamp: new Date(Date.parse("2026-08-01T00:00:00.000Z") + i * 1000).toISOString(),
+        inputTokens: 1,
+        outputTokens: 0,
+      });
+    }
+    const { events, truncated } = await repo.eventsSince(
+      "u1",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(truncated).toBe(false);
+    expect(events).toHaveLength(EVENTS_SINCE_MAX);
   });
 });

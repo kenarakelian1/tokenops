@@ -168,6 +168,33 @@ export const recommendations = pgTable(
   ],
 );
 
+/**
+ * Limits the user has actually observed being enforced.
+ *
+ * There is deliberately no "limit" column populated from a provider: for
+ * subscription plans Anthropic publishes no quota and exposes none
+ * programmatically, so every row here originates with the user — either
+ * declared outright, or confirmed from a detected candidate.
+ */
+export const limitObservations = pgTable("limit_observations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** "session_5h" | "weekly_7d" */
+  windowKind: text("window_kind").notNull(),
+  observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+  /** Trailing-window total in consumption units at the observed instant. */
+  unitsInWindow: numeric("units_in_window", { precision: 20, scale: 4 }).notNull(),
+  /** "measured" | "reported" | "declared" | "inferred" */
+  provenance: text("provenance").notNull(),
+  /** "active" | "superseded" | "dismissed" */
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type LimitObservationRow = typeof limitObservations.$inferSelect;
+
 export type User = typeof users.$inferSelect;
 export type Pat = typeof pats.$inferSelect;
 export type Machine = typeof machines.$inferSelect;
