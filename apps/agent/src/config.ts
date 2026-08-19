@@ -7,7 +7,15 @@ import type { ContentMode } from "@tokenops/shared";
 /** Agent configuration (camelCase in code; snake_case in TOML). */
 export type TokenOpsConfig = {
   cloud: {
+    /** API base URL — where the agent POSTs events. NOT the dashboard. */
     url: string;
+    /**
+     * Where "Open dashboard" should go. Empty means "same as `url`", which is
+     * correct only when the web app and the API share an origin. They do not
+     * in the two-service Railway layout deploy/railway.toml describes, and an
+     * empty value there sent the desktop button to the API's JSON banner.
+     */
+    dashboardUrl: string;
     ingestToken: string;
   };
   privacy: {
@@ -57,6 +65,7 @@ export function defaultConfig(): TokenOpsConfig {
   return {
     cloud: {
       url: "http://127.0.0.1:3000",
+      dashboardUrl: "",
       ingestToken: "",
     },
     privacy: {
@@ -80,7 +89,7 @@ export function defaultConfig(): TokenOpsConfig {
   };
 }
 
-type TomlCloud = { url?: string; ingest_token?: string };
+type TomlCloud = { url?: string; dashboard_url?: string; ingest_token?: string };
 type TomlPrivacy = { content_mode?: string; content_ttl_days?: number };
 type TomlProxy = { listen?: string; upstream?: string };
 type TomlSources = {
@@ -114,6 +123,7 @@ function fromToml(raw: TomlRoot): TokenOpsConfig {
   return {
     cloud: {
       url: raw.cloud?.url ?? base.cloud.url,
+      dashboardUrl: raw.cloud?.dashboard_url ?? base.cloud.dashboardUrl,
       ingestToken: raw.cloud?.ingest_token ?? base.cloud.ingestToken,
     },
     privacy: {
@@ -157,6 +167,7 @@ function toToml(config: TokenOpsConfig): string {
   return stringify({
     cloud: {
       url: config.cloud.url,
+      dashboard_url: config.cloud.dashboardUrl,
       ingest_token: config.cloud.ingestToken,
     },
     privacy: {

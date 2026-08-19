@@ -136,10 +136,10 @@ SCENES = {
         .scene-finding.active .find-l2 { transition-delay: .9s; }
         .scene-finding.active .find-l3 { transition-delay: 1.1s; }
         .scene-finding.active .find-l4 { transition-delay: 1.4s; }
-        .scene-finding.active .find-l5 { transition-delay: 4.6s; }
+        .scene-finding.active .find-l5 { transition-delay: 5.7s; }
         .scene-finding.active .find-l6,
-        .scene-finding.active .find-l7 { transition-delay: 7.2s; }
-        .scene-finding.active .find-l8 { transition-delay: 7.4s; }
+        .scene-finding.active .find-l7 { transition-delay: 8.0s; }
+        .scene-finding.active .find-l8 { transition-delay: 8.2s; }
         .scene-finding .find-warn { color: var(--gold-bright); font-weight: 600; }
         .scene-finding .find-hot { color: var(--text); font-weight: 600; transition: color .6s ease; }
         .scene-finding.hit .find-hot { color: var(--gold-bright); }
@@ -210,18 +210,21 @@ CHAPTERS = [
          )},
     ]},
     {"number": 2, "title": "Where it actually goes", "icon": "2", "segments": [
-        # The cost line lands at ~4.6s of narration ("Two hundred fifteen
-        # dollars"), which is when .hit warms both highlighted figures.
+        # Cues derived from the MEASURED 10.4s narration, not a 150wpm
+        # estimate: "Two hundred fifteen dollars" begins after 12 of 22
+        # words (5.7s), the closing clause after 17 (8.0s).
         {"id": "s2_finding", "scene": "finding",
          "narration": (
              "One session: six hundred sixty-five turns, alive for five hundred "
              "ninety-four hours. Two hundred fifteen dollars, API-equivalent, "
              "just re-reading its own context."
          ),
-         "timedClasses": [{"at": 4.6, "addClass": "hit"}]},
+         "timedClasses": [{"at": 5.7, "addClass": "hit"}]},
     ]},
     {"number": 3, "title": "Will I make it?", "icon": "3", "segments": [
-        # "measured against my own history" ~4.5s; "Runs locally" ~9.5s.
+        # Measured 11.6s / 30 words: "measured against my own history"
+        # begins ~4.3s, "Runs locally" ~9.3s. Cues at 4.5s / 9.5s land just
+        # after each phrase starts, which is what reads as synced.
         {"id": "s3_forecast", "scene": "forecast",
          "narration": (
              "Now it tells me I am at fifty-one percent of my heaviest week ever, "

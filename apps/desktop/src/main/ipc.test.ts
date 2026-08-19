@@ -233,6 +233,63 @@ describe("registerIpc", () => {
     });
   });
 
+  it("tokenops:open-dashboard opens the dashboard URL, not the API URL, when they differ", async () => {
+    // The reported bug: `cloud.url` is the API base -- where the agent POSTs
+    // events -- so opening it landed the user on the API's JSON service
+    // banner. These are genuinely different origins in the two-service
+    // Railway layout (tokenops-api-* vs tokenops-web-*), so the config needs
+    // to carry both and this button has to pick the right one.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: {
+        url: "https://tokenops-api-production.up.railway.app",
+        dashboardUrl: "https://tokenops-web-production.up.railway.app",
+        ingestToken: "",
+      },
+    } as never);
+    registerIpc(() => null);
+
+    await openDashboard(() => null);
+
+    expect(shell.openExternal).toHaveBeenCalledWith(
+      "https://tokenops-web-production.up.railway.app",
+    );
+    expect(shell.openExternal).not.toHaveBeenCalledWith(
+      "https://tokenops-api-production.up.railway.app",
+    );
+  });
+
+  it("tokenops:open-dashboard falls back to cloud.url when no dashboard URL is set", async () => {
+    // A single-origin deployment is a real configuration, and this is also
+    // the pre-existing behaviour for every config.toml written before
+    // `dashboard_url` existed -- upgrading must not break them.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: { url: "https://cloud.example", dashboardUrl: "", ingestToken: "" },
+    } as never);
+    registerIpc(() => null);
+
+    await openDashboard(() => null);
+
+    expect(shell.openExternal).toHaveBeenCalledWith("https://cloud.example");
+  });
+
+  it("tokenops:open-dashboard never forwards a malformed or non-http(s) dashboard URL to the OS shell", async () => {
+    // The safety check has to cover the new field too, not just cloud.url --
+    // otherwise adding dashboard_url would have opened a hole straight past
+    // the guard the test below exists to enforce.
+    vi.mocked(loadConfig).mockReturnValue({
+      cloud: {
+        url: "https://cloud.example",
+        dashboardUrl: "file:///C:/Windows/System32/calc.exe",
+        ingestToken: "",
+      },
+    } as never);
+    registerIpc(() => null);
+
+    await openDashboard(() => null);
+
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
   it("tokenops:open-dashboard never forwards a malformed or non-http(s) cloud.url read from disk to the OS shell", async () => {
     // Same file, same attack surface, whether it's read via a live agent's
     // config or via this disk fallback -- the isSafeExternalUrl check must

@@ -330,6 +330,9 @@ pnpm --filter @tokenops/agent start -- init
 
 # Edit config: cloud URL, ingest token, machine name, privacy, sources
 #   cloud.url           = &quot;http://127.0.0.1:3000&quot;   # or your hosted API
+#   cloud.dashboard_url = &quot;&quot;                        # where &quot;Open dashboard&quot; goes;
+#                                                   # leave empty only if the web app
+#                                                   # and the API share an origin
 #   cloud.ingest_token  = &quot;&lt;PAT from above&gt;&quot;
 
 export OPENAI_API_KEY=sk-...   # used only for proxy upstream — never sent to TokenOps

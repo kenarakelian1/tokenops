@@ -40,16 +40,24 @@ function loadAgentModule(): Promise<typeof import("@tokenops/agent")> {
 export async function openDashboard(
   getAgent: () => AgentHandle | null,
 ): Promise<void> {
-  let url = getAgent()?.config.cloud.url;
-  if (!url) {
+  let cloud = getAgent()?.config.cloud;
+  if (!cloud) {
     try {
       const { loadConfig } = await loadAgentModule();
-      url = loadConfig().cloud.url;
+      cloud = loadConfig().cloud;
     } catch {
       // No config on disk (e.g. never ran `tokenops init`) -- nothing to open.
       return;
     }
   }
+  // `cloud.url` is the API base -- where the agent POSTs events. Opening it
+  // lands the user on the API's JSON service banner, not a dashboard, which
+  // is exactly what this button used to do whenever the web app and the API
+  // are separate origins (the two-service layout deploy/railway.toml
+  // describes). Prefer the explicit dashboard URL; fall back to `url` only
+  // because a single-origin deployment is a real configuration, and that
+  // fallback is the pre-existing behaviour for anyone already relying on it.
+  const url = cloud.dashboardUrl?.trim() ? cloud.dashboardUrl : cloud.url;
   if (url && isSafeExternalUrl(url)) {
     void shell.openExternal(url);
   }
