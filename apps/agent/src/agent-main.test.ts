@@ -1,4 +1,10 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,9 +160,21 @@ describe("runAgent claude-code session watcher wiring", () => {
     dirs.push(sessionsDir);
     const projectDir = join(sessionsDir, "project1");
     mkdirSync(projectDir, { recursive: true });
-    // File mtime is "now" (just written), so it's inside the default 7-day
-    // backfill window regardless of the timestamps recorded inside the file.
-    copyFileSync(sessionFixture, join(projectDir, "session.jsonl"));
+    // The watcher skips any file whose MTIME is older than the backfill
+    // window (claude-session-watcher.ts: `Date.now() - backfillDays * ...`),
+    // so the copy has to look freshly written.
+    //
+    // copyFileSync does NOT guarantee that: on this platform it PRESERVES the
+    // source mtime, so the copy inherited the checked-out fixture's date. That
+    // made this test a time bomb -- green while the committed fixture was
+    // under 7 days old, then failing for everyone once it aged past the
+    // window, with `allPosted` empty and no hint as to why. Stamp the mtime
+    // explicitly rather than relying on copy semantics that differ by
+    // platform.
+    const sessionPath = join(projectDir, "session.jsonl");
+    copyFileSync(sessionFixture, sessionPath);
+    const now = new Date();
+    utimesSync(sessionPath, now, now);
 
     const otelPort = await getFreePort();
 
