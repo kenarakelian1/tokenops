@@ -11,4 +11,7 @@ coverage
 
 # narrated-webinar: local render checks, not deliverables
 webinar/preview-*.png
+webinar/crop-*.png
+webinar/frame-*.png
+webinar/_playwright_video/
 webinar/__pycache__/
