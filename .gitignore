@@ -8,3 +8,7 @@ coverage
 .worktrees
 .superpowers
 *.zip
+
+# narrated-webinar: local render checks, not deliverables
+webinar/preview-*.png
+webinar/__pycache__/
